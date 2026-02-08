@@ -4,7 +4,7 @@ import gc
 
 def main():
     """Creates factors for the models and creates bucketed data.
-    TODO: create additional factors in X, add calls.
+    TODO: create additional factors in X, add calls, explicitly treat missing in treat
 
     Closeness is defined by the summed squared distance 
     for both delta and maturity, where we put ten times
@@ -62,7 +62,6 @@ def main():
     .sort_values("closeness").groupby(["DATE", "MATURITY_BUCKET", "MONEYNESS_BUCKET"], as_index=False)
     .first().sort_values(["DATE", "MATURITY_BUCKET", "MONEYNESS_BUCKET"])
     )
-
     logiv_matrix = (data
     .pivot(index="DATE", columns="joint_bucket", values="logIV")
     .sort_index(axis=0).sort_index(axis=1))

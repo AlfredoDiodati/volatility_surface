@@ -17,7 +17,7 @@ def _expected_power_variation(X_spaced:np.ndarray, q:float) -> float:
         q: moment
     """
     x_diff = np.diff(X_spaced, axis=0)
-    return np.sum(np.abs(x_diff) ** q, axis=1).mean()
+    return np.nansum(np.abs(x_diff) ** q, axis=1).mean()
 
 def _make_time_lags(minf, maxf, factor = 1.1)->np.ndarray:
     n = np.log(maxf)-np.log(minf)-np.log(factor)
@@ -31,7 +31,6 @@ def moment_scaling(x, minf, maxf, qs:np.ndarray, factor = 1.1)->dict:
         power_var = np.empty_like(delta_ts, dtype=float)
         for i,dt in enumerate(delta_ts):
             x_part = _partition(x,dt)
-            if np.isnan(x_part).any():print("NaNs in x_part at q=", q, "dt=", dt)
             power_var[i] = _expected_power_variation(x_part, q)
         log_power_var = np.log(power_var)
         bad = ~np.isfinite(power_var)
