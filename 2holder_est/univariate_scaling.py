@@ -11,17 +11,14 @@ def _partition(x: np.ndarray, delta_t: int) -> np.ndarray:
     x_pad = np.pad(x, (0, pad), mode="constant", constant_values=0)
     return x_pad.reshape((N, delta_t))
 
-def _expected_power_variation(X_spaced:np.ndarray, q:float) -> float:
-    """
-        X: time series geometrically spaced
-        q: moment
-    """
-    x_diff = np.diff(X_spaced, axis=0)
-    return np.nansum(np.abs(x_diff) ** q, axis=1).mean()
+def _expected_power_variation(x_spaced: np.ndarray, q: float) -> float:
+    coarse_inc = x_spaced[1:, 0] - x_spaced[:-1, 0]
+    return np.nansum(np.abs(coarse_inc) ** q)
 
-def _make_time_lags(minf, maxf, factor = 1.1)->np.ndarray:
-    n = np.log(maxf)-np.log(minf)-np.log(factor)
-    return np.unique(np.round(minf * factor ** np.arange(n + 1)).astype(int))
+def _make_time_lags(minf, maxf, factor=1.1) -> np.ndarray:
+    n = (np.log(maxf) - np.log(minf)) / np.log(factor)
+    return np.unique(
+        np.round(minf * factor ** np.arange(int(np.floor(n)) + 1)).astype(int))
 
 def moment_scaling(x, minf, maxf, qs:np.ndarray, factor = 1.1)->dict:
     out = {}
@@ -37,13 +34,16 @@ def moment_scaling(x, minf, maxf, qs:np.ndarray, factor = 1.1)->dict:
         if np.any(bad):
             print("bad power_var at q=", q, "delta_ts=", delta_ts[bad], "raw=", power_var[bad])
 
-        holder = np.sum(log_t*log_power_var)/np.sum(log_t**2)
-        intercept = np.mean(log_power_var - log_t * holder)
+        lt = log_t - log_t.mean()
+        lp = log_power_var - log_power_var.mean()
+        holder = np.sum(lt * lp) / np.sum(lt**2)
+        intercept = log_power_var.mean() - holder * log_t.mean()
+
         out[q] = {
                 "log_power_var": log_power_var,
                 "shifted_power_var": log_power_var - intercept,
                 "intercept": intercept,
-                "holder_exp": holder}
+                "holder": holder}
     out["delta_ts"] = delta_ts
     out["log_t"] = log_t
     return out
