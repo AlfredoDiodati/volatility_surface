@@ -41,8 +41,9 @@ def moment_scaling(x, minf, maxf, qs:np.ndarray, factor = 1.1)->dict:
         intercept = np.mean(log_power_var - log_t * holder)
         out[q] = {
                 "log_power_var": log_power_var,
-                "shifter_power_var": log_power_var - intercept,
+                "shifted_power_var": log_power_var - intercept,
                 "intercept": intercept,
                 "holder_exp": holder}
     out["delta_ts"] = delta_ts
+    out["log_t"] = log_t
     return out
