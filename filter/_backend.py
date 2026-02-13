@@ -7,35 +7,48 @@ class ndarray(Protocol):
     shape: tuple
     ndim: int
 
+import numpy as np
+
 def numpy_scan(f, carry, xs):
     """
-    NumPy-based implementation of a scan (cumulative fold) operation.
-
-    Iteratively applies a function `f` over a sequence `xs`, carrying forward
-    a state variable and collecting intermediate outputs.
-
-    Parameters
-    ----------
-    f : callable
-        Function of the form `f(carry, x) -> (new_carry, y)`, where
-        `carry` is the current state and `x` is the current element of `xs`.
-    carry : any
-        Initial state passed to the first call of `f`.
-    xs : iterable
-        Sequence of inputs to iterate over.
-
-    Returns
-    -------
-    carry : any
-        Final state after processing all elements of `xs`.
-    ys : np.ndarray
-        Stacked array of outputs `y` returned at each iteration.
+    NumPy scan that matches jax.scan output structure:
+    - y can be a nested structure (tuple/list/dict) of leaves
+    - each leaf must keep the same shape/dtype across iterations
+    - different leaves may have different shapes/dtypes
+    - returns ys with a leading time dimension stacked per-leaf
     """
-    ys = []
-    for x in xs:
+    T = xs.shape[0]
+    if T == 0: return carry, None
+    def _alloc_like(y0):
+        if isinstance(y0, dict): return {k: _alloc_like(v) for k, v in y0.items()}
+        if isinstance(y0, tuple): return tuple(_alloc_like(v) for v in y0)
+        if isinstance(y0, list): return [_alloc_like(v) for v in y0]
+        a0 = y0 if isinstance(y0, np.ndarray) else np.asarray(y0)
+        out_shape = (T,) if a0.ndim == 0 else (T,) + a0.shape
+        return np.empty(out_shape, dtype=a0.dtype)
+
+    def _write(out, i, y):
+        t = type(out)
+        if t is dict:
+            for k in out: _write(out[k], i, y[k])
+            return
+        if t is tuple:
+            for o, v in zip(out, y): _write(o, i, v)
+            return
+        if t is list:
+            for o, v in zip(out, y): _write(o, i, v)
+            return
+        if np.isscalar(y) or isinstance(y, np.generic):
+            out[i] = y
+        else: out[i, ...] = y
+    it = iter(xs)
+    carry, y0 = f(carry, next(it))
+    ys = _alloc_like(y0)
+    _write(ys, 0, y0)
+    for i, x in enumerate(it, start=1):
         carry, y = f(carry, x)
-        ys.append(y)
-    return carry, np.stack(ys)
+        _write(ys, i, y)
+    return carry, ys
 
 class Backend(Protocol):
     xp = ...
@@ -49,7 +62,6 @@ class JaxBackend(Backend):
     import jax.numpy as xp
     from jax.lax import scan
 
-
 def _set_backend(backend:Backend) -> None:
     """Sets the linear algebra backend for the code, if nothing is selected it defaults to numpy.
 
@@ -59,4 +71,6 @@ def _set_backend(backend:Backend) -> None:
     Possible alternatives are numpy and jax. CUPy may also work but would require further implementation
     """
     global xp
-    xp = backend
+    global scan
+    xp = backend.xp
+    scan = backend.scan
