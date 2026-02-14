@@ -82,7 +82,7 @@ def _fit(data: np.ndarray, initial_guess: dict, covariates:np.ndarray | None, ca
     }
     return params | kf | out
 
-def _simulation(fit_output: dict, nsim: int, dynamics: callable):
+def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int):
     Qt, Ht = fit_output["Q"][-1], fit_output["H"][-1]
     at, Pt = fit_output["a"][-1], fit_output["P"][-1]
     Zt, Tt = fit_output["Z"][-1], fit_output["T"][-1]
@@ -90,11 +90,12 @@ def _simulation(fit_output: dict, nsim: int, dynamics: callable):
     carry0 = (at, Pt, Zt, Tt, Ht, Rt, Qt, 0)
     q = carry0[6].shape[0]
     p = carry0[4].shape[0]
-    eta_draws = np.random.multivariate_normal(np.zeros(q), carry0[6], size=nsim)
-    eps_draws = np.random.multivariate_normal(np.zeros(p), carry0[4], size=nsim)
-    dummy = np.empty((nsim, p))
+    eta_draws = np.random.multivariate_normal(np.zeros(q), carry0[6], size=(nsim, npaths))
+    eps_draws = np.random.multivariate_normal(np.zeros(p), carry0[4], size=(nsim, npaths))
+    dummy = np.empty((nsim, npaths, p))
     out = _filter(dummy, dynamics, fit_output, carry0)
-    y_sim = out["Z"] @ out["a"] + eps_draws
+    y_sim = np.einsum("tij,tj->ti", out["Z"], out["a"]) if out["Z"].ndim == 3 else (out["a"] @ out["Z"].transpose(0, 2, 1))
+    y_sim = y_sim + eps_draws
     out["y"] = y_sim
     out["eta"] = eta_draws
     out["eps"] = eps_draws
