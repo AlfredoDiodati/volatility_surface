@@ -1,12 +1,16 @@
-from filter._backend import _set_backend, NumpyBackend, JaxBackend
-from filter._simple import filter
+from _kalman._filter import _filter as kfilter
 
-backend = _set_backend(NumpyBackend)
-xp = backend.xp
+import numpy as np
 
-def _dynamics()->dict:
-    Z = ...
+def _dynamics(_y, _a, _P, params, _Z, bt, H, identity_mat, Q, idx)->dict:
+    p = bt.shape[0]
+    Mt = params["covariates"][idx * p : (1 + idx)*p, :]
+    bar_beta = params["bar_beta"]
+    B = params["B"]
+    Z = Mt
+    T = (identity_mat - B) @ bar_beta + B @ bt
+    return Z, T, H, identity_mat, Q
 
-    return  
-
-def fit(): ...
+def fit(data: np.ndarray, params: dict, covariates:np.ndarray):
+    params["covariates"] = covariates
+    kf = kfilter(data, _dynamics, params)
