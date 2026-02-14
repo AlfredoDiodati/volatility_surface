@@ -1,4 +1,4 @@
-"""Simple implementation of the Kalman filter.
+"""Implementation of the Kalman filter.
 
 Fixed state shape.
 
@@ -18,9 +18,7 @@ def _filter(data: np.ndarray, dynamics:callable, params:dict, carry0:tuple)->dic
         dynamics (callable): function that specifies Zt, Tt, Rt and Qt
         params (dict): parameters of the model
         carry0 (tuple[float, float]): initial state prediction and variance
-
     """
-
     def _step(carry, yt):
         """we carry forward at and Pt for prediction and filter, sum """
         at_pred, Pt_pred, Zt, Tt, Ht, Rt, Qt, idx= carry
@@ -42,6 +40,7 @@ def _filter(data: np.ndarray, dynamics:callable, params:dict, carry0:tuple)->dic
             "H": Ht,"R": Rt,"Q": Qt,"v": vt,
             "F": Ft,"logdetF": logdet_t,"quad": quad_t,}
         return new_carry, store_timet
+
     _, ll_terms = scan(_step, carry0, data)
     return ll_terms 
 
@@ -81,5 +80,22 @@ def _fit(data: np.ndarray, initial_guess: dict, covariates:np.ndarray | None, ca
         "gradient": res.jac,
         "hessian_inv": res.hess_inv
     }
-
     return params | kf | out
+
+def _simulation(fit_output: dict, nsim: int, dynamics: callable):
+    Qt, Ht = fit_output["Q"][-1], fit_output["H"][-1]
+    at, Pt = fit_output["a"][-1], fit_output["P"][-1]
+    Zt, Tt = fit_output["Z"][-1], fit_output["T"][-1]
+    Rt = fit_output["R"][-1]
+    carry0 = (at, Pt, Zt, Tt, Ht, Rt, Qt, 0)
+    q = carry0[6].shape[0]
+    p = carry0[4].shape[0]
+    eta_draws = np.random.multivariate_normal(np.zeros(q), carry0[6], size=nsim)
+    eps_draws = np.random.multivariate_normal(np.zeros(p), carry0[4], size=nsim)
+    dummy = np.empty((nsim, p))
+    out = _filter(dummy, dynamics, fit_output, carry0)
+    y_sim = out["Z"] @ out["a"] + eps_draws
+    out["y"] = y_sim
+    out["eta"] = eta_draws
+    out["eps"] = eps_draws
+    return out
