@@ -13,5 +13,5 @@ def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx)->dict:
     T = (identity_mat - B) @ bar_beta + B @ bt
     return Z, T, H, identity_mat, Q
 
-def simulation(fit_output, nsim):
-    return _simulation(fit_output, nsim, _dynamics)
+def simulation(fit_output, nsim, npaths):
+    return _simulation(fit_output, nsim, _dynamics, npaths)
