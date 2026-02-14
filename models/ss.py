@@ -1,6 +1,6 @@
-from _kalman._filter import _filter as kfilter
-
 import numpy as np
+from _kalman._filter import _filter as kfilter
+from _kalman._filter import _loglikelihood
 
 def _dynamics(_y, _a, _P, params, _Z, bt, H, identity_mat, Q, idx)->dict:
     p = bt.shape[0]
@@ -13,4 +13,6 @@ def _dynamics(_y, _a, _P, params, _Z, bt, H, identity_mat, Q, idx)->dict:
 
 def fit(data: np.ndarray, params: dict, covariates:np.ndarray):
     params["covariates"] = covariates
-    kf = kfilter(data, _dynamics, params)
+    def _criterion(params):
+        kf = kfilter(data, _dynamics, params)
+        return _loglikelihood(kf)
