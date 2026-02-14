@@ -2,8 +2,6 @@
 
 import numpy as np
 
-import numpy as np
-
 def numpy_scan(f, carry, xs):
     """
     NumPy scan that matches jax.scan output structure:
