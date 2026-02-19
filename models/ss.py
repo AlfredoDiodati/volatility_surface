@@ -14,8 +14,8 @@ def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx)->dict:
 
 def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initialization:tuple, opt_options:dict):
     
-    kQ = (initial_guess["Q_param"]).shape[0]
-    kH = (initial_guess["H_param"]).shape[0]
+    p = (initial_guess["Q_param"]).shape[0]
+    pH = (initial_guess["H_param"]).shape[0]
 
     def _cholesky_setup(dimension_of_matrix:int):
         idx = np.tril_indices(dimension_of_matrix)
@@ -23,8 +23,8 @@ def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initializati
         cholesky = np.zeros((dimension_of_matrix,dimension_of_matrix), dtype=float)
         return (cholesky, d, idx)
     
-    choleskyQ, dQ, idxQ = _cholesky_setup(kQ)
-    choleskyH, dH, idxH = _cholesky_setup(kH)
+    choleskyQ, dQ, idxQ = _cholesky_setup(p)
+    choleskyH, dH, idxH = _cholesky_setup(pH)
 
     def _link_covariance(cholesky, vector, idx, d):
         cholesky.fill(0.0)
@@ -50,11 +50,15 @@ def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initializati
         return tmp @ orthogonal_matrix_q.T
 
     def _link(unconstrained_params:np.ndarray)->dict:
-        unc_H = unconstrained_params[:kH]
-        unc_Q = unconstrained_params[kH:kQ]
+        unc_H = unconstrained_params[:pH]
+        unc_Q = unconstrained_params[pH:p]
+        idx = 0.5 * (3.0 * p**2 + p)
+        unc_B = unconstrained_params[p:idx]
+        bar_beta = unconstrained_params[idx:]
         H = _link_covariance(choleskyH, unc_H, idxH, dH)
         Q = _link_covariance(choleskyQ, unc_Q, idxQ, dQ)
-        return {"Q_param":Q,"H_param": H}
+        B = _link_stable_matrix(unc_B, p)
+        return {"Q_param":Q,"H_param": H, "B":B, "bar_beta": bar_beta}
 
     def _invlink_covariance(covariance: np.ndarray):
         L = np.linalg.cholesky(covariance)
@@ -63,12 +67,27 @@ def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initializati
         v[np.cumsum(np.arange(1, L.shape[0] + 1)) - 1] = np.log(v[np.cumsum(np.arange(1, L.shape[0] + 1)) - 1])
         return v
 
+    def _invlink_stable_matrix(B_constrained: np.ndarray, n: int) -> np.ndarray:
+        B_constrained = np.asarray(B_constrained, dtype=float)
+        _, orthogonal_matrix_q = np.linalg.eigh(B_constrained)
+        constrained_schur_matrix = orthogonal_matrix_q.T @ B_constrained @ orthogonal_matrix_q
+        upper_row_indices, upper_col_indices = np.triu_indices(n, k=1)
+        upper_triangular_part = constrained_schur_matrix[upper_row_indices, upper_col_indices]
+        diagonal_part = np.arctanh(np.clip(np.diag(constrained_schur_matrix), -0.999999, 0.999999))
+        unconstrained_matrix_for_q = orthogonal_matrix_q
+        return np.concatenate([
+            unconstrained_matrix_for_q.reshape(n * n),
+            upper_triangular_part, diagonal_part])
+
     def _invlink(constrained_params:dict): 
         H = constrained_params["H_param"]
         Q = constrained_params["Q_param"]
+        B = constrained_params["B"]
+        bar_beta = constrained_params["bar_beta"]
         uncH = _invlink_covariance(H)
         uncQ = _invlink_covariance(Q)
-        params = np.stack(uncH, uncQ)
+        uncB = _invlink_stable_matrix(B, p)
+        params = np.stack(uncH, uncQ, uncB, bar_beta)
         return params
 
     return _fit(data, initial_guess, covariates, initialization, _dynamics, _link, _invlink, opt_options)
