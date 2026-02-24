@@ -9,8 +9,13 @@ def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx)->dict:
     B = params["B"]
     Z = Mt.copy()
     Z[np.isnan(y), :] = 0.0
-    T = (identity_mat - B) @ bar_beta + B @ bt
-    return Z, T, H, identity_mat, Q
+    T = B @ bt
+    cache = params.setdefault("_cache", {})
+    ct = cache.get("last_term")
+    if ct is None:
+        ct = (identity_mat - B) @ bar_beta
+        cache["ct"] = ct
+    return Z, T, H, identity_mat, Q, 0.0, ct
 
 def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initialization:tuple, opt_options:dict):
     
