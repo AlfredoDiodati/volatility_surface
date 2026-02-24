@@ -54,16 +54,29 @@ def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initializati
         tmp = orthogonal_matrix_q @ constrained_schur_matrix
         return tmp @ orthogonal_matrix_q.T
 
-    def _link(unconstrained_params:np.ndarray)->dict:
-        unc_H = unconstrained_params[:pH]
-        unc_Q = unconstrained_params[pH:p]
-        idx = 0.5 * (3.0 * p**2 + p)
-        unc_B = unconstrained_params[p:idx]
-        bar_beta = unconstrained_params[idx:]
+    def _link(unconstrained_params: np.ndarray) -> dict:
+        len_uncH = pH * (pH + 1) // 2
+        len_uncQ = p * (p + 1) // 2
+        len_uncB = p * p + (p * (p - 1) // 2) + p
+
+        start_H = 0
+        end_H = start_H + len_uncH
+        start_Q = end_H
+        end_Q = start_Q + len_uncQ
+        start_B = end_Q
+        end_B = start_B + len_uncB
+        start_beta = end_B
+
+        unc_H = unconstrained_params[start_H:end_H]
+        unc_Q = unconstrained_params[start_Q:end_Q]
+        unc_B = unconstrained_params[start_B:end_B]
+        bar_beta = unconstrained_params[start_beta:]
+
         H = _link_covariance(choleskyH, unc_H, idxH, dH)
         Q = _link_covariance(choleskyQ, unc_Q, idxQ, dQ)
         B = _link_stable_matrix(unc_B, p)
-        return {"Q_param":Q,"H_param": H, "B":B, "bar_beta": bar_beta}
+
+        return {"Q_param": Q, "H_param": H, "B": B, "bar_beta": bar_beta}
 
     def _invlink_covariance(covariance: np.ndarray):
         L = np.linalg.cholesky(covariance)
@@ -84,17 +97,19 @@ def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initializati
             unconstrained_matrix_for_q.reshape(n * n),
             upper_triangular_part, diagonal_part])
 
-    def _invlink(constrained_params:dict): 
+    def _invlink(constrained_params: dict):
         H = constrained_params["H_param"]
         Q = constrained_params["Q_param"]
         B = constrained_params["B"]
         bar_beta = constrained_params["bar_beta"]
+
         uncH = _invlink_covariance(H)
         uncQ = _invlink_covariance(Q)
         uncB = _invlink_stable_matrix(B, p)
-        params = np.stack(uncH, uncQ, uncB, bar_beta)
-        return params
 
+        params = np.concatenate([uncH, uncQ, uncB, bar_beta])
+        return params
+    
     return _fit(data, initial_guess, covariates, initialization, _dynamics, _link, _invlink, opt_options)
 
 def simulation(fit_output, nsim, npaths):

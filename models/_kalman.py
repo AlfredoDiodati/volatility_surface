@@ -67,12 +67,14 @@ def _fit(data: np.ndarray, initial_guess: dict, covariates:np.ndarray | None, ca
 
     def _criterion(params):
         constr_params = _link(params)
+        constr_params["covariates"] = covariates
         kf = _filter(data, _dynamics, constr_params, carry_initial)
         return  - _loglikelihood(kf)
     
     res = minimize(_criterion, unc_params, options=opt_options, method="BFGS")
     unc_params = res.x
     params = _link(unc_params)
+    params["covariates"] = covariates
     kf = _filter(data, _dynamics, params, carry_initial)
     out = {
         "loglikelihood": - res.fun,
