@@ -128,8 +128,11 @@ f_{i,t+1}
 \alpha\,\nabla_{i,t}
 $$
 
-No intercepts and no per-frequency parameters.
+No intercepts and no per-frequency parameters. Alternative versions could introduce an intercept
+Or a fixed level, scaling in the logistic map that makes the division more pronounced,
 
+the main challenge is doing it in such a way that it preserves the maginute, i.e. 
+if the nonadjusted parameter where to go to state $m0$, it goes there even further
 ---
 
 ## 6. Parameter vector (constant in $k$)
