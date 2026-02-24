@@ -48,6 +48,11 @@ def main():
         "R": np.array([R]),
     }
     draw = ss.simulation(params, horizon_sim, npaths=1)
+    y = draw["y"]
+
+    carry0 = (a0, P0, Z0, T0, H, R, Q, 0)
+    fitted = ss.fit(y, Mt, params, carry0)
+
 
 if __name__ == "__main__":
     main()

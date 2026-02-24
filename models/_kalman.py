@@ -1,7 +1,4 @@
 """Implementation of the Kalman filter.
-
-Fixed state shape.
-
 Implementation and notation based on:
 Durbin, J. and Siem Jan Koopman (2012). Time Series Analysis by State Space Methods. OUP Oxford.
 """

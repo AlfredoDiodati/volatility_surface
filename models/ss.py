@@ -17,7 +17,7 @@ def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx)->dict:
         cache["ct"] = ct
     return Z, T, H, identity_mat, Q, 0.0, ct
 
-def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initialization:tuple, opt_options:dict):
+def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initialization:tuple, opt_options:dict | None = None):
     
     p = (initial_guess["Q_param"]).shape[0]
     pH = (initial_guess["H_param"]).shape[0]
