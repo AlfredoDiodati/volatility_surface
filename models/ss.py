@@ -2,13 +2,13 @@ import numpy as np
 from models._kalman import _simulation, _fit
 
 def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx)->dict:
-    p = bt.shape[0]
     Q = params["Q_param"]
     H = params["H_param"]
-    Mt = params["covariates"][idx * p : (1 + idx)*p, :]
+    Mt = params["covariates"][idx]
     bar_beta = params["bar_beta"]
     B = params["B"]
-    Z = np.where(np.isnan(y), 0.0, Mt)
+    Z = Mt.copy()
+    Z[np.isnan(y), :] = 0.0
     T = (identity_mat - B) @ bar_beta + B @ bt
     return Z, T, H, identity_mat, Q
 
