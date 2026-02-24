@@ -7,11 +7,15 @@ def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx)->dict:
     Mt = params["covariates"][idx]
     bar_beta = params["bar_beta"]
     B = params["B"]
-    Z = Mt.copy()
-    Z[np.isnan(y), :] = 0.0
+    y = np.asarray(y, dtype=float).reshape(-1)
+    missing = np.isnan(y)
+    Z = np.asarray(Mt, dtype=float)
+    if Z.ndim == 1: Z = Z.reshape(1, -1)
+    if Z.shape[0] != y.size: Z = Z.reshape(y.size, -1)
+    if np.any(missing): Z[missing, :] = 0.0
     T = B @ bt
     cache = params.setdefault("_cache", {})
-    ct = cache.get("last_term")
+    ct = cache.get("ct")
     if ct is None:
         ct = (identity_mat - B) @ bar_beta
         cache["ct"] = ct

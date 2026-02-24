@@ -19,7 +19,10 @@ def _filter(data: np.ndarray, dynamics:callable, params:dict, carry0:tuple)->dic
     def _step(carry, yt):
         """we carry forward at and Pt for prediction and filter, sum """
         at, Pt, Zt, Tt, Ht, Rt, Qt, idx= carry
+        yt = np.asarray(yt, dtype=float).reshape(-1)
+        missing = np.isnan(yt)
         Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
+        yt = np.where(missing, 0.0, yt)
         vt = yt - Zt @ at - dt
         ZP = Zt @ Pt
         Ft = ZP @ Zt.T + Ht
