@@ -19,7 +19,6 @@ def _filter(data: np.ndarray, dynamics:callable, params:dict, carry0:tuple)->dic
     def _step(carry, yt):
         """we carry forward at and Pt for prediction and filter, sum """
         at, Pt, Zt, Tt, Ht, Rt, Qt, idx= carry
-        yt = np.asarray(yt, dtype=float).reshape(-1)
         missing = np.isnan(yt)
         Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
         yt = np.where(missing, 0.0, yt)
@@ -107,7 +106,7 @@ def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int):
         dummy = np.empty((nsim, npaths, p))
     out = _filter(dummy, dynamics, fit_output, carry0)
     y_sim = np.einsum("tij,tj->ti", out["Z"], out["a"]) if out["Z"].ndim == 3 else (out["a"] @ out["Z"].transpose(0, 2, 1))
-    y_sim = y_sim + (eps_draws[:, None, :] if npaths == 1 else eps_draws)
+    y_sim = y_sim + eps_draws
     out["y"] = y_sim
     out["eta"] = eta_draws
     out["eps"] = eps_draws

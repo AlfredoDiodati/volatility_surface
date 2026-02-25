@@ -3,6 +3,7 @@
 Same simulation factors as Zou, Lin and Lucas (2025)
 """
 
+import pickle
 import numpy as np
 from models import ss
 
@@ -32,13 +33,13 @@ def main():
     P0 = Q.copy()
     T0 = (identity_mat - B) @ bar_beta + B @ a0
     Z0 = Mt.copy()
-
+    covariates = np.broadcast_to(Mt, (horizon_sim, Nt, p)).copy()
     params = {
         "B": B,
         "Q_param": Q,
         "H_param": H,
         "bar_beta": bar_beta,
-        "covariates": np.broadcast_to(Mt, (horizon_sim, Nt, p)).copy(),
+        "covariates": covariates,
         "a": np.array([a0]),
         "P": np.array([P0]),
         "Z": np.array([Z0]),
@@ -51,8 +52,8 @@ def main():
     y = draw["y"]
 
     carry0 = (a0, P0, Z0, T0, H, R, Q, 0)
-    fitted = ss.fit(y, Mt, params, carry0)
-
-
+    fitted = ss.fit(y, covariates, params, carry0)
+    with open("test/simulation_params.pkl", "wb") as file_handle:
+        pickle.dump(fitted, file_handle)
 if __name__ == "__main__":
     main()
