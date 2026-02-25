@@ -5,16 +5,10 @@ def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx)->dict:
     Q = params["Q_param"]
     H = params["H_param"]
     Mt = params["covariates"][idx]
-    bar_beta = params["bar_beta"]
     B = params["B"]
     Z = np.asarray(Mt, dtype=float)
     T = B @ bt
-    cache = params.setdefault("_cache", {})
-    ct = cache.get("ct")
-    if ct is None:
-        ct = (identity_mat - B) @ bar_beta
-        cache["ct"] = ct
-    return Z, T, H, identity_mat, Q, 0.0, ct
+    return Z, T, H, identity_mat, Q, 0.0, params["ct"]
 
 def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initialization:tuple, opt_options:dict | None = None):
     
@@ -74,8 +68,8 @@ def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initializati
         H = _link_covariance(choleskyH, unc_H, idxH, dH)
         Q = _link_covariance(choleskyQ, unc_Q, idxQ, dQ)
         B = _link_stable_matrix(unc_B, p)
-
-        return {"Q_param": Q, "H_param": H, "B": B, "bar_beta": bar_beta}
+        ct = (np.eye(B.shape[0]) - B) @ bar_beta
+        return {"Q_param": Q, "H_param": H, "B": B, "bar_beta": bar_beta, "ct": ct}
 
     def _invlink_covariance(covariance: np.ndarray):
         L = np.linalg.cholesky(covariance)
