@@ -40,17 +40,10 @@ def _filter(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -
         logdet_t = 2.0 * np.sum(np.log(np.diag(L)))
         idx = idx + 1
         new_carry = (atp1, Ptp1, Zt, Tt, Ht, Rt, Qt, idx)
+        return new_carry, (logdet_t, quad_t)
 
-        store_timet = {
-            "a": atp1, "a_filt": att, "P": Ptp1, "Z": Zt,
-            "T": Tt, "H": Ht,"R": Rt, "Q": Qt,
-            "v": vt, "F": Ft, "logdetF": logdet_t,
-            "quad": quad_t,
-        }
-        return new_carry, store_timet
-
-    _, ll_terms = lax.scan(_step, carry0, data)
-    return ll_terms
+    _, (logdetF, quad) = lax.scan(_step, carry0, data)
+    return {"logdetF": logdetF, "quad": quad}
 
 
 def _loglikelihood(filter_output: dict):
@@ -97,9 +90,7 @@ def _fit(
 
     def _criterion(params):
         constr_params = _link(params)
-        constr_params = dict(constr_params)
-        constr_params["covariates"] = covariates
-        kf = _filter(data, _dynamics, constr_params, carry_initial)
+        kf = _filter(data, _dynamics, constr_params | {"covariates": covariates}, carry_initial)
         return -_loglikelihood(kf)
 
     value_and_grad = jax.value_and_grad(_criterion)
