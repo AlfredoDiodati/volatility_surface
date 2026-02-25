@@ -56,10 +56,9 @@ def _fit(
     covariates: np.ndarray | None,
     carry_initial: tuple,
     _dynamics: callable,
-    _link: callable | None = None,
-    _invlink: callable | None = None,
-    opt_options: dict | None = None,
-) -> dict:
+    _link: callable = lambda x: x,
+    _invlink: callable = lambda x: x,
+    opt_options: dict | None = None) -> dict:
     """
     Args:
         data (np.ndarray)
@@ -70,10 +69,6 @@ def _fit(
         constrained space and returns them in a dictionary. Defaults to None.
         _invlink (callable | None, optional): inverse of _link. Defaults to None.
     """
-    if _link is None:
-        _link = lambda x: x
-    if _invlink is None:
-        _invlink = lambda x: x
 
     if opt_options is None:
         opt_options = {}
@@ -129,6 +124,7 @@ def _fit(
     }
     return params | kf | out
 
+_fit = jax.jit( _fit, static_argnames=("_dynamics", "_link", "_invlink"))
 
 def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int, key: jax.Array):
     Qt, Ht = fit_output["Q"][-1], fit_output["H"][-1]
