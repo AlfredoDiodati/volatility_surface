@@ -5,7 +5,7 @@ from _kalman import _simulation, _fit
 def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx) -> dict:
     Q = params["Q_param"]
     H = params["H_param"]
-    Mt = params["covariates"][idx]
+    Mt = jax.lax.dynamic_index_in_dim(params["covariates"], idx, axis=0, keepdims=False)
     B = params["B"]
     Z = np.asarray(Mt, dtype=float)
     T = B @ bt
