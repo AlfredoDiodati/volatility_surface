@@ -26,7 +26,8 @@ def _filter(data: np.ndarray, dynamics:callable, params:dict, carry0:tuple)->dic
         ZP = Zt @ Pt
         Ft = ZP @ Zt.T + Ht
         L = np.linalg.cholesky(Ft)
-        Kt = Pt @ Zt.T @ np.linalg.inv(Ft)
+        PtZtT = Pt @ Zt.T
+        Kt = np.linalg.solve(L.T, np.linalg.solve(L, PtZtT.T)).T
         att = at + Kt @ vt
         atp1 = Tt @ att + ct
         Ptt = Pt - Kt @ Zt @ Pt
