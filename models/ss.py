@@ -106,4 +106,6 @@ def fit(data:np.ndarray, covariates:np.ndarray, initial_guess:dict, initializati
     return _fit(data, initial_guess, covariates, initialization, _dynamics, _link, _invlink, opt_options)
 
 def simulation(fit_output, nsim, npaths):
+    if "ct" not in fit_output or fit_output["ct"] is None:
+        fit_output["ct"] = (np.eye(fit_output["B"].shape[0]) - fit_output["B"]) @ fit_output["bar_beta"]
     return _simulation(fit_output, nsim, _dynamics, npaths)
