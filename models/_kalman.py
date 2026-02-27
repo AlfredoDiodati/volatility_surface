@@ -58,7 +58,7 @@ def _fit(
     _dynamics: callable,
     _link: callable = lambda x: x,
     _invlink: callable = lambda x: x,
-    opt_options: dict | None = None) -> dict:
+    opt_options: dict = {}) -> dict:
     """
     Args:
         data (np.ndarray)
@@ -69,9 +69,6 @@ def _fit(
         constrained space and returns them in a dictionary. Defaults to None.
         _invlink (callable | None, optional): inverse of _link. Defaults to None.
     """
-
-    if opt_options is None:
-        opt_options = {}
     maxiter = opt_options.get("maxiter", 500)
     learning_rate = opt_options.get("learning_rate", 1e-2)
     tol = opt_options.get("tol", 1e-6)
@@ -138,22 +135,14 @@ def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int, ke
 
     k1, k2 = jax.random.split(key, 2)
 
-    if npaths == 1:
-        eta_draws = jax.random.multivariate_normal(k1, np.zeros(q), carry0[6], shape=(nsim,))
-        eps_draws = jax.random.multivariate_normal(k2, np.zeros(p), carry0[4], shape=(nsim,))
-        dummy = np.empty((nsim, p))
-    else:
-        eta_draws = jax.random.multivariate_normal(k1, np.zeros(q), carry0[6], shape=(nsim, npaths))
-        eps_draws = jax.random.multivariate_normal(k2, np.zeros(p), carry0[4], shape=(nsim, npaths))
-        dummy = np.empty((nsim, npaths, p))
+    eta_draws = jax.random.multivariate_normal(k1, np.zeros(q), carry0[6], shape=(nsim, npaths))
+    eps_draws = jax.random.multivariate_normal(k2, np.zeros(p), carry0[4], shape=(nsim, npaths))
+
+    dummy = np.zeros((nsim, npaths, p))
 
     out = _filter(dummy, dynamics, fit_output, carry0)
 
-    y_sim = (
-        np.einsum("tij,tj->ti", out["Z"], out["a"])
-        if out["Z"].ndim == 3
-        else (out["a"] @ out["Z"].transpose(0, 2, 1))
-    )
+    y_sim = np.einsum("...ij,...j->...i", out["Z"], out["a"])
     y_sim = y_sim + eps_draws
 
     out = dict(out)
@@ -161,3 +150,5 @@ def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int, ke
     out["eta"] = eta_draws
     out["eps"] = eps_draws
     return out
+
+_simulation = jax.jit(_simulation, static_argnames=("dynamics"))
