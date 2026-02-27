@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FixedLocator, FixedFormatter
 
 from holder_est.scaling_reg import moment_scaling
 
@@ -34,16 +33,38 @@ def main() -> None:
 
     for sigma in sigma_grid:
         scalings = {}
+        global_y_min = np.inf
+        global_y_max = -np.inf
 
-        fig, axes = plt.subplots(3, 3, figsize=(14, 10), sharex=False, sharey=False)
-        axes = axes.ravel()
+        panel_payload = []
 
-        for panel_idx, phi in enumerate(phi_grid):
+        for phi in phi_grid:
             x = simulate_ou_path(phi=phi, path_length=path_length, x0=0.0, sigma=sigma, seed=12345)
 
             scaling_dict = moment_scaling(x, minf, maxf, moments, factor=factor)
-            dt = scaling_dict["delta_ts"]
+            dt_full = scaling_dict["delta_ts"].astype(int)
+            in_view = (dt_full >= 1) & (dt_full <= 126)
+            dt = dt_full[in_view]
 
+            holder = []
+            curves = []
+            for q in moments:
+                holder.append(scaling_dict[q]["holder"])
+                y_full = scaling_dict[q]["shifted_power_var"]
+                y = y_full[in_view]
+
+                global_y_min = min(global_y_min, float(np.min(y)))
+                global_y_max = max(global_y_max, float(np.max(y)))
+
+                curves.append((float(q), y.astype(float)))
+
+            scalings[str(phi)] = np.array(holder, dtype=float)
+            panel_payload.append((float(phi), dt.astype(int), curves))
+
+        fig, axes = plt.subplots(3, 3, figsize=(14, 10), sharex=False, sharey=True)
+        axes = axes.ravel()
+
+        for panel_idx, (phi, dt, curves) in enumerate(panel_payload):
             ax = axes[panel_idx]
 
             for x_tick in tick_days:
@@ -52,16 +73,12 @@ def main() -> None:
             ax.set_xticks(tick_days)
             ax.set_xticklabels(tick_labels, ha="center")
 
-
-            holder = []
-            for q in moments:
-                holder.append(scaling_dict[q]["holder"])
-                y = scaling_dict[q]["shifted_power_var"]
+            for q, y in curves:
                 line, = ax.plot(dt, y)
                 ax.text(
-                    dt[-1] * 1.01,
-                    y[-1],
-                    f"q={q}",
+                    float(dt[-1]) * 1.01,
+                    float(y[-1]),
+                    f"q={q:g}",
                     color=line.get_color(),
                     va="center",
                     fontsize=8,
@@ -69,17 +86,16 @@ def main() -> None:
                 )
 
             ax.set_xlim((1, 126))
+            ax.set_ylim((global_y_min, global_y_max))
             ax.set_title(f"phi={phi:.2f}")
             ax.tick_params(axis="x", labelrotation=0, pad=8)
-
-            scalings[str(phi)] = np.array(holder, dtype=float)
 
         for ax in axes[::3]:
             ax.set_ylabel(r"$S(q, \Delta t)$")
         for ax in axes[-3:]:
             ax.set_xlabel(r"$\Delta t$")
 
-        fig.subplots_adjust(left=0.06, right=0.95, bottom=0.08, top=0.93, wspace=0.28, hspace=0.38)
+        fig.subplots_adjust(left=0.06, right=0.985, bottom=0.10, top=0.93, wspace=0.28, hspace=0.38)
         fig.savefig(os.path.join(plots_dir, "scaling_ou_3x3_panel.pdf"))
         plt.close(fig)
 
