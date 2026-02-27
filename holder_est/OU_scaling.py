@@ -1,9 +1,21 @@
 import os
+import math
 import numpy as np
 import matplotlib.pyplot as plt
 
 from holder_est.scaling_reg import moment_scaling
 
+def gaussian_abs_moment(q: float) -> float:
+    return (2.0 ** (q / 2.0)) * math.gamma((q + 1.0) / 2.0) / math.sqrt(math.pi)
+
+def theoretical_log_S(phi: float, sigma: float, dt: np.ndarray, q: float, path_length: int) -> np.ndarray:
+    stationary_variance = (sigma * sigma) / (1.0 - phi * phi)
+    increment_variance = 2.0 * stationary_variance * (1.0 - (phi ** dt.astype(float)))
+
+    n_blocks = np.floor((float(path_length) - 1.0) / dt.astype(float))
+    n_blocks = np.maximum(1.0, n_blocks)
+
+    return np.log(n_blocks) + np.log(gaussian_abs_moment(q)) + (q / 2.0) * np.log(increment_variance)
 
 def simulate_ou_path(phi: float, path_length: int, x0: float = 0.0, sigma: float = 1.0, seed: int | None = None) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -13,7 +25,6 @@ def simulate_ou_path(phi: float, path_length: int, x0: float = 0.0, sigma: float
     for t in range(1, path_length):
         x[t] = x0 + phi * (x[t - 1] - x0) + sigma * eps[t - 1]
     return x
-
 
 def main() -> None:
     path_length = 3500
@@ -33,6 +44,7 @@ def main() -> None:
 
     for sigma in sigma_grid:
         scalings = {}
+        theoretical_scalings = {}
         global_y_min = np.inf
         global_y_max = -np.inf
 
@@ -47,24 +59,33 @@ def main() -> None:
             dt = dt_full[in_view]
 
             holder = []
+            theoretical_holder = []
             curves = []
+            theoretical_curves = []
             for q in moments:
                 holder.append(scaling_dict[q]["holder"])
                 y_full = scaling_dict[q]["shifted_power_var"]
                 y = y_full[in_view]
 
+                y_theory_full = theoretical_log_S(phi=phi, sigma=sigma, dt=dt_full, q=float(q), path_length=path_length)
+                y_theory = y_theory_full[in_view]
+                y_theory = y_theory + (float(y[0]) - float(y_theory[0]))
+                theoretical_holder.append(float(np.polyfit(np.log(dt.astype(float)), y_theory.astype(float), 1)[0]))
+
                 global_y_min = min(global_y_min, float(np.min(y)))
                 global_y_max = max(global_y_max, float(np.max(y)))
 
                 curves.append((float(q), y.astype(float)))
+                theoretical_curves.append((float(q), y_theory.astype(float)))
 
             scalings[str(phi)] = np.array(holder, dtype=float)
-            panel_payload.append((float(phi), dt.astype(int), curves))
+            theoretical_scalings[str(phi)] = np.array(theoretical_holder, dtype=float)
+            panel_payload.append((float(phi), dt.astype(int), curves, theoretical_curves))
 
         fig, axes = plt.subplots(3, 3, figsize=(14, 10), sharex=False, sharey=True)
         axes = axes.ravel()
 
-        for panel_idx, (phi, dt, curves) in enumerate(panel_payload):
+        for panel_idx, (phi, dt, curves, theoretical_curves) in enumerate(panel_payload):
             ax = axes[panel_idx]
 
             for x_tick in tick_days:
@@ -75,6 +96,10 @@ def main() -> None:
 
             for q, y in curves:
                 line, = ax.plot(dt, y)
+                for q_theory, y_theory in theoretical_curves:
+                    if q_theory == q:
+                        ax.plot(dt, y_theory, color=line.get_color(), linestyle=":", linewidth=1.0)
+                        break
                 ax.text(
                     float(dt[-1]) * 1.01,
                     float(y[-1]),
@@ -103,14 +128,14 @@ def main() -> None:
         plt.figure()
         plt.plot(moments, holder_bm, color="black", linestyle="--")
         for label in scalings.keys():
-            plt.plot(moments, scalings[label])
+            line, = plt.plot(moments, scalings[label])
+            plt.plot(moments, theoretical_scalings[label], color=line.get_color(), linestyle=":", linewidth=1.0)
         plt.ylabel(r"$\tau(q)$")
         plt.xlabel(r"$q$")
         plt.xlim((moments[0], moments[-1]))
         plt.ylim((None, 1.0))
         plt.savefig(os.path.join(plots_dir, "OU_moments_scaling.pdf"))
         plt.close()
-
 
 if __name__ == "__main__":
     main()
