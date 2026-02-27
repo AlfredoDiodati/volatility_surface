@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as np
-from _kalman import _simulation, _fit
+from models._kalman import _simulation, _fit
 
 def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx) -> dict:
     Q = params["Q_param"]

@@ -40,11 +40,14 @@ def _filter(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -
         logdet_t = 2.0 * np.sum(np.log(np.diag(L)))
         idx = idx + 1
         new_carry = (atp1, Ptp1, Zt, Tt, Ht, Rt, Qt, idx)
-        return new_carry, (logdet_t, quad_t)
+        return new_carry, (logdet_t, quad_t, at, Pt, att, Ptt, vt, Ft, Kt)
 
-    _, (logdetF, quad) = lax.scan(_step, carry0, data)
-    return {"logdetF": logdetF, "quad": quad}
-
+    _, (logdetF, quad, at, Pt, att, Ptt, vt, Ft, Kt) = lax.scan(_step, carry0, data)
+    return {
+        "logdetF": logdetF,"quad": quad,"a": at,
+        "P": Pt, "att": att, "Ptt": Ptt, "v": vt,
+        "F": Ft, "K": Kt,
+    }
 
 def _loglikelihood(filter_output: dict):
     """Without constant term"""
@@ -83,7 +86,7 @@ def _fit(
     def _criterion(params):
         constr_params = _link(params)
         kf = _filter(data, _dynamics, constr_params | {"covariates": covariates}, carry_initial)
-        return -_loglikelihood(kf)
+        return -_loglikelihood({"logdetF": kf["logdetF"], "quad": kf["quad"]})
 
     value_and_grad = jax.value_and_grad(_criterion)
 
@@ -128,27 +131,33 @@ def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int, ke
     at, Pt = fit_output["a"][-1], fit_output["P"][-1]
     Zt, Tt = fit_output["Z"][-1], fit_output["T"][-1]
     Rt = fit_output["R"][-1]
-    carry0 = (at, Pt, Zt, Tt, Ht, Rt, Qt, 0)
-
-    q = carry0[6].shape[0]
-    p = carry0[4].shape[0]
-
+    q = Qt.shape[0]
+    p = Ht.shape[0]
     k1, k2 = jax.random.split(key, 2)
+    eta_draws = jax.random.multivariate_normal(k1, np.zeros(q), Qt, shape=(nsim, npaths))
+    eps_draws = jax.random.multivariate_normal(k2, np.zeros(p), Ht, shape=(nsim, npaths))
+    at = np.broadcast_to(at, (npaths,) + at.shape)
+    carry0 = (at, Pt, Zt, Tt, Ht, Rt, Qt, 0)
+    def _sim_step(carry, noise_t):
+        at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry
+        eta_t, eps_t = noise_t
 
-    eta_draws = jax.random.multivariate_normal(k1, np.zeros(q), carry0[6], shape=(nsim, npaths))
-    eps_draws = jax.random.multivariate_normal(k2, np.zeros(p), carry0[4], shape=(nsim, npaths))
+        y_dummy = np.zeros((p,), dtype=float)
+        Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(y_dummy, at[0], Pt, fit_output, Zt, Tt, Ht, Rt, Qt, idx)
 
-    dummy = np.zeros((nsim, npaths, p))
+        dt = np.asarray(dt, dtype=float)
+        ct = np.asarray(ct, dtype=float)
 
-    out = _filter(dummy, dynamics, fit_output, carry0)
+        y_t = np.einsum("ij,pj->pi", Zt, at) + dt + eps_t
+        atp1 = np.einsum("ij,pj->pi", Tt, at) + ct + np.einsum("ij,pj->pi", Rt, eta_t)
 
-    y_sim = np.einsum("...ij,...j->...i", out["Z"], out["a"])
-    y_sim = y_sim + eps_draws
+        Ptp1 = Tt @ Pt @ Tt.T + Rt @ Qt @ Rt.T
+        idx = idx + 1
 
-    out = dict(out)
-    out["y"] = y_sim
-    out["eta"] = eta_draws
-    out["eps"] = eps_draws
-    return out
+        return (atp1, Ptp1, Zt, Tt, Ht, Rt, Qt, idx), y_t
 
-_simulation = jax.jit(_simulation, static_argnames=("dynamics"))
+    _, y_sim = lax.scan(_sim_step, carry0, (eta_draws, eps_draws), length=nsim)
+
+    return {"y": y_sim, "eta": eta_draws, "eps": eps_draws}
+
+_simulation = jax.jit(_simulation, static_argnames=("nsim", "npaths", "dynamics"))
