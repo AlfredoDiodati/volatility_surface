@@ -61,7 +61,7 @@ def _fit(
     _dynamics: callable,
     _link: callable = lambda x: x,
     _invlink: callable = lambda x: x,
-    opt_options: dict = {}) -> dict:
+    opt_options: dict = {}, maxiter: int = 5000) -> dict:
     """
     Args:
         data (np.ndarray)
@@ -72,7 +72,7 @@ def _fit(
         constrained space and returns them in a dictionary. Defaults to None.
         _invlink (callable | None, optional): inverse of _link. Defaults to None.
     """
-    maxiter = opt_options.get("maxiter", 500)
+    maxiter = int(maxiter)
     learning_rate = opt_options.get("learning_rate", 1e-2)
     tol = opt_options.get("tol", 1e-6)
     beta1 = opt_options.get("beta1", 0.9)
@@ -124,7 +124,7 @@ def _fit(
     }
     return params | kf | out
 
-_fit = jax.jit( _fit, static_argnames=("_dynamics", "_link", "_invlink"))
+_fit = jax.jit(_fit, static_argnames=("_dynamics", "_link", "_invlink", "maxiter"))
 
 def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int, key: jax.Array):
     Qt, Ht = fit_output["Q"][-1], fit_output["H"][-1]

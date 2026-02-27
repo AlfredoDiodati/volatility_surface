@@ -53,6 +53,17 @@ fit_output_true = {
     "Q": np.asarray([Q1]),
 }
 
+Q_true = np.diag(np.array([1e-10, 1e-10, 1e-10], dtype=float))
+H_true = 1e-8 * np.eye(pH, dtype=float)
+
+fit_output_true["Q_param"] = Q_true
+fit_output_true["H_param"] = H_true
+fit_output_true["Q"] = np.asarray([Q_true])
+fit_output_true["H"] = np.asarray([H_true])
+
+
+opt_options = {"maxiter": 400, "learning_rate": 1e-3, "tol": 1e-6}
+
 key, key_sim = jax.random.split(key, 2)
 sim = ss.simulation(fit_output_true, nsim=horizon, npaths=1, key=key_sim)
 y = sim["y"][:, 0, :]
@@ -63,6 +74,11 @@ initial_guess = {
     "B": 0.9 * np.eye(p, dtype=float),
     "bar_beta": 0.5 * np.ones((p,), dtype=float),
 }
+
+initial_guess["Q_param"] = 0.0 * initial_guess["Q_param"]
+initial_guess["H_param"] = 1e-10 * initial_guess["H_param"]
+initial_guess["Q_param"] = 1e-8 * np.eye(p, dtype=float)
+initial_guess["H_param"] = 1e-6 * np.eye(pH, dtype=float)
 
 opt_options = {"maxiter": 400, "learning_rate": 1e-2, "tol": 1e-6}
 
@@ -80,6 +96,12 @@ bar_beta_true_ = onp.asarray(jax.device_get(bar_beta_true))
 B_true_ = onp.asarray(jax.device_get(B_true))
 Q_true_ = onp.asarray(jax.device_get(Q_true))
 H_true_ = onp.asarray(jax.device_get(H_true))
+
+ct_hat = (onp.eye(p) - B_hat) @ bar_beta_hat
+ct_true_ = (onp.eye(p) - B_true_) @ bar_beta_true_
+abs_err = float(onp.linalg.norm(ct_hat - ct_true_))
+rel_err = abs_err / (float(onp.linalg.norm(ct_true_)) + 1e-18)
+print(f"{'ct':<12} {ct_true_} {ct_hat} {abs_err:>10.6g} {rel_err:>10.6g}")
 
 print("param        true                              estimated                         abs_err      rel_err")
 print("-" * 110)
