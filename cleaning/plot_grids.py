@@ -277,6 +277,213 @@ def _plot_column_panels(
 
         return fig
 
+    def _save_factor_linked_amr_grids(pivoted_frame, safe_filename_value):
+        level_factor = pivoted_frame.mean(axis=1, skipna=True)
+
+        def _compute_amr(series):
+            target_series = series.astype(float)
+            rolling_mean_252 = target_series.rolling(252, min_periods=252).mean()
+            deviation_from_mean = target_series - rolling_mean_252
+            delta20 = target_series.shift(-20) - target_series
+
+            valid_mask = rolling_mean_252.notna() & delta20.notna()
+            valid_mask_array = valid_mask.to_numpy(dtype=bool)
+
+            aligned_dates = target_series.index[valid_mask_array].to_pydatetime()
+            aligned_target_values = target_series.to_numpy(dtype=float)[valid_mask_array]
+            aligned_mean_values = rolling_mean_252.to_numpy(dtype=float)[valid_mask_array]
+            aligned_deviation_values = deviation_from_mean.to_numpy(dtype=float)[valid_mask_array]
+            aligned_delta20_values = delta20.to_numpy(dtype=float)[valid_mask_array]
+
+            positive_mask = aligned_deviation_values > 0.0
+            negative_mask = aligned_deviation_values < 0.0
+
+            delta20_positive_values = aligned_delta20_values[positive_mask]
+            delta20_negative_values = aligned_delta20_values[negative_mask]
+
+            A = float(np.nanmedian(delta20_positive_values)) if delta20_positive_values.size > 0 else np.nan
+            B = float(np.nanmedian(delta20_negative_values)) if delta20_negative_values.size > 0 else np.nan
+            R = float(np.abs(A) / np.abs(B)) if np.isfinite(A) and np.isfinite(B) and np.abs(B) > 0.0 else np.nan
+            MR = bool(np.isfinite(A) and np.isfinite(B) and (A < 0.0) and (B > 0.0))
+
+            return (
+                aligned_dates,
+                aligned_target_values,
+                aligned_mean_values,
+                aligned_deviation_values,
+                aligned_delta20_values,
+                delta20_positive_values,
+                delta20_negative_values,
+                A,
+                B,
+                R,
+                MR,
+            )
+
+        (
+            L_dates,
+            L_values,
+            L_mean_values,
+            L_deviation_values,
+            L_delta20_values,
+            L_delta20_pos,
+            L_delta20_neg,
+            L_A,
+            L_B,
+            L_R,
+            L_MR,
+        ) = _compute_amr(level_factor)
+
+        L_title_metrics = f"A={L_A:.6g} B={L_B:.6g} R={L_R:.6g} MR={'TRUE' if L_MR else 'FALSE'}"
+
+        fig1, axes1 = plt.subplots(2, 2, figsize=(14.0, 8.0))
+        ax11 = axes1[0, 0]
+        ax12 = axes1[0, 1]
+        ax13 = axes1[1, 0]
+        ax14 = axes1[1, 1]
+
+        ax11.plot(L_dates, L_values, label="L_t")
+        ax11.plot(L_dates, L_mean_values, label="m_t")
+        ax11.set_title(f"L_t {L_title_metrics}")
+        ax11.legend()
+
+        ax12.plot(L_dates, L_deviation_values)
+        ax12.axhline(0.0, linestyle="--", linewidth=1.0)
+        ax12.set_title(f"L_t d_t {L_title_metrics}")
+
+        ax13.plot(L_dates, L_delta20_values)
+        ax13.axhline(0.0, linestyle="--", linewidth=1.0)
+        ax13.set_title(f"L_t delta20_t {L_title_metrics}")
+
+        L_box_pos = L_delta20_pos if L_delta20_pos.size > 0 else np.array([np.nan])
+        L_box_neg = L_delta20_neg if L_delta20_neg.size > 0 else np.array([np.nan])
+
+        ax14.boxplot([L_box_pos, L_box_neg], labels=["d_t > 0", "d_t < 0"])
+        ax14.text(0.02, 0.98, L_title_metrics, transform=ax14.transAxes, va="top", ha="left")
+        ax14.set_title(f"L_t boxplots {L_title_metrics}")
+
+        fig1.tight_layout()
+        fig1.savefig(output_dir / f"{safe_filename_value}_factor_level_grid.pdf", format="pdf")
+        plt.close(fig1)
+
+        residual_frame = pivoted_frame.sub(level_factor, axis=0)
+
+        residual_amr_by_member = {}
+        member_index = 0
+        while member_index < len(panel_member_names):
+            member_name = panel_member_names[member_index]
+            (
+                aligned_dates,
+                aligned_target_values,
+                aligned_mean_values,
+                aligned_deviation_values,
+                aligned_delta20_values,
+                delta20_positive_values,
+                delta20_negative_values,
+                A,
+                B,
+                R,
+                MR,
+            ) = _compute_amr(residual_frame[member_name])
+
+            residual_amr_by_member[member_name] = {
+                "dates": aligned_dates,
+                "d": aligned_deviation_values,
+                "delta20_pos": delta20_positive_values,
+                "delta20_neg": delta20_negative_values,
+                "A": A,
+                "B": B,
+                "R": R,
+                "MR": MR,
+            }
+            member_index += 1
+
+        number_of_members = len(panel_member_names)
+        if number_of_members == 16:
+            number_of_rows = 4
+            number_of_columns = 4
+        else:
+            number_of_columns = int(np.ceil(np.sqrt(number_of_members)))
+            number_of_rows = int(np.ceil(number_of_members / number_of_columns))
+
+        fig2, axes2 = plt.subplots(
+            number_of_rows,
+            number_of_columns,
+            figsize=(max(12.0, 4.0 * number_of_columns), max(8.0, 2.6 * number_of_rows)),
+            sharex=True,
+        )
+        if isinstance(axes2, np.ndarray):
+            axes2_flat = axes2.ravel()
+        else:
+            axes2_flat = np.array([axes2])
+
+        plot_index = 0
+        while plot_index < number_of_members:
+            member_name = panel_member_names[plot_index]
+            axis = axes2_flat[plot_index]
+            amr = residual_amr_by_member[member_name]
+
+            A = amr["A"]
+            B = amr["B"]
+            R = amr["R"]
+            MR = amr["MR"]
+            metrics = f"A={A:.6g} B={B:.6g} R={R:.6g} MR={'TRUE' if MR else 'FALSE'}"
+
+            axis.plot(amr["dates"], amr["d"])
+            axis.axhline(0.0, linestyle="--", linewidth=1.0)
+            axis.set_title(f"{str(member_name).replace('bucket_', '')} {metrics}")
+
+            plot_index += 1
+
+        axis_index = number_of_members
+        while axis_index < len(axes2_flat):
+            axes2_flat[axis_index].set_visible(False)
+            axis_index += 1
+
+        fig2.tight_layout()
+        fig2.savefig(output_dir / f"{safe_filename_value}_factor_residuals_d_grid.pdf", format="pdf")
+        plt.close(fig2)
+
+        fig3, axes3 = plt.subplots(
+            number_of_rows,
+            number_of_columns,
+            figsize=(max(12.0, 4.0 * number_of_columns), max(8.0, 2.6 * number_of_rows)),
+        )
+        if isinstance(axes3, np.ndarray):
+            axes3_flat = axes3.ravel()
+        else:
+            axes3_flat = np.array([axes3])
+
+        plot_index = 0
+        while plot_index < number_of_members:
+            member_name = panel_member_names[plot_index]
+            axis = axes3_flat[plot_index]
+            amr = residual_amr_by_member[member_name]
+
+            A = amr["A"]
+            B = amr["B"]
+            R = amr["R"]
+            MR = amr["MR"]
+            metrics = f"A={A:.6g} B={B:.6g} R={R:.6g} MR={'TRUE' if MR else 'FALSE'}"
+
+            box_pos = amr["delta20_pos"] if amr["delta20_pos"].size > 0 else np.array([np.nan])
+            box_neg = amr["delta20_neg"] if amr["delta20_neg"].size > 0 else np.array([np.nan])
+
+            axis.boxplot([box_pos, box_neg], labels=["d>0", "d<0"])
+            axis.text(0.02, 0.98, metrics, transform=axis.transAxes, va="top", ha="left")
+            axis.set_title(f"{str(member_name).replace('bucket_', '')} {metrics}")
+
+            plot_index += 1
+
+        axis_index = number_of_members
+        while axis_index < len(axes3_flat):
+            axes3_flat[axis_index].set_visible(False)
+            axis_index += 1
+
+        fig3.tight_layout()
+        fig3.savefig(output_dir / f"{safe_filename_value}_factor_residuals_box_grid.pdf", format="pdf")
+        plt.close(fig3)
+
     def _save_asymmetric_mean_reversion_diagnostics(pivoted_frame, safe_filename_value):
         output_path_amr = output_dir / f"{safe_filename_value}_amr.pdf"
 
@@ -348,6 +555,268 @@ def _plot_column_panels(
                 plt.close(fig4)
 
                 member_index += 1
+
+    def _save_covariate_drift_amr_box_grids(pivoted_logiv_frame, safe_filename_value):
+        excluded_column_names = set()
+        excluded_column_names.add(date_column_name)
+        excluded_column_names.add("panel_member")
+        excluded_column_names.add("level")
+        excluded_column_names.add(value_column_name)
+
+        covariate_column_names = []
+        for column_name, dtype in zip(dataset_with_member.columns, dataset_with_member.dtypes):
+            if column_name in excluded_column_names:
+                continue
+            if dtype == pl.Boolean:
+                continue
+            if dtype in (
+                pl.Float64,
+                pl.Float32,
+                pl.Int64,
+                pl.Int32,
+                pl.Int16,
+                pl.Int8,
+                pl.UInt64,
+                pl.UInt32,
+                pl.UInt16,
+                pl.UInt8,
+            ):
+                covariate_column_names.append(column_name)
+
+        covariate_column_names.sort()
+
+        if len(panel_member_names) != 16:
+            raise ValueError("Covariate drift AMR diagnostic requires exactly 16 buckets (4x4 grid).")
+
+        member_index = 0
+        rolling_mean_by_member = {}
+        deviation_by_member = {}
+        while member_index < len(panel_member_names):
+            member_name = panel_member_names[member_index]
+            logiv_series = pivoted_logiv_frame[member_name].astype(float)
+            rolling_mean_252 = logiv_series.rolling(252, min_periods=252).mean()
+            rolling_mean_by_member[member_name] = rolling_mean_252
+            deviation_by_member[member_name] = logiv_series - rolling_mean_252
+            member_index += 1
+
+        covariate_index = 0
+        while covariate_index < len(covariate_column_names):
+            covariate_column_name = covariate_column_names[covariate_index]
+
+            covariate_plotting_frame = (
+                dataset_with_member.select([date_column_name, "panel_member", covariate_column_name])
+                .sort([date_column_name, "panel_member"])
+                .to_pandas()
+            )
+
+            covariate_pivoted = covariate_plotting_frame.pivot(
+                index=date_column_name, columns="panel_member", values=covariate_column_name
+            )
+            covariate_pivoted = covariate_pivoted.sort_index()
+
+            covariate_panel_member_names = list(covariate_pivoted.columns)
+            if BASELINE_MEMBER_LABEL in covariate_panel_member_names:
+                covariate_panel_member_names.remove(BASELINE_MEMBER_LABEL)
+                covariate_panel_member_names.sort()
+                covariate_panel_member_names.insert(0, BASELINE_MEMBER_LABEL)
+                covariate_pivoted = covariate_pivoted[covariate_panel_member_names]
+            else:
+                covariate_panel_member_names.sort()
+                covariate_pivoted = covariate_pivoted[covariate_panel_member_names]
+
+            covariate_pivoted = covariate_pivoted.reindex(pivoted_logiv_frame.index)
+            covariate_pivoted = covariate_pivoted[panel_member_names]
+
+            fig, axes = plt.subplots(4, 4, figsize=(16.0, 12.0))
+            axes_flat = axes.ravel()
+
+            plot_index = 0
+            while plot_index < len(panel_member_names):
+                member_name = panel_member_names[plot_index]
+                axis = axes_flat[plot_index]
+
+                covariate_series = covariate_pivoted[member_name].astype(float)
+                delta20_x = covariate_series.shift(-20) - covariate_series
+
+                d_series = deviation_by_member[member_name]
+                valid_mask = d_series.notna() & delta20_x.notna()
+                valid_mask_array = valid_mask.to_numpy(dtype=bool)
+
+                delta20_x_values = delta20_x.to_numpy(dtype=float)[valid_mask_array]
+                d_values = d_series.to_numpy(dtype=float)[valid_mask_array]
+
+                positive_mask = d_values > 0.0
+                negative_mask = d_values < 0.0
+
+                delta20_pos = delta20_x_values[positive_mask]
+                delta20_neg = delta20_x_values[negative_mask]
+
+                med_pos = float(np.nanmedian(delta20_pos)) if delta20_pos.size > 0 else np.nan
+                med_neg = float(np.nanmedian(delta20_neg)) if delta20_neg.size > 0 else np.nan
+                diff = float(med_pos - med_neg) if np.isfinite(med_pos) and np.isfinite(med_neg) else np.nan
+
+                box_pos = delta20_pos if delta20_pos.size > 0 else np.array([np.nan])
+                box_neg = delta20_neg if delta20_neg.size > 0 else np.array([np.nan])
+
+                axis.boxplot([box_pos, box_neg], labels=["d>0", "d<0"])
+                axis.set_title(
+                    f"{str(member_name).replace('bucket_', '')} med_pos={med_pos:.6g} med_neg={med_neg:.6g} diff={diff:.6g}"
+                )
+
+                plot_index += 1
+
+            fig.suptitle(covariate_column_name, y=0.995)
+            fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.98])
+
+            safe_covariate = covariate_column_name.replace("/", "_").replace("\\", "_").replace(" ", "_").replace(":", "_")
+            fig.savefig(output_dir / f"{safe_filename_value}_cov_{safe_covariate}_delta20_split_by_d.pdf", format="pdf")
+            plt.close(fig)
+
+            covariate_index += 1
+
+    def _save_covariate_drift_amr_scatter_grids(pivoted_logiv_frame, safe_filename_value):
+        excluded_column_names = set()
+        excluded_column_names.add(date_column_name)
+        excluded_column_names.add("panel_member")
+        excluded_column_names.add("level")
+        excluded_column_names.add(value_column_name)
+
+        covariate_column_names = []
+        for column_name, dtype in zip(dataset_with_member.columns, dataset_with_member.dtypes):
+            if column_name in excluded_column_names:
+                continue
+            if dtype == pl.Boolean:
+                continue
+            if dtype in (
+                pl.Float64,
+                pl.Float32,
+                pl.Int64,
+                pl.Int32,
+                pl.Int16,
+                pl.Int8,
+                pl.UInt64,
+                pl.UInt32,
+                pl.UInt16,
+                pl.UInt8,
+            ):
+                covariate_column_names.append(column_name)
+
+        covariate_column_names.sort()
+
+        if len(panel_member_names) != 16:
+            raise ValueError("Covariate scatter attribution grid requires exactly 16 buckets (4x4 grid).")
+
+        rolling_mean_by_member = {}
+        deviation_by_member = {}
+        delta20_logiv_by_member = {}
+        member_index = 0
+        while member_index < len(panel_member_names):
+            member_name = panel_member_names[member_index]
+            logiv_series = pivoted_logiv_frame[member_name].astype(float)
+            rolling_mean_252 = logiv_series.rolling(252, min_periods=252).mean()
+            rolling_mean_by_member[member_name] = rolling_mean_252
+            deviation_by_member[member_name] = logiv_series - rolling_mean_252
+            delta20_logiv_by_member[member_name] = logiv_series.shift(-20) - logiv_series
+            member_index += 1
+
+        covariate_index = 0
+        while covariate_index < len(covariate_column_names):
+            covariate_column_name = covariate_column_names[covariate_index]
+
+            covariate_plotting_frame = (
+                dataset_with_member.select([date_column_name, "panel_member", covariate_column_name])
+                .sort([date_column_name, "panel_member"])
+                .to_pandas()
+            )
+
+            covariate_pivoted = covariate_plotting_frame.pivot(
+                index=date_column_name, columns="panel_member", values=covariate_column_name
+            )
+            covariate_pivoted = covariate_pivoted.sort_index()
+
+            covariate_panel_member_names = list(covariate_pivoted.columns)
+            if BASELINE_MEMBER_LABEL in covariate_panel_member_names:
+                covariate_panel_member_names.remove(BASELINE_MEMBER_LABEL)
+                covariate_panel_member_names.sort()
+                covariate_panel_member_names.insert(0, BASELINE_MEMBER_LABEL)
+                covariate_pivoted = covariate_pivoted[covariate_panel_member_names]
+            else:
+                covariate_panel_member_names.sort()
+                covariate_pivoted = covariate_pivoted[covariate_panel_member_names]
+
+            covariate_pivoted = covariate_pivoted.reindex(pivoted_logiv_frame.index)
+            covariate_pivoted = covariate_pivoted[panel_member_names]
+
+            fig, axes = plt.subplots(4, 4, figsize=(16.0, 12.0), sharex=True, sharey=True)
+            axes_flat = axes.ravel()
+
+            plot_index = 0
+            while plot_index < len(panel_member_names):
+                member_name = panel_member_names[plot_index]
+                axis = axes_flat[plot_index]
+
+                covariate_series = covariate_pivoted[member_name].astype(float)
+                delta20_x = covariate_series.shift(-20) - covariate_series
+
+                d_series = deviation_by_member[member_name]
+                delta20_logiv = delta20_logiv_by_member[member_name]
+
+                valid_mask = d_series.notna() & delta20_x.notna() & delta20_logiv.notna()
+                valid_mask_array = valid_mask.to_numpy(dtype=bool)
+
+                delta20_x_values = delta20_x.to_numpy(dtype=float)[valid_mask_array]
+                delta20_logiv_values = delta20_logiv.to_numpy(dtype=float)[valid_mask_array]
+                d_values = d_series.to_numpy(dtype=float)[valid_mask_array]
+
+                positive_mask = d_values > 0.0
+                negative_mask = d_values < 0.0
+
+                x_pos = delta20_x_values[positive_mask]
+                y_pos = delta20_logiv_values[positive_mask]
+                x_neg = delta20_x_values[negative_mask]
+                y_neg = delta20_logiv_values[negative_mask]
+
+                axis.axhline(0.0, linestyle="--", linewidth=1.0)
+                axis.axvline(0.0, linestyle="--", linewidth=1.0)
+
+                if x_pos.size > 0:
+                    axis.scatter(x_pos, y_pos, s=8, alpha=0.6)
+                if x_neg.size > 0:
+                    axis.scatter(x_neg, y_neg, s=8, alpha=0.6)
+
+                corr_pos = np.nan
+                corr_neg = np.nan
+
+                if x_pos.size >= 2 and np.isfinite(x_pos).all() and np.isfinite(y_pos).all():
+                    x_pos_std = float(np.std(x_pos, ddof=1))
+                    y_pos_std = float(np.std(y_pos, ddof=1))
+                    if x_pos_std > 0.0 and y_pos_std > 0.0:
+                        corr_pos = float(np.corrcoef(x_pos, y_pos)[0, 1])
+
+                if x_neg.size >= 2 and np.isfinite(x_neg).all() and np.isfinite(y_neg).all():
+                    x_neg_std = float(np.std(x_neg, ddof=1))
+                    y_neg_std = float(np.std(y_neg, ddof=1))
+                    if x_neg_std > 0.0 and y_neg_std > 0.0:
+                        corr_neg = float(np.corrcoef(x_neg, y_neg)[0, 1])
+
+                n_pos = int(x_pos.size)
+                n_neg = int(x_neg.size)
+
+                axis.set_title(
+                    f"{str(member_name).replace('bucket_', '')} corr_pos={corr_pos:.6g} corr_neg={corr_neg:.6g} n_pos={n_pos} n_neg={n_neg}"
+                )
+
+                plot_index += 1
+
+            fig.suptitle(covariate_column_name, y=0.995)
+            fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.98])
+
+            safe_covariate = covariate_column_name.replace("/", "_").replace("\\", "_").replace(" ", "_").replace(":", "_")
+            fig.savefig(output_dir / f"{safe_filename_value}_cov_{safe_covariate}_delta20_scatter_by_d.pdf", format="pdf")
+            plt.close(fig)
+
+            covariate_index += 1
+
     fig_raw = _build_figure(pivoted, value_column_name)
 
     safe_filename = value_column_name.replace("/", "_").replace("\\", "_").replace(" ", "_").replace(":", "_")
@@ -389,6 +858,9 @@ def _plot_column_panels(
         plt.close(fig_rolling_std)
 
         _save_asymmetric_mean_reversion_diagnostics(pivoted, safe_filename)
+        _save_factor_linked_amr_grids(pivoted, safe_filename)
+        _save_covariate_drift_amr_box_grids(pivoted, safe_filename)
+        _save_covariate_drift_amr_scatter_grids(pivoted, safe_filename)
         return
 
     fig_raw.savefig(output_path, format="pdf")
