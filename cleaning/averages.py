@@ -2,7 +2,6 @@ from __future__ import annotations
 from pathlib import Path
 import polars as pl
 
-
 DATASET_PATH = Path("data/SPY/put/bucket.parquet")
 OUTPUT_PATH = Path("data/SPY/put/averages.parquet")
 BASELINE_MEMBER_LABEL = "baseline"
