@@ -36,13 +36,18 @@ def fit(
 
     def _link_stable_matrix(B_unconstrained: np.ndarray, n: int) -> np.ndarray:
         B_unconstrained = np.asarray(B_unconstrained, dtype=float)
-        number_of_q_parameters = n * n
+        number_of_skew_parameters = n * (n - 1) // 2
         number_of_upper_triangular_parameters = n * (n - 1) // 2
-        unconstrained_matrix_for_q = B_unconstrained[:number_of_q_parameters].reshape(n, n)
-        orthogonal_matrix_q = np.linalg.qr(unconstrained_matrix_for_q, mode="reduced")[0]
+        lower_row_indices, lower_col_indices = np.tril_indices(n, k=-1)
+        skew_symmetric_matrix = np.zeros((n, n), dtype=float)
+        skew_symmetric_matrix = skew_symmetric_matrix.at[lower_row_indices, lower_col_indices].set(
+            B_unconstrained[:number_of_skew_parameters])
+        skew_symmetric_matrix = skew_symmetric_matrix - skew_symmetric_matrix.T
+        identity = np.eye(n, dtype=float)
+        orthogonal_matrix_q = np.linalg.solve(identity + skew_symmetric_matrix, identity - skew_symmetric_matrix)
         constrained_schur_matrix = np.zeros((n, n), dtype=float)
         upper_row_indices, upper_col_indices = np.triu_indices(n, k=1)
-        start_upper = number_of_q_parameters
+        start_upper = number_of_skew_parameters
         end_upper = start_upper + number_of_upper_triangular_parameters
         constrained_schur_matrix = constrained_schur_matrix.at[upper_row_indices, upper_col_indices].set(
             B_unconstrained[start_upper:end_upper])
@@ -57,7 +62,7 @@ def fit(
 
         len_uncH = pH * (pH + 1) // 2
         len_uncQ = p * (p + 1) // 2
-        len_uncB = p * p + (p * (p - 1) // 2) + p
+        len_uncB = (p * (p - 1) // 2) + (p * (p - 1) // 2) + p
         start_H = 0
         end_H = start_H + len_uncH
         start_Q = end_H
@@ -89,13 +94,14 @@ def fit(
         B_constrained = np.asarray(B_constrained, dtype=float)
         _, orthogonal_matrix_q = np.linalg.eigh(B_constrained)
         constrained_schur_matrix = orthogonal_matrix_q.T @ B_constrained @ orthogonal_matrix_q
+        identity = np.eye(n, dtype=float)
+        cayley_matrix = np.linalg.solve(identity + orthogonal_matrix_q, identity - orthogonal_matrix_q)
+        lower_row_indices, lower_col_indices = np.tril_indices(n, k=-1)
+        skew_lower_triangular_part = cayley_matrix[lower_row_indices, lower_col_indices]
         upper_row_indices, upper_col_indices = np.triu_indices(n, k=1)
         upper_triangular_part = constrained_schur_matrix[upper_row_indices, upper_col_indices]
         diagonal_part = np.arctanh(np.clip(np.diag(constrained_schur_matrix), -0.999999, 0.999999))
-        unconstrained_matrix_for_q = orthogonal_matrix_q
-        return np.concatenate(
-            [unconstrained_matrix_for_q.reshape(n * n), upper_triangular_part, diagonal_part]
-        )
+        return np.concatenate([skew_lower_triangular_part, upper_triangular_part, diagonal_part])
 
     def _invlink(constrained_params: dict):
         H = constrained_params["H_param"]
