@@ -21,8 +21,9 @@ def _filter(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -
     def _step(carry, yt):
         at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry
 
-        missing = np.isnan(yt)
+        missing = np.any(np.isnan(yt))
         Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
+        Zt = np.where(missing, np.zeros_like(Zt), Zt)
         yt = np.where(missing, 0.0, yt)
         vt = yt - Zt @ at - dt
         ZP = Zt @ Pt
@@ -36,18 +37,48 @@ def _filter(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -
         Ptt = Pt - Kt @ Zt @ Pt
         Ptp1 = Tt @ Ptt @ Tt.T + Rt @ Qt @ Rt.T
         Linv_v = solve_triangular(L, vt, lower=True)
-        quad_t = Linv_v.T @ Linv_v
-        logdet_t = 2.0 * np.sum(np.log(np.diag(L)))
+        quad_t = np.where(missing, 0.0, Linv_v.T @ Linv_v)
+        logdet_t = np.where(missing, 0.0, 2.0 * np.sum(np.log(np.diag(L))))
         idx = idx + 1
         new_carry = (atp1, Ptp1, Zt, Tt, Ht, Rt, Qt, idx)
         return new_carry, (logdet_t, quad_t, at, Pt, att, Ptt, vt, Ft, Kt)
-
+    
     _, (logdetF, quad, at, Pt, att, Ptt, vt, Ft, Kt) = lax.scan(_step, carry0, data)
     return {
         "logdetF": logdetF,"quad": quad,"a": at,
         "P": Pt, "att": att, "Ptt": Ptt, "v": vt,
         "F": Ft, "K": Kt,
     }
+
+def _filter_light(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -> dict:
+    """Version of filter that does not store kalman components, thus speeding up XLA"""
+    def _step(carry, yt):
+        at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry
+
+        missing = np.any(np.isnan(yt))
+        Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
+        Zt = np.where(missing, np.zeros_like(Zt), Zt)
+        yt = np.where(missing, 0.0, yt)
+        vt = yt - Zt @ at - dt
+        ZP = Zt @ Pt
+        Ft = ZP @ Zt.T + Ht
+        L = np.linalg.cholesky(Ft)
+        PtZtT = Pt @ Zt.T
+        x = solve_triangular(L, PtZtT.T, lower=True)
+        Kt = solve_triangular(L.T, x, lower=False).T
+        att = at + Kt @ vt
+        atp1 = Tt @ att + ct
+        Ptt = Pt - Kt @ Zt @ Pt
+        Ptp1 = Tt @ Ptt @ Tt.T + Rt @ Qt @ Rt.T
+        Linv_v = solve_triangular(L, vt, lower=True)
+        quad_t = np.where(missing, 0.0, Linv_v.T @ Linv_v)
+        logdet_t = np.where(missing, 0.0, 2.0 * np.sum(np.log(np.diag(L))))
+        idx = idx + 1
+        new_carry = (atp1, Ptp1, Zt, Tt, Ht, Rt, Qt, idx)
+        return new_carry, (logdet_t, quad_t)
+
+    _, (logdetF, quad) = lax.scan(_step, carry0, data)
+    return {"logdetF": logdetF, "quad": quad}
 
 def _loglikelihood(filter_output: dict):
     """Without constant term"""
@@ -85,32 +116,35 @@ def _fit(
 
     def _criterion(params):
         constr_params = _link(params)
-        kf = _filter(data, _dynamics, constr_params | {"covariates": covariates}, carry_initial)
+        kf = _filter_light(data, _dynamics, constr_params | {"covariates": covariates}, carry_initial)
         return -_loglikelihood({"logdetF": kf["logdetF"], "quad": kf["quad"]})
 
     value_and_grad = jax.value_and_grad(_criterion)
 
-    def _adam_step(state, _):
-        params, m, v, i, prev_loss = state
+    def _adam_step(state):
+        params, m, v, i, prev_loss, converged = state
         loss, g = value_and_grad(params)
-        m = beta1 * m + (1.0 - beta1) * g
-        v = beta2 * v + (1.0 - beta2) * (g * g)
+        m_new = beta1 * m + (1.0 - beta1) * g
+        v_new = beta2 * v + (1.0 - beta2) * (g * g)
         i1 = i + 1
-        mhat = m / (1.0 - beta1**i1)
-        vhat = v / (1.0 - beta2**i1)
-        params = params - learning_rate * mhat / (np.sqrt(vhat) + eps)
-        return (params, m, v, i1, loss), (loss, prev_loss)
+        mhat = m_new / (1.0 - beta1**i1)
+        vhat = v_new / (1.0 - beta2**i1)
+        params_new = params - learning_rate * mhat / (np.sqrt(vhat) + eps)
+        converged_new = np.abs(loss - prev_loss) < tol
+        return (params_new, m_new, v_new, i1, loss, converged_new)
+
+    def _not_converged(state):
+        _, _, _, i, _, converged = state
+        return (i < maxiter) & ~converged
 
     unc_params0 = np.asarray(unc_params0)
     m0 = np.zeros_like(unc_params0)
     v0 = np.zeros_like(unc_params0)
 
-    loss0 = _criterion(unc_params0)
-    state0 = (unc_params0, m0, v0, np.asarray(0, dtype=np.int32), loss0)
+    state0 = (unc_params0, m0, v0, np.asarray(0, dtype=np.int32), np.asarray(np.inf), np.asarray(False))
 
-    stateT, losses = lax.scan(_adam_step, state0, xs=None, length=maxiter)
-    unc_params = stateT[0]
-    final_loss = stateT[4]
+    stateT = lax.while_loop(_not_converged, _adam_step, state0)
+    unc_params, _, _, niter, final_loss, is_converged = stateT
 
     params = _link(unc_params)
     params = dict(params)
@@ -119,8 +153,8 @@ def _fit(
 
     out = {
         "loglikelihood": -final_loss,
-        "niter": maxiter,
-        "is_converged": np.asarray(np.abs(losses[0][-1] - losses[1][-1]) < tol),
+        "niter": niter,
+        "is_converged": is_converged,
     }
     return params | kf | out
 
