@@ -5,10 +5,8 @@ import matplotlib.pyplot as plt
 
 from holder_est.scaling_reg import moment_scaling
 
-
 def gaussian_abs_moment(q: float) -> float:
     return (2.0 ** (q / 2.0)) * math.gamma((q + 1.0) / 2.0) / math.sqrt(math.pi)
-
 
 def theoretical_log_S(phi: float, sigma: float, dt: np.ndarray, q: float, path_length: int) -> np.ndarray:
     stationary_variance = (sigma * sigma) / (1.0 - phi * phi)
@@ -16,7 +14,6 @@ def theoretical_log_S(phi: float, sigma: float, dt: np.ndarray, q: float, path_l
     n_blocks = np.floor((float(path_length) - 1.0) / dt.astype(float))
     n_blocks = np.maximum(1.0, n_blocks)
     return np.log(n_blocks) + np.log(gaussian_abs_moment(q)) + (q / 2.0) * np.log(increment_variance)
-
 
 def simulate_ou_path(phi: float, path_length: int, x0: float = 0.0, sigma: float = 1.0, seed: int | None = None) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -27,7 +24,6 @@ def simulate_ou_path(phi: float, path_length: int, x0: float = 0.0, sigma: float
         x[t] = x0 + phi * (x[t - 1] - x0) + sigma * eps[t - 1]
     return x
 
-
 def _ols_slope_intercept(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     x = x.astype(float)
     y = y.astype(float)
@@ -36,7 +32,6 @@ def _ols_slope_intercept(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     slope = float(np.sum(x_centered * y_centered) / np.sum(x_centered ** 2))
     intercept = float(np.mean(y) - slope * np.mean(x))
     return slope, intercept
-
 
 def main() -> None:
     path_length = 3500
@@ -167,7 +162,6 @@ def main() -> None:
     fig2.tight_layout()
     fig2.savefig(os.path.join(plots_dir, "OU_tau_mc.pdf"))
     plt.close(fig2)
-
 
 if __name__ == "__main__":
     main()

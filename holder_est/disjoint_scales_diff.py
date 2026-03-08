@@ -11,7 +11,7 @@ def main():
     using first differences
     """
 
-    subfolder = "SPY"
+    subfolder = "SPX"
     data = pd.read_parquet("data/" + subfolder + "/put/bucket_matrix.parquet")
     print(f"nans in dataset {np.sum(data.isna().to_numpy())}")
 
