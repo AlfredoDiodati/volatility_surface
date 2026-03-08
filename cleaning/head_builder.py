@@ -10,7 +10,7 @@ def main():
 
     Once the head is stored, the full file is removed from memory.
     """
-    subfolder = "SPY"
+    subfolder = "SPX"
     folder = Path("data/"+subfolder+"/put/")
     out_dir = folder / "head"
     out_dir.mkdir(parents=True, exist_ok=True)
