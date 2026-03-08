@@ -4,7 +4,6 @@ import gc
 
 def main():
     """Creates factors for the models and creates bucketed data.
-    TODO: create additional factors in X, add calls, explicitly treat missing in treat
 
     Closeness is defined by the summed squared distance 
     for both delta and maturity, where we put ten times
@@ -47,7 +46,7 @@ def main():
         moneyness2 = lambda x: x["moneyness"]**2,
         interaction = lambda x: x["moneyness"] * x["maturity"],
         closeness = lambda x: (
-            10.0 * (x["delta_midpoint"] - x["P_DELTA"])**2 + (x["maturity_midpoint"]-x["MATURITY"])))
+    10.0 * (x["delta_midpoint"] - x["P_DELTA"])**2 + (x["maturity_midpoint"] - x["MATURITY"])**2))
     bj_dummies = pd.get_dummies(data["joint_bucket"], prefix="bucket", drop_first=True)
     data = data.join(bj_dummies)
     bjcol_list = bj_dummies.columns.tolist()
