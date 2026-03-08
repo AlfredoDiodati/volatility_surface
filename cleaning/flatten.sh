@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# takes 
+# pastes all content of subfolders to input root,
+# useful for working with decompressed data from OptionDX
 
 target="${1:-.}"
 
