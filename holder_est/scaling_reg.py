@@ -2,14 +2,13 @@ import numpy as np
 
 def _partition(x: np.ndarray, delta_t: int) -> np.ndarray:
     """Given an array and a partition length size, reshapes the array in a 
-    matrix such that each row is a partition of such length. 
-    If the array is not reshapeable in such size, additional 0 entries are added. """
+    matrix such that each row is a partition of such length. """
     T = int(x.shape[0])
     delta_t = int(delta_t)
-    N = (T + delta_t - 1) // delta_t
-    pad = N * delta_t - T
-    x_pad = np.pad(x, (0, pad), mode="constant", constant_values=0)
-    return x_pad.reshape((N, delta_t))
+    N = T // delta_t
+    if hasattr(x, 'values'):
+        x = x.values
+    return x[:N * delta_t].reshape((N, delta_t))
 
 def _expected_power_variation(x_spaced: np.ndarray, q: float) -> float:
     coarse_inc = x_spaced[1:, 0] - x_spaced[:-1, 0]

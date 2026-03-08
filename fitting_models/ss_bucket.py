@@ -5,8 +5,8 @@ import polars as pl
 
 from models.ss import fit
 
-PARQUET_PATH = "data/SPY/put/bucket.parquet"
-OUTPUT_PATH  = "out/SPY/put/params.json"
+PARQUET_PATH = "data/SPX/put/bucket.parquet"
+OUTPUT_PATH  = "out/SPX/put/params.json"
 
 FACTOR_LOADING_COLS = ["level", "moneyness", "moneyness2", "maturity", "interaction"]
 P = len(FACTOR_LOADING_COLS)
