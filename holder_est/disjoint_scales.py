@@ -12,7 +12,7 @@ def main():
     """
 
     subfolder = "SPX"
-    data = pd.read_parquet("data/" + subfolder + "/put/bucket_matrix.parquet")
+    data = pd.read_parquet("data/" + subfolder + "/put/bucket_matrix.parquet").set_index("DATE")
     print(f"nans in dataset {np.sum(data.isna().to_numpy())}")
 
     moments = np.arange(1, 9) / 2
