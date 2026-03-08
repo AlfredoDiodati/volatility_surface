@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# takes 
+
 target="${1:-.}"
 
 find "$target" -mindepth 2 -type f | while read -r file; do
