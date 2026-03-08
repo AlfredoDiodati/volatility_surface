@@ -1,5 +1,5 @@
-import numpy as np
-import pandas as pd
+import math
+import polars as pl
 import gc
 
 def main():
@@ -14,61 +14,66 @@ def main():
     Dynamic Factor Models for the Volatility Surface. 
     SSRN Electronic Journal. doi:https://doi.org/10.2139/ssrn.2558018.
     """
-    subfolder = "SPY"
-    data = pd.read_parquet("data/"+ subfolder +"/put/filtered.parquet")
-    data = data.assign(
-        logIV = np.log((data["P_IV"]).to_numpy()),
-        level = 1.0,
-        moneyness = lambda x: (x["STRIKE"] / x["UNDERLYING_LAST"]),
-        maturity = data["MATURITY"] / 255.0,
-        maturity_midpoint = lambda x: np.select([
-            x["MATURITY_BUCKET"] == 1,
-            x["MATURITY_BUCKET"] == 2,
-            x["MATURITY_BUCKET"] == 3,
-            x["MATURITY_BUCKET"] == 4],
-            [(7.0 + 45.0) / 2.0, 
-            (45.0 + 90.0) / 2.0, 
-            (90.0 + 180.0) / 2.0, 
-            (180.0 + 360.0) / 2.0],
-            default=np.nan),
-        delta_midpoint = lambda x: np.select([
-            x["MONEYNESS_BUCKET"] == 1,
-            x["MONEYNESS_BUCKET"] == 2,
-            x["MONEYNESS_BUCKET"] == 3,
-            x["MONEYNESS_BUCKET"] == 4],
-            [(-0.125 + 0.0) / 2.0,
-            (-0.375 + -0.125) / 2.0,
-            (-0.5 + -0.375) / 2.0,
-            (-1.0 + -0.5) / 2.0],
-            default=np.nan),
-        joint_bucket = "mat" + data["MATURITY_BUCKET"].astype("int").astype("string") + "_mon" + data["MONEYNESS_BUCKET"].astype("int").astype("string")
-        ).assign(
-        moneyness2 = lambda x: x["moneyness"]**2,
-        interaction = lambda x: x["moneyness"] * x["maturity"],
-        closeness = lambda x: (
-    10.0 * (x["delta_midpoint"] - x["P_DELTA"])**2 + (x["maturity_midpoint"] - x["MATURITY"])**2))
-    bj_dummies = pd.get_dummies(data["joint_bucket"], prefix="bucket", drop_first=True)
-    data = data.join(bj_dummies)
-    bjcol_list = bj_dummies.columns.tolist()
-    model_columns = ["DATE", "logIV", "level", "moneyness", "moneyness2", "maturity", "interaction"]
-    model_columns = model_columns + bjcol_list
-    full_model = data[model_columns]
-    full_model.to_parquet("data/"+ subfolder +"/put/full.parquet")
+    subfolder = "SPX"
+    data = pl.read_parquet("data/"+ subfolder +"/put/filtered.parquet")
+
+    data = data.with_columns([
+        pl.col("P_IV").log(base=math.e).alias("logIV"),
+        pl.lit(1.0).alias("level"),
+        (pl.col("STRIKE") / pl.col("UNDERLYING_LAST")).alias("moneyness"),
+        (pl.col("MATURITY") / 255.0).alias("maturity"),
+        pl.when(pl.col("MATURITY_BUCKET") == 1).then((7.0 + 45.0) / 2.0)
+          .when(pl.col("MATURITY_BUCKET") == 2).then((45.0 + 90.0) / 2.0)
+          .when(pl.col("MATURITY_BUCKET") == 3).then((90.0 + 180.0) / 2.0)
+          .when(pl.col("MATURITY_BUCKET") == 4).then((180.0 + 360.0) / 2.0)
+          .otherwise(None).alias("maturity_midpoint"),
+        pl.when(pl.col("MONEYNESS_BUCKET") == 1).then((-0.125 + 0.0) / 2.0)
+          .when(pl.col("MONEYNESS_BUCKET") == 2).then((-0.375 + -0.125) / 2.0)
+          .when(pl.col("MONEYNESS_BUCKET") == 3).then((-0.5 + -0.375) / 2.0)
+          .when(pl.col("MONEYNESS_BUCKET") == 4).then((-1.0 + -0.5) / 2.0)
+          .otherwise(None).alias("delta_midpoint"),
+        ("mat" + pl.col("MATURITY_BUCKET").cast(pl.Int32).cast(pl.String)
+             + "_mon" + pl.col("MONEYNESS_BUCKET").cast(pl.Int32).cast(pl.String)
+        ).alias("joint_bucket"),
+    ]).with_columns([
+        (pl.col("moneyness") ** 2).alias("moneyness2"),
+        (pl.col("moneyness") * pl.col("maturity")).alias("interaction"),
+        (10.0 * (pl.col("delta_midpoint") - pl.col("P_DELTA"))**2
+             + (pl.col("maturity_midpoint") - pl.col("MATURITY"))**2
+        ).alias("closeness"),
+    ])
+
+    bj_dummies = data.select(pl.col("joint_bucket")).to_dummies(separator="_").select(
+        pl.exclude("joint_bucket_" + sorted(data["joint_bucket"].drop_nulls().unique().to_list())[0])
+    )
+    bj_dummies = bj_dummies.rename({c: "bucket_" + c.split("joint_bucket_", 1)[1] for c in bj_dummies.columns})
+    bjcol_list = bj_dummies.columns
+    data = pl.concat([data, bj_dummies], how="horizontal")
+
+    model_columns = ["DATE", "logIV", "level", "moneyness", "moneyness2", "maturity", "interaction"] + bjcol_list
+    full_model = data.select(model_columns)
+    full_model.write_parquet("data/"+ subfolder +"/put/full.parquet")
     del full_model
     gc.collect()
-    
+
     data = (data
-    .sort_values("closeness").groupby(["DATE", "MATURITY_BUCKET", "MONEYNESS_BUCKET"], as_index=False)
-    .first().sort_values(["DATE", "MATURITY_BUCKET", "MONEYNESS_BUCKET"])
+        .sort("closeness")
+        .unique(subset=["DATE", "MATURITY_BUCKET", "MONEYNESS_BUCKET"], keep="first", maintain_order=True)
+        .sort(["DATE", "MATURITY_BUCKET", "MONEYNESS_BUCKET"])
     )
+
     logiv_matrix = (data
-    .pivot(index="DATE", columns="joint_bucket", values="logIV")
-    .sort_index(axis=0).sort_index(axis=1))
-    logiv_matrix.to_parquet("data/"+ subfolder +"/put/bucket_matrix.parquet")
+        .select(["DATE", "joint_bucket", "logIV"])
+        .pivot(on="joint_bucket", index="DATE", values="logIV")
+        .sort("DATE")
+    )
+    sorted_bucket_cols = sorted([c for c in logiv_matrix.columns if c != "DATE"])
+    logiv_matrix = logiv_matrix.select(["DATE"] + sorted_bucket_cols)
+    logiv_matrix.write_parquet("data/"+ subfolder +"/put/bucket_matrix.parquet")
     del logiv_matrix
     gc.collect()
-    data = data[model_columns]
-    data.to_parquet("data/"+ subfolder +"/put/bucket.parquet")
+
+    data.select(model_columns).write_parquet("data/"+ subfolder +"/put/bucket.parquet")
 
 if __name__ == "__main__":
     main()
