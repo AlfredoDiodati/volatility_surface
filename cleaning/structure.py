@@ -73,7 +73,7 @@ def main():
     del logiv_matrix
     gc.collect()
 
-    data.select(model_columns).write_parquet("data/"+ subfolder +"/put/bucket.parquet")
+    data.sort("DATE").select(model_columns).write_parquet("data/"+ subfolder +"/put/bucket.parquet")
 
 if __name__ == "__main__":
     main()

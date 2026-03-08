@@ -144,6 +144,9 @@ def main():
     if filtered_writer is not None: filtered_writer.close()
     if final_writer is not None: final_writer.close()
 
+    pl.read_parquet(filtered_path).sort("DATE").write_parquet(filtered_path)
+    pl.read_parquet(final_path).sort("DATE").write_parquet(final_path)
+
     put_checks_sum.write_parquet(checks_path)
 
 if __name__ == "__main__":
