@@ -8,8 +8,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-DATASET_PATH = Path("data/SPY/put/bucket.parquet")
-OUTPUT_DIR = Path("plot/SPY/put/ergod")
+DATASET_PATH = Path("data/SPX/put/bucket.parquet")
+OUTPUT_DIR = Path("plot/SPX/put/ergod")
 BASELINE_MEMBER_LABEL = "baseline"
 CONFIDENCE_Z = 1.96
 

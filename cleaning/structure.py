@@ -47,11 +47,12 @@ def main():
         pl.exclude("joint_bucket_" + sorted(data["joint_bucket"].drop_nulls().unique().to_list())[0])
     )
     bj_dummies = bj_dummies.rename({c: "bucket_" + c.split("joint_bucket_", 1)[1] for c in bj_dummies.columns})
+    bj_dummies = bj_dummies.with_columns(pl.col(c).cast(pl.Boolean) for c in bj_dummies.columns)
     bjcol_list = bj_dummies.columns
     data = pl.concat([data, bj_dummies], how="horizontal")
 
     model_columns = ["DATE", "logIV", "level", "moneyness", "moneyness2", "maturity", "interaction"] + bjcol_list
-    full_model = data.select(model_columns)
+    full_model = data.sort("DATE").select(model_columns)
     full_model.write_parquet("data/"+ subfolder +"/put/full.parquet")
     del full_model
     gc.collect()
