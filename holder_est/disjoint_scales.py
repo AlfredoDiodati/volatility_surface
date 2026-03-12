@@ -22,6 +22,10 @@ def main():
     scalings = {}
 
     for label in data.columns:
+        col = data[label]
+        print(f"{label}: {col.notna().sum()} valid out of {len(col)}")
+
+    for label in data.columns:
         column = data[label].replace(0, np.nan)
         scaling_dict = moment_scaling(column, 1.0, 126.0, moments)
         dt = scaling_dict["delta_ts"]
@@ -58,12 +62,24 @@ def main():
     plt.figure()
     plt.plot(moments, holder_bm, color="black", linestyle="--")
     for label in scalings.keys():
-        plt.plot(moments, scalings[label])
+        plt.plot(moments, scalings[label], label = label)
     plt.ylabel(r"$\tau(q)$")
     plt.xlabel(r"$q$")
     plt.xlim((moments[0], moments[-1]))
     plt.ylim((None, 1.0))
-    plt.savefig("plot/" + subfolder + "/put/moments" + "_scaling_"+".pdf")
+    plt.legend()
+    plt.savefig("plot/" + subfolder + "/put/moments_scaling_legend.pdf")
+    plt.close()
+
+    plt.figure()
+    plt.plot(moments, holder_bm, color="black", linestyle="--")
+    for label in scalings.keys():
+        plt.plot(moments, scalings[label], label = label)
+    plt.ylabel(r"$\tau(q)$")
+    plt.xlabel(r"$q$")
+    plt.xlim((moments[0], moments[-1]))
+    plt.ylim((None, 1.0))
+    plt.savefig("plot/" + subfolder + "/put/moments_scaling.pdf")
     plt.close()
 
 if __name__ == "__main__":

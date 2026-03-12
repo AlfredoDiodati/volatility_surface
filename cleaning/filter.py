@@ -10,7 +10,6 @@ def main():
         to account for volatility.
         price_LT005 removes too many observations so it is kept in
         TODO: check relative frequency of excluded observations, group by year
-        create new buckets for DATM
     """
     subfolder = "SPX"
     filtered_path = "data/" +subfolder+ "/put/checks.parquet"
