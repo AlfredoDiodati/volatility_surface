@@ -22,7 +22,7 @@ def main():
     scalings = {}
 
     for label in data.columns:
-        column = data[label]
+        column = data[label].replace(0, np.nan)
         scaling_dict = moment_scaling(column, 1.0, 126.0, moments)
         dt = scaling_dict["delta_ts"]
 

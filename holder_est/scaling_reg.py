@@ -12,7 +12,11 @@ def _partition(x: np.ndarray, delta_t: int) -> np.ndarray:
 
 def _expected_power_variation(x_spaced: np.ndarray, q: float) -> float:
     coarse_inc = x_spaced[1:, 0] - x_spaced[:-1, 0]
-    return np.nansum(np.abs(coarse_inc) ** q)
+    valid = np.isfinite(coarse_inc)
+    n_valid = valid.sum()
+    if n_valid == 0:
+        return np.nan
+    return np.nansum(np.abs(coarse_inc[valid]) ** q) / n_valid
 
 def _make_time_lags(minf, maxf, factor=1.1) -> np.ndarray:
     n = (np.log(maxf) - np.log(minf)) / np.log(factor)
@@ -33,10 +37,13 @@ def moment_scaling(x, minf, maxf, qs:np.ndarray, factor = 1.1)->dict:
         if np.any(bad):
             print("bad power_var at q=", q, "delta_ts=", delta_ts[bad], "raw=", power_var[bad])
 
-        lt = log_t - log_t.mean()
-        lp = log_power_var - log_power_var.mean()
-        holder = np.sum(lt * lp) / np.sum(lt**2)
-        intercept = log_power_var.mean() - holder * log_t.mean()
+        good = np.isfinite(log_power_var)
+        log_t_fit = log_t[good]
+        log_pv_fit = log_power_var[good]
+        lt = log_t_fit - log_t_fit.mean()
+        lp = log_pv_fit - log_pv_fit.mean()
+        holder = np.sum(lt * lp) / np.sum(lt**2) - 1.0
+        intercept = log_pv_fit.mean() - holder * log_t_fit.mean()
 
         out[q] = {
                 "log_power_var": log_power_var,
