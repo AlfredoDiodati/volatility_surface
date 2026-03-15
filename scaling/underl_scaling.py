@@ -9,7 +9,6 @@ def main():
     subfolder = "SPX"
     plot_dir = Path("plot") / subfolder / "underlying"
     plot_dir.mkdir(parents=True, exist_ok=True)
-    
     underlying_series = pl.read_parquet("data/" + subfolder + "/put/underlying.parquet")
     log_price = underlying_series["UNDERLYING_LAST"].log().to_numpy()
     moments = np.arange(1, 9) / 2
@@ -19,20 +18,23 @@ def main():
     scaling_dict = moment_scaling(log_price, 1.0, 126.0, moments)
     dt = scaling_dict["delta_ts"]
     
+    plt.figure()
     for x in tick_days:
         plt.axvline(x, linestyle="--", linewidth=0.8, color="black")
     ax = plt.gca()
+    ax.set_xscale('log')
+    ax.set_yscale('log')
     ax.xaxis.set_major_locator(FixedLocator(tick_days))
     ax.xaxis.set_major_formatter(FixedFormatter(tick_labels))
     holder = []
     for q in moments:
         holder.append(scaling_dict[q]["holder"])
         y = scaling_dict[q]["shifted_power_var"]
-        line, = plt.plot(dt, y)
-        plt.text(dt[-1]*1.01, y[-1], f"q={q}", color=line.get_color(), va="center", fontsize=9)
+        y_exp = np.exp(y)
+        line, = plt.loglog(dt, y_exp)
+        plt.text(dt[-1]*1.01, y_exp[-1], f"q={q}", color=line.get_color(), va="center", fontsize=9)
     plt.ylabel(r"$S(q, \Delta t)$")
     plt.xlabel(r"$\Delta t$")
-    plt.xlim((dt[0], dt[-1]+15))
     plt.xticks(rotation=0, ha="right")
     plt.savefig(str(plot_dir / "scaling_logprice.pdf"))
     plt.close()
@@ -51,24 +53,26 @@ def main():
     
     realized_variance_series = pl.read_csv("data/" + subfolder + "/rv_dataset.csv")
     realized_variance = realized_variance_series[".SPX"].to_numpy()
-    
     scaling_dict_rv = moment_scaling(realized_variance, 1.0, 126.0, moments)
     dt_rv = scaling_dict_rv["delta_ts"]
     
+    plt.figure()
     for x in tick_days:
         plt.axvline(x, linestyle="--", linewidth=0.8, color="black")
     ax = plt.gca()
+    ax.set_xscale('log')
+    ax.set_yscale('log')
     ax.xaxis.set_major_locator(FixedLocator(tick_days))
     ax.xaxis.set_major_formatter(FixedFormatter(tick_labels))
     holder_rv = []
     for q in moments:
         holder_rv.append(scaling_dict_rv[q]["holder"])
         y = scaling_dict_rv[q]["shifted_power_var"]
-        line, = plt.plot(dt_rv, y)
-        plt.text(dt_rv[-1]*1.01, y[-1], f"q={q}", color=line.get_color(), va="center", fontsize=9)
+        y_exp = np.exp(y)
+        line, = plt.loglog(dt_rv, y_exp)
+        plt.text(dt_rv[-1]*1.01, y_exp[-1], f"q={q}", color=line.get_color(), va="center", fontsize=9)
     plt.ylabel(r"$S(q, \Delta t)$")
     plt.xlabel(r"$\Delta t$")
-    plt.xlim((dt_rv[0], dt_rv[-1]+15))
     plt.xticks(rotation=0, ha="right")
     plt.savefig(str(plot_dir / "scaling_realized_variance.pdf"))
     plt.close()

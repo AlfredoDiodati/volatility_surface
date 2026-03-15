@@ -112,5 +112,47 @@ def main():
     plt.savefig("plot/" + subfolder + "/put/scaling/moments_scaling.pdf")
     plt.close()
 
+    underlying_series = pd.read_parquet("data/" + subfolder + "/put/underlying.parquet")
+    log_price = np.log(underlying_series["UNDERLYING_LAST"].to_numpy())
+    
+    scaling_dict_underlying = moment_scaling(log_price, 1.0, 126.0, moments)
+    dt_underlying = scaling_dict_underlying["delta_ts"]
+    y_underlying = scaling_dict_underlying[moments[0]]["shifted_power_var"]
+    y_underlying_exp = np.exp(y_underlying)
+    
+    bucket_labels = sorted([label for label in data.columns if label != 'DATE'])
+    n_maturities = len(set([label.split('_')[0] for label in bucket_labels]))
+    n_moneyness = len(set([label.split('_')[1] for label in bucket_labels]))
+    
+    fig, axes = plt.subplots(n_maturities, n_moneyness, figsize=(16, 12))
+    fig.suptitle('IV Scaling by Maturity-Moneyness Bucket', fontsize=14)
+    
+    for idx, label in enumerate(bucket_labels):
+        row = idx // n_moneyness
+        col = idx % n_moneyness
+        ax = axes[row, col]
+        
+        column = data[label].replace(0, np.nan)
+        scaling_dict_iv = moment_scaling(column, 1.0, 126.0, moments)
+        dt_iv = scaling_dict_iv["delta_ts"]
+        
+        for q in moments:
+            y_iv = scaling_dict_iv[q]["shifted_power_var"]
+            y_iv_exp = np.exp(y_iv)
+            ax.loglog(dt_iv, y_iv_exp, color='steelblue', alpha=0.6, linewidth=1.0)
+        
+        ax.loglog(dt_underlying, y_underlying_exp, color='red', linewidth=2.0, label='Underlying', zorder=10)
+        
+        ax.set_xlabel(r'$\Delta t$', fontsize=9)
+        ax.set_ylabel(r'$S(q, \Delta t)$', fontsize=9)
+        ax.set_title(label, fontsize=10)
+        ax.tick_params(labelsize=8)
+        ax.legend(loc='lower right', fontsize=8)
+        ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig("plot/" + subfolder + "/put/scaling/panel_iv_vs_underlying.pdf", dpi=100)
+    plt.close()
+
 if __name__ == "__main__":
     main()
