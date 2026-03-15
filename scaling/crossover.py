@@ -4,8 +4,18 @@ from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-def rolling_variance(series, window):
-    return series.rolling(window=window).var()
+def block_variance(series, window):
+    n = len(series)
+    n_blocks = n // window
+    variance_values = []
+    
+    for i in range(n_blocks):
+        start = i * window
+        end = (i + 1) * window
+        var = series.iloc[start:end].var()
+        variance_values.append(var)
+    
+    return pd.Series(variance_values)
 
 def autocorrelation_variance(variance_series, max_lag):
     var_mean = variance_series.mean()
@@ -30,7 +40,7 @@ def estimate_nu_from_bucket(iv_values, variance_window=20, fit_start_lag=10, fit
         iv_series = iv_values.copy()
     
     iv_increments = iv_series.diff().dropna()
-    realized_var = rolling_variance(iv_increments, variance_window).dropna()
+    realized_var = block_variance(iv_increments, variance_window)
     
     if len(realized_var) < max_lag + 1:
         max_lag = len(realized_var) // 2

@@ -1,4 +1,4 @@
 Bucket: mat4_mon1
-Estimated nu: -0.021293
-Amplitude: 0.952043
-Fit range: lags 5 to 99
+Estimated nu: 0.526319
+Amplitude: 4.480496
+Fit range: lags 5 to 33
