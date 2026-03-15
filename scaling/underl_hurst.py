@@ -146,7 +146,7 @@ def main():
     underlying_data = load_underlying_series(parquet_file)
     
     dates_series = underlying_data["DATE"].to_list()
-    price_series = underlying_data["UNDERLYING_LAST"].to_numpy()
+    price_series = underlying_data["UNDERLYING_LAST"]
     
     log_buffer.write(f"Loaded {len(price_series)} observations from {dates_series[0]} to {dates_series[-1]}\n")
     log_buffer.write(f"Price range: [{price_series.min():.2f}, {price_series.max():.2f}]\n\n")
