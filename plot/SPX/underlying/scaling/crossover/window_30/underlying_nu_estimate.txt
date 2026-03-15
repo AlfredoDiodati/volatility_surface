@@ -1,4 +1,0 @@
-Bucket: underlying
-Estimated nu: 0.148362
-Amplitude: 1.514813
-Fit range: lags 5 to 56
