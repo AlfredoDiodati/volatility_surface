@@ -116,42 +116,79 @@ def main():
     log_price = np.log(underlying_series["UNDERLYING_LAST"].to_numpy())
     
     scaling_dict_underlying = moment_scaling(log_price, 1.0, 126.0, moments)
-    dt_underlying = scaling_dict_underlying["delta_ts"]
-    y_underlying = scaling_dict_underlying[moments[0]]["shifted_power_var"]
-    y_underlying_exp = np.exp(y_underlying)
+    underlying_tau = np.array([scaling_dict_underlying[q]["holder"] for q in moments])
     
     bucket_labels = sorted([label for label in data.columns if label != 'DATE'])
-    n_maturities = len(set([label.split('_')[0] for label in bucket_labels]))
-    n_moneyness = len(set([label.split('_')[1] for label in bucket_labels]))
+    moneyness_groups = sorted(set([label.split('_')[1] for label in bucket_labels]))
+    maturity_groups = sorted(set([label.split('_')[0] for label in bucket_labels]))
     
-    fig, axes = plt.subplots(n_maturities, n_moneyness, figsize=(16, 12))
-    fig.suptitle('IV Scaling by Maturity-Moneyness Bucket', fontsize=14)
+    fig, axes = plt.subplots(1, len(moneyness_groups), figsize=(18, 4))
+    if len(moneyness_groups) == 1:
+        axes = [axes]
     
-    for idx, label in enumerate(bucket_labels):
-        row = idx // n_moneyness
-        col = idx % n_moneyness
-        ax = axes[row, col]
+    fig.suptitle(r'$\tau(q)$ vs $q$ by Moneyness (Maturities in Blue)', fontsize=12)
+    
+    holder_bm = moments / 2.0 - 1.0
+    blue_colors = plt.cm.Blues(np.linspace(0.4, 0.9, len(maturity_groups)))
+    
+    for mon_idx, moneyness in enumerate(moneyness_groups):
+        ax = axes[mon_idx]
         
-        column = data[label].replace(0, np.nan)
-        scaling_dict_iv = moment_scaling(column, 1.0, 126.0, moments)
-        dt_iv = scaling_dict_iv["delta_ts"]
+        ax.plot(moments, holder_bm, color='black', linestyle='--', linewidth=2.0, label='Brownian Motion', zorder=5)
+        ax.plot(moments, underlying_tau, color='red', linewidth=2.0, label='Underlying', zorder=5)
         
-        for q in moments:
-            y_iv = scaling_dict_iv[q]["shifted_power_var"]
-            y_iv_exp = np.exp(y_iv)
-            ax.loglog(dt_iv, y_iv_exp, color='steelblue', alpha=0.6, linewidth=1.0)
+        for mat_idx, maturity in enumerate(maturity_groups):
+            label = f"{maturity}_{moneyness}"
+            if label in data.columns:
+                column = data[label].replace(0, np.nan)
+                scaling_dict_iv = moment_scaling(column, 1.0, 126.0, moments)
+                iv_tau = np.array([scaling_dict_iv[q]["holder"] for q in moments])
+                ax.plot(moments, iv_tau, color=blue_colors[mat_idx], linewidth=1.5, label=maturity, alpha=0.8)
         
-        ax.loglog(dt_underlying, y_underlying_exp, color='red', linewidth=2.0, label='Underlying', zorder=10)
-        
-        ax.set_xlabel(r'$\Delta t$', fontsize=9)
-        ax.set_ylabel(r'$S(q, \Delta t)$', fontsize=9)
-        ax.set_title(label, fontsize=10)
-        ax.tick_params(labelsize=8)
-        ax.legend(loc='lower right', fontsize=8)
+        ax.set_xlabel(r'$q$', fontsize=10)
+        ax.set_ylabel(r'$\tau(q)$', fontsize=10)
+        ax.set_title(f'Moneyness: {moneyness}', fontsize=11)
+        ax.set_xlim((moments[0], moments[-1]))
+        ax.set_ylim((-0.8, 1.0))
+        ax.legend(loc='upper left', fontsize=9)
         ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig("plot/" + subfolder + "/put/scaling/panel_iv_vs_underlying.pdf", dpi=100)
+    plt.savefig("plot/" + subfolder + "/put/scaling/panel_tau_by_moneyness.pdf", dpi=100)
+    plt.close()
+    
+    fig, axes = plt.subplots(1, len(maturity_groups), figsize=(18, 4))
+    if len(maturity_groups) == 1:
+        axes = [axes]
+    
+    fig.suptitle(r'$\tau(q)$ vs $q$ by Maturity (Moneyness in Blue)', fontsize=12)
+    
+    blue_colors = plt.cm.Blues(np.linspace(0.4, 0.9, len(moneyness_groups)))
+    
+    for mat_idx, maturity in enumerate(maturity_groups):
+        ax = axes[mat_idx]
+        
+        ax.plot(moments, holder_bm, color='black', linestyle='--', linewidth=2.0, label='Brownian Motion', zorder=5)
+        ax.plot(moments, underlying_tau, color='red', linewidth=2.0, label='Underlying', zorder=5)
+        
+        for mon_idx, moneyness in enumerate(moneyness_groups):
+            label = f"{maturity}_{moneyness}"
+            if label in data.columns:
+                column = data[label].replace(0, np.nan)
+                scaling_dict_iv = moment_scaling(column, 1.0, 126.0, moments)
+                iv_tau = np.array([scaling_dict_iv[q]["holder"] for q in moments])
+                ax.plot(moments, iv_tau, color=blue_colors[mon_idx], linewidth=1.5, label=moneyness, alpha=0.8)
+        
+        ax.set_xlabel(r'$q$', fontsize=10)
+        ax.set_ylabel(r'$\tau(q)$', fontsize=10)
+        ax.set_title(f'Maturity: {maturity}', fontsize=11)
+        ax.set_xlim((moments[0], moments[-1]))
+        ax.set_ylim((-0.8, 1.0))
+        ax.legend(loc='upper left', fontsize=9)
+        ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig("plot/" + subfolder + "/put/scaling/panel_tau_by_maturity.pdf", dpi=100)
     plt.close()
 
 if __name__ == "__main__":
