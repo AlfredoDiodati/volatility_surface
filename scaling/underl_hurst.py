@@ -183,6 +183,8 @@ def main():
     with redirect_stdout(hurst_output_buffer):
         hurst_results = estimate_hurst_from_volatility(
             log_volatility_series,
+            price_input=price_series,
+            realized_variance_input=realized_variance_series,
             verbose=True
         )
     

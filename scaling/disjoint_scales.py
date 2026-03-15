@@ -39,11 +39,13 @@ def main():
         holder = []
         for q in moments:
             holder.append(scaling_dict[q]["holder"])
-            y = scaling_dict[q]["shifted_power_var"]
-            line, = plt.plot(dt, y)
+            y_adjusted = scaling_dict[q]["shifted_power_var"]
+            y_raw = scaling_dict[q]["log_power_var"]
+            line, = plt.plot(dt, y_adjusted)
+            plt.plot(dt, y_raw, linestyle=":", color=line.get_color(), linewidth=0.8)
             plt.text(
                 dt[-1]*1.01,
-                y[-1],
+                y_adjusted[-1],
                 f"q={q}",
                 color=line.get_color(),
                 va="center",
@@ -53,7 +55,7 @@ def main():
         plt.xlabel(r"$\Delta t$")
         plt.xlim((dt[0], dt[-1]+15))
         plt.xticks(rotation=0, ha="right")
-        plt.savefig("plot/" + subfolder + "/put/scaling" + label + ".pdf")
+        plt.savefig("plot/" + subfolder + "/put/scaling/scaling_" + label + ".pdf")
         plt.close()
 
         scalings[label] = np.array(holder)
@@ -68,7 +70,7 @@ def main():
     plt.xlim((moments[0], moments[-1]))
     plt.ylim((None, 1.0))
     plt.legend()
-    plt.savefig("plot/" + subfolder + "/put/moments_scaling_legend.pdf")
+    plt.savefig("plot/" + subfolder + "/put/scaling/moments_scaling_legend.pdf")
     plt.close()
 
     plt.figure()
@@ -79,7 +81,7 @@ def main():
     plt.xlabel(r"$q$")
     plt.xlim((moments[0], moments[-1]))
     plt.ylim((None, 1.0))
-    plt.savefig("plot/" + subfolder + "/put/moments_scaling.pdf")
+    plt.savefig("plot/" + subfolder + "/put/scaling/moments_scaling.pdf")
     plt.close()
 
 if __name__ == "__main__":
