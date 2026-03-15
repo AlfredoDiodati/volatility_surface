@@ -30,22 +30,24 @@ def main():
         scaling_dict = moment_scaling(column, 1.0, 126.0, moments)
         dt = scaling_dict["delta_ts"]
 
+        plt.figure()
         for x in tick_days:
             plt.axvline(x, linestyle="--", linewidth=0.8, color="black")
 
         ax = plt.gca()
+        ax.set_xscale('log')
+        ax.set_yscale('log')
         ax.xaxis.set_major_locator(FixedLocator(tick_days))
         ax.xaxis.set_major_formatter(FixedFormatter(tick_labels))
         holder = []
         for q in moments:
             holder.append(scaling_dict[q]["holder"])
             y_adjusted = scaling_dict[q]["shifted_power_var"]
-            y_raw = scaling_dict[q]["log_power_var"]
-            line, = plt.plot(dt, y_adjusted)
-            plt.plot(dt, y_raw, linestyle=":", color=line.get_color(), linewidth=0.8)
+            y_adjusted_exp = np.exp(y_adjusted)
+            line, = plt.loglog(dt, y_adjusted_exp)
             plt.text(
                 dt[-1]*1.01,
-                y_adjusted[-1],
+                y_adjusted_exp[-1],
                 f"q={q}",
                 color=line.get_color(),
                 va="center",
@@ -53,9 +55,35 @@ def main():
             
         plt.ylabel(r"$S(q, \Delta t)$")
         plt.xlabel(r"$\Delta t$")
-        plt.xlim((dt[0], dt[-1]+15))
         plt.xticks(rotation=0, ha="right")
-        plt.savefig("plot/" + subfolder + "/put/scaling/scaling_" + label + ".pdf")
+        plt.savefig("plot/" + subfolder + "/put/scaling/scaling" + label + ".pdf")
+        plt.close()
+
+        plt.figure()
+        for x in tick_days:
+            plt.axvline(x, linestyle="--", linewidth=0.8, color="black")
+
+        ax = plt.gca()
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.xaxis.set_major_locator(FixedLocator(tick_days))
+        ax.xaxis.set_major_formatter(FixedFormatter(tick_labels))
+        for q in moments:
+            y_raw = scaling_dict[q]["log_power_var"]
+            y_raw_exp = np.exp(y_raw)
+            line, = plt.loglog(dt, y_raw_exp)
+            plt.text(
+                dt[-1]*1.01,
+                y_raw_exp[-1],
+                f"q={q}",
+                color=line.get_color(),
+                va="center",
+                fontsize=9)
+            
+        plt.ylabel(r"$S(q, \Delta t)$")
+        plt.xlabel(r"$\Delta t$")
+        plt.xticks(rotation=0, ha="right")
+        plt.savefig("plot/" + subfolder + "/put/scaling/scaling_raw" + label + ".pdf")
         plt.close()
 
         scalings[label] = np.array(holder)
