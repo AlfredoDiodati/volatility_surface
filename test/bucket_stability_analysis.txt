@@ -1,0 +1,185 @@
+================================================================================
+BUCKETING STABILITY ANALYSIS
+================================================================================
+
+MAT1:
+--------------------------------------------------------------------------------
+
+  mon2:
+    Observations selected: 3490
+    Days with >= 1 observation: 3490
+    Candidate pool size: 860495 (247x selected)
+    Selected moneyness: 0.967624 +/- 0.012277
+      Range: [0.872760, 0.987005]
+    Candidate pool moneyness: 0.961866 +/- 0.021979
+    Avg distance to delta midpoint: selected=1.217624, candidates=1.211866
+
+  mon3:
+    Observations selected: 3487
+    Days with >= 1 observation: 3487
+    Candidate pool size: 259817 (75x selected)
+    Selected moneyness: 0.993340 +/- 0.003136
+      Range: [0.925781, 1.000052]
+    Candidate pool moneyness: 0.993244 +/- 0.005879
+    Avg distance to delta midpoint: selected=1.430840, candidates=1.430744
+
+  mon4:
+    Observations selected: 3487
+    Days with >= 1 observation: 3487
+    Candidate pool size: 1065540 (306x selected)
+    Selected moneyness: 1.023338 +/- 0.011751
+      Range: [0.956988, 1.149134]
+    Candidate pool moneyness: 1.049243 +/- 0.061081
+    Avg distance to delta midpoint: selected=1.773338, candidates=1.799243
+
+MAT2:
+--------------------------------------------------------------------------------
+
+  mon1:
+    Observations selected: 3486
+    Days with >= 1 observation: 3486
+    Candidate pool size: 1128497 (324x selected)
+    Selected moneyness: 0.839979 +/- 0.040369
+      Range: [0.653945, 0.903186]
+    Candidate pool moneyness: 0.760401 +/- 0.117677
+    Avg distance to delta midpoint: selected=0.902479, candidates=0.822901
+
+  mon2:
+    Observations selected: 3489
+    Days with >= 1 observation: 3489
+    Candidate pool size: 499252 (143x selected)
+    Selected moneyness: 0.945472 +/- 0.016627
+      Range: [0.796263, 0.973141]
+    Candidate pool moneyness: 0.935337 +/- 0.031398
+    Avg distance to delta midpoint: selected=1.195472, candidates=1.185337
+
+  mon3:
+    Observations selected: 3485
+    Days with >= 1 observation: 3485
+    Candidate pool size: 141121 (40x selected)
+    Selected moneyness: 0.989606 +/- 0.003588
+      Range: [0.974030, 1.002189]
+    Candidate pool moneyness: 0.989533 +/- 0.008565
+    Avg distance to delta midpoint: selected=1.427106, candidates=1.427033
+
+  mon4:
+    Observations selected: 3485
+    Days with >= 1 observation: 3485
+    Candidate pool size: 489267 (140x selected)
+    Selected moneyness: 1.038887 +/- 0.016991
+      Range: [1.013253, 1.221864]
+    Candidate pool moneyness: 1.062313 +/- 0.071692
+    Avg distance to delta midpoint: selected=1.788887, candidates=1.812313
+
+MAT3:
+--------------------------------------------------------------------------------
+
+  mon1:
+    Observations selected: 3489
+    Days with >= 1 observation: 3489
+    Candidate pool size: 852774 (244x selected)
+    Selected moneyness: 0.772617 +/- 0.046423
+      Range: [0.564539, 0.866307]
+    Candidate pool moneyness: 0.683437 +/- 0.142927
+    Avg distance to delta midpoint: selected=0.835117, candidates=0.745937
+
+  mon2:
+    Observations selected: 3487
+    Days with >= 1 observation: 3487
+    Candidate pool size: 598236 (172x selected)
+    Selected moneyness: 0.921702 +/- 0.019296
+      Range: [0.738545, 0.958630]
+    Candidate pool moneyness: 0.908655 +/- 0.042808
+    Avg distance to delta midpoint: selected=1.171702, candidates=1.158655
+
+  mon3:
+    Observations selected: 3484
+    Days with >= 1 observation: 3484
+    Candidate pool size: 179180 (51x selected)
+    Selected moneyness: 0.985971 +/- 0.006269
+      Range: [0.959640, 1.006382]
+    Candidate pool moneyness: 0.987790 +/- 0.012807
+    Avg distance to delta midpoint: selected=1.423471, candidates=1.425290
+
+  mon4:
+    Observations selected: 3485
+    Days with >= 1 observation: 3485
+    Candidate pool size: 473006 (136x selected)
+    Selected moneyness: 1.056760 +/- 0.022641
+      Range: [1.019271, 1.259268]
+    Candidate pool moneyness: 1.074731 +/- 0.077449
+    Avg distance to delta midpoint: selected=1.806760, candidates=1.824731
+
+MAT4:
+--------------------------------------------------------------------------------
+
+  mon1:
+    Observations selected: 3491
+    Days with >= 1 observation: 3491
+    Candidate pool size: 651488 (187x selected)
+    Selected moneyness: 0.690903 +/- 0.049666
+      Range: [0.454142, 0.779084]
+    Candidate pool moneyness: 0.583161 +/- 0.154498
+    Avg distance to delta midpoint: selected=0.753403, candidates=0.645661
+
+  mon2:
+    Observations selected: 3485
+    Days with >= 1 observation: 3485
+    Candidate pool size: 355375 (102x selected)
+    Selected moneyness: 0.890689 +/- 0.021183
+      Range: [0.802246, 0.941511]
+    Candidate pool moneyness: 0.872803 +/- 0.056999
+    Avg distance to delta midpoint: selected=1.140689, candidates=1.122803
+
+  mon3:
+    Observations selected: 3485
+    Days with >= 1 observation: 3485
+    Candidate pool size: 101759 (29x selected)
+    Selected moneyness: 0.982153 +/- 0.009940
+      Range: [0.951762, 1.016865]
+    Candidate pool moneyness: 0.985565 +/- 0.018785
+    Avg distance to delta midpoint: selected=1.419653, candidates=1.423065
+
+  mon4:
+    Observations selected: 3485
+    Days with >= 1 observation: 3485
+    Candidate pool size: 273866 (79x selected)
+    Selected moneyness: 1.083150 +/- 0.030085
+      Range: [1.032178, 1.298750]
+    Candidate pool moneyness: 1.099935 +/- 0.085123
+    Avg distance to delta midpoint: selected=1.833150, candidates=1.849935
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+mon1 (ATM, delta_midpoint=-0.0625):
+  Avg candidate pool ratio: 251.6x
+  Avg moneyness scatter: 0.045486
+  Avg distance from delta midpoint: 0.830333
+
+mon4 (deep OTM, delta_midpoint=-0.75):
+  Avg candidate pool ratio: 165.1x
+  Avg moneyness scatter: 0.020367
+  Avg distance from delta midpoint: 1.800534
+
+Stability comparison:
+  Pool ratio (mon1/mon4): 1.52x
+  Scatter (mon1/mon4): 2.23x
+  Delta distance (mon1/mon4): 0.46x
+
+mon1 is UNSTABLE: >2x scatter of mon4 - bucketing artifact likely
+
+
+Yes, it's due to bucketing—but not a selection failure, a design flaw.
+The bucketing algorithm works correctly: mon1 selected options ARE closer to the delta target (-0.0625) than mon4 are to theirs (-0.75). The algorithm picked well.
+The problem is the bucketing criterion itself:
+At ATM (delta ≈ -0.0625), the delta curve is flat. Small moneyness changes = small delta changes. So the closeness metric can't distinguish between options with quite different moneyness, as long as they have similar delta.
+Result: moneyness scatter in mon1 is 2.23x higher than mon4, even though selection is working correctly.
+This is a bucketing design issue, not a data quality issue:
+
+Delta-based bucketing works well for deep OTM (delta curve steep) → mon4 is stable
+Delta-based bucketing fails at ATM (delta curve flat) → mon1 is inherently unstable
+
+Your tau(q) curves are unstable across maturity because the buckets contain genuinely heterogeneous contracts (different moneyness, similar delta). This is exactly what you observed in the panels.
+Bottom line: Don't blame the data or the algorithm. Blame the bucketing design. If you want stable mon1 buckets, you need a bucketing criterion that works at ATM—probably moneyness-based rather than delta-based for that region.
