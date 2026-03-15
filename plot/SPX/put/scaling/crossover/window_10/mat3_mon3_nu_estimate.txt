@@ -1,0 +1,4 @@
+Bucket: mat3_mon3
+Estimated nu: -0.004517
+Amplitude: 0.997591
+Fit range: lags 5 to 99
