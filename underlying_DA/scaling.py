@@ -1,4 +1,4 @@
-from scaling_reg import moment_scaling
+from scaling.scaling_reg import moment_scaling
 import polars as pl
 import numpy as np
 import matplotlib.pyplot as plt
