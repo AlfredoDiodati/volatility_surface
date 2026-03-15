@@ -19,16 +19,19 @@ def load_and_reshape(path: str) -> tuple[np.ndarray, np.ndarray]:
     )
 
     dates = raw["DATE"].unique(maintain_order=True).sort().to_list()
-    T     = len(dates)
-    N     = raw.filter(pl.col("DATE") == dates[0]).height
+    T = len(dates)
 
-    log_iv_matrix   = np.full((T, N),    np.nan, dtype=np.float64)
-    covariates_cube = np.zeros((T, N, P), dtype=np.float64)
+    full_grid = raw.select(FACTOR_LOADING_COLS).unique().sort(FACTOR_LOADING_COLS)
+    N = full_grid.height
+
+    log_iv_matrix = np.full((T, N), np.nan, dtype=np.float64)
+    covariates_cube = np.full((T, N, P), np.nan, dtype=np.float64)
 
     for t, date in enumerate(dates):
-        slice_t                = raw.filter(pl.col("DATE") == date)
-        log_iv_matrix[t]       = slice_t["logIV"].to_numpy()
-        covariates_cube[t]     = slice_t[FACTOR_LOADING_COLS].to_numpy()
+        slice_t = raw.filter(pl.col("DATE") == date)
+        joined = full_grid.join(slice_t, on=FACTOR_LOADING_COLS, how="left")
+        log_iv_matrix[t] = joined["logIV"].to_numpy()
+        covariates_cube[t] = joined[FACTOR_LOADING_COLS].to_numpy()
 
     return log_iv_matrix, covariates_cube
 

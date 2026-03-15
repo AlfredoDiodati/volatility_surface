@@ -1,0 +1,31 @@
+Unconditional Return Statistics:
+  mean: 0.00041127
+  std: 0.01107394
+  skewness: -0.73898998
+  kurtosis: 13.30458160
+  min: -0.12809265
+  max: 0.09015488
+  count: 3489
+
+Conditional on Positive Previous Return:
+  mean: 0.00019155
+  std: 0.00980804
+  skewness: -1.72582520
+  kurtosis: 18.77267100
+  min: -0.12809265
+  max: 0.05987728
+  count: 1893
+
+Conditional on Negative Previous Return:
+  mean: 0.00067189
+  std: 0.01240728
+  skewness: -0.16153270
+  kurtosis: 9.48618638
+  min: -0.10002067
+  max: 0.09015488
+  count: 1596
+
+Leverage Test - Correlation(squared return t, nonsquared return t+1):
+  Full sample: 0.03805483
+  After positive previous return: 0.06748946
+  After negative previous return: 0.01367564

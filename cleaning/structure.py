@@ -75,6 +75,8 @@ def main():
     gc.collect()
 
     data.sort("DATE").select(model_columns).write_parquet("data/"+ subfolder +"/put/bucket.parquet")
+    underlying_series = data.select(["DATE", "UNDERLYING_LAST"]).unique(subset=["DATE"], keep="first").sort("DATE")
+    underlying_series.write_parquet("data/"+ subfolder +"/put/underlying.parquet")
 
 if __name__ == "__main__":
     main()
