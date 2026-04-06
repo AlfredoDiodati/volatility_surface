@@ -66,7 +66,7 @@ initial_guess = {
 
 opt_options = {"maxiter": 400, "learning_rate": 1e-2, "tol": 1e-6}
 
-fitted = ss.fit(y, covariates, initial_guess, initialization, opt_options=opt_options)
+fitted = ss.fit_collapsed(y, covariates, initial_guess, initialization, opt_options=opt_options)
 
 bar_beta_hat = onp.asarray(jax.device_get(fitted["bar_beta"]))
 B_hat = onp.asarray(jax.device_get(fitted["B"]))
