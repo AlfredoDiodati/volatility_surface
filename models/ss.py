@@ -22,17 +22,6 @@ def fit(
 
     p = (initial_guess["Q_param"]).shape[0]
     pH = (initial_guess["H_param"]).shape[0]
-    def _cholesky_setup(dimension_of_matrix: int):
-        idx = np.tril_indices(dimension_of_matrix)
-        d = np.diag_indices(dimension_of_matrix)
-        return (d, idx)
-    dQ, idxQ = _cholesky_setup(p)
-    dH, idxH = _cholesky_setup(pH)
-    def _link_covariance(vector, idx, d, dimension_of_matrix: int):
-        cholesky = np.zeros((dimension_of_matrix, dimension_of_matrix), dtype=float)
-        cholesky = cholesky.at[idx].set(vector)
-        cholesky = cholesky.at[d].set(np.exp(cholesky[d]))
-        return cholesky @ cholesky.T
 
     def _link_stable_matrix(B_unconstrained: np.ndarray, n: int) -> np.ndarray:
         B_unconstrained = np.asarray(B_unconstrained, dtype=float)
@@ -60,8 +49,8 @@ def fit(
     def _link(unconstrained_params: np.ndarray) -> dict:
         unconstrained_params = np.asarray(unconstrained_params, dtype=float)
 
-        len_uncH = pH * (pH + 1) // 2
-        len_uncQ = p * (p + 1) // 2
+        len_uncH = 1
+        len_uncQ = p
         len_uncB = (p * (p - 1) // 2) + (p * (p - 1) // 2) + p
         start_H = 0
         end_H = start_H + len_uncH
@@ -74,21 +63,11 @@ def fit(
         unc_Q = unconstrained_params[start_Q:end_Q]
         unc_B = unconstrained_params[start_B:end_B]
         bar_beta = unconstrained_params[start_beta:]
-        H = _link_covariance(unc_H, idxH, dH, pH)
-        Q = _link_covariance(unc_Q, idxQ, dQ, p)
+        H = np.exp(unc_H[0])
+        Q = np.diag(np.exp(unc_Q))
         B = _link_stable_matrix(unc_B, p)
         ct = (np.eye(B.shape[0]) - B) @ bar_beta
         return {"Q_param": Q, "H_param": H, "B": B, "bar_beta": bar_beta, "ct": ct}
-
-    def _invlink_covariance(covariance: np.ndarray):
-        covariance = np.asarray(covariance, dtype=float)
-        L = np.linalg.cholesky(covariance)
-        i, j = np.tril_indices(L.shape[0])
-        v = L[i, j]
-        n = L.shape[0]
-        diag_positions = np.cumsum(np.arange(1, n + 1)) - 1
-        v = v.at[diag_positions].set(np.log(v[diag_positions]))
-        return v
 
     def _invlink_stable_matrix(B_constrained: np.ndarray, n: int) -> np.ndarray:
         B_constrained = np.asarray(B_constrained, dtype=float)
@@ -108,8 +87,8 @@ def fit(
         Q = constrained_params["Q_param"]
         B = constrained_params["B"]
         bar_beta = constrained_params["bar_beta"]
-        uncH = _invlink_covariance(H)
-        uncQ = _invlink_covariance(Q)
+        uncH = np.array([np.log(H[0,0])])
+        uncQ = np.log(np.diag(Q))
         uncB = _invlink_stable_matrix(B, p)
         params = np.concatenate([uncH, uncQ, uncB, bar_beta])
         return params
