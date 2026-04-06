@@ -49,18 +49,16 @@ def residual_variance(
     covariates_cube: np.ndarray,
     beta: np.ndarray) -> float:
     T, N, _ = covariates_cube.shape
-    fitted   = (covariates_cube.reshape(T * N, P) @ beta)
+    fitted = (covariates_cube.reshape(T * N, P) @ beta)
     residuals = log_iv_matrix.reshape(T * N) - fitted
     return float(np.var(residuals))
 
-def build_initial_guess(beta_ols: np.ndarray, sigma2: float) -> dict:
+def build_initial_guess(beta_ols: np.ndarray, sigma2: float, N: int) -> dict:
     B = 0.95 * np.eye(P, dtype=np.float64)
     bar_beta = beta_ols.copy()
-    ct = (np.eye(P) - B) @ bar_beta
     Q_param = np.diag(np.full(P, 1e-3, dtype=np.float64))
-    H_param = np.eye(P) * sigma2
-    return {"Q_param": Q_param,"H_param": H_param,
-        "B": B,"bar_beta": bar_beta, "ct": ct}
+    H_param = sigma2 * np.eye(N, dtype=np.float64)
+    return {"Q_param": Q_param, "H_param": H_param, "B": B, "bar_beta": bar_beta}
 
 def build_jax_initial_guess(initial_guess: dict) -> dict:
     return {k: jnp.array(v) for k, v in initial_guess.items()}
@@ -73,7 +71,7 @@ def diffuse_kalman_initialization(beta_ols: np.ndarray) -> tuple:
 def serialize_params(fit_output: dict) -> dict:
     serializable = {}
     for key, value in fit_output.items():
-        if hasattr(value, "tolist"):serializable[key] = value.tolist()
+        if hasattr(value, "tolist"): serializable[key] = value.tolist()
         else: serializable[key] = value
     return serializable
 
@@ -90,7 +88,7 @@ def main():
     print(f"  sigma2 (OLS residual) = {sigma2:.6f}")
 
     initial_guess = build_jax_initial_guess(
-        build_initial_guess(beta_ols, sigma2)
+        build_initial_guess(beta_ols, sigma2, N)
     )
     initialization = diffuse_kalman_initialization(beta_ols)
 

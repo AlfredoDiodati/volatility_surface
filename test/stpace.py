@@ -68,9 +68,6 @@ opt_options = {"maxiter": 400, "learning_rate": 1e-2, "tol": 1e-6}
 
 fitted = ss.fit(y, covariates, initial_guess, initialization, opt_options=opt_options)
 
-print("param        true                              estimated                         abs_err      rel_err")
-print("-" * 110)
-
 bar_beta_hat = onp.asarray(jax.device_get(fitted["bar_beta"]))
 B_hat = onp.asarray(jax.device_get(fitted["B"]))
 Q_hat = onp.asarray(jax.device_get(fitted["Q_param"]))
@@ -79,7 +76,6 @@ H_hat = onp.asarray(jax.device_get(fitted["H_param"]))
 bar_beta_true_ = onp.asarray(jax.device_get(bar_beta_true))
 B_true_ = onp.asarray(jax.device_get(B_true))
 Q_true_ = onp.asarray(jax.device_get(Q_true))
-H_true_ = onp.asarray(jax.device_get(H_true))
 
 print("param        true                              estimated                         abs_err      rel_err")
 print("-" * 110)
@@ -96,6 +92,6 @@ abs_err = float(onp.linalg.norm(onp.diag(Q_hat) - onp.diag(Q_true_)))
 rel_err = abs_err / (float(onp.linalg.norm(onp.diag(Q_true_))) + 1e-18)
 print(f"{'diag(Q)':<12} {onp.diag(Q_true_)} {onp.diag(Q_hat)} {abs_err:>10.6g} {rel_err:>10.6g}")
 
-abs_err = float(onp.linalg.norm(onp.diag(H_hat) - onp.diag(H_true_)))
-rel_err = abs_err / (float(onp.linalg.norm(onp.diag(H_true_))) + 1e-18)
-print(f"{'diag(H)':<12} {onp.diag(H_true_)} {onp.diag(H_hat)} {abs_err:>10.6g} {rel_err:>10.6g}")
+abs_err = float(abs(H_hat[0, 0] - sigma2_eps_true))
+rel_err = abs_err / (sigma2_eps_true + 1e-18)
+print(f"{'sigma2_eps':<12} {sigma2_eps_true} {H_hat[0, 0]} {abs_err:>10.6g} {rel_err:>10.6g}")

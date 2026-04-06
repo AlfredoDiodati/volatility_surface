@@ -63,7 +63,7 @@ def fit(
         unc_Q = unconstrained_params[start_Q:end_Q]
         unc_B = unconstrained_params[start_B:end_B]
         bar_beta = unconstrained_params[start_beta:]
-        H = np.exp(unc_H[0])
+        H = np.exp(unc_H[0]) * np.eye(pH, dtype=float)
         Q = np.diag(np.exp(unc_Q))
         B = _link_stable_matrix(unc_B, p)
         ct = (np.eye(B.shape[0]) - B) @ bar_beta
