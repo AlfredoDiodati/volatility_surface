@@ -160,6 +160,93 @@ def _fit(
 
 _fit = jax.jit(_fit, static_argnames=("_dynamics", "_link", "_invlink", "maxiter"))
 
+def _collapse(data: np.ndarray, Z: np.ndarray, H: np.ndarray):
+    Hinv = np.linalg.inv(H)
+    ZtHinvZ = Z.T @ Hinv @ Z
+    Hstar = np.linalg.inv(ZtHinvZ)
+    Astar = Hstar @ Z.T @ Hinv
+    ystar = data @ Astar.T
+    return ystar, Hstar
+
+def _loglikelihood_correction(data: np.ndarray, ystar: np.ndarray, Z: np.ndarray, H: np.ndarray, Hstar: np.ndarray) -> float:
+    n = data.shape[0]
+    Hinv = np.linalg.inv(H)
+    _, logdet_H = np.linalg.slogdet(H)
+    _, logdet_Hstar = np.linalg.slogdet(Hstar)
+    et = data - ystar @ Z.T
+    quad = np.sum(np.einsum("ti,ij,tj->t", et, Hinv, et))
+    return -n / 2 * (logdet_H - logdet_Hstar) - 0.5 * quad
+
+def _fit_collapsed(
+    data: np.ndarray,
+    initial_guess: dict,
+    carry_initial: tuple,
+    _dynamics: callable,
+    _link: callable = lambda x: x,
+    _invlink: callable = lambda x: x,
+    opt_options: dict = {},
+    maxiter: int = 5000) -> dict:
+    maxiter = int(maxiter)
+    opt_options = opt_options or {}
+    learning_rate = opt_options.get("learning_rate", 1e-2)
+    tol = opt_options.get("tol", 1e-6)
+    beta1 = opt_options.get("beta1", 0.9)
+    beta2 = opt_options.get("beta2", 0.999)
+    eps = opt_options.get("eps", 1e-8)
+
+    unc_params0 = _invlink(initial_guess)
+
+    def _criterion(unc_params):
+        constr = _link(unc_params)
+        Z = constr["Lambda"]
+        H = constr["Sigma_eps"]
+        ystar, Hstar = _collapse(data, Z, H)
+        kf = _filter_light(ystar, _dynamics, constr | {"Hstar": Hstar}, carry_initial)
+        ll_star = _loglikelihood(kf)
+        correction = _loglikelihood_correction(data, ystar, Z, H, Hstar)
+        return -(ll_star + correction)
+
+    value_and_grad = jax.value_and_grad(_criterion)
+
+    def _adam_step(state):
+        params, m, v, i, prev_loss, converged = state
+        loss, g = value_and_grad(params)
+        m_new = beta1 * m + (1.0 - beta1) * g
+        v_new = beta2 * v + (1.0 - beta2) * (g * g)
+        i1 = i + 1
+        mhat = m_new / (1.0 - beta1**i1)
+        vhat = v_new / (1.0 - beta2**i1)
+        params_new = params - learning_rate * mhat / (np.sqrt(vhat) + eps)
+        converged_new = np.abs(loss - prev_loss) < tol
+        return (params_new, m_new, v_new, i1, loss, converged_new)
+
+    def _not_converged(state):
+        _, _, _, i, _, converged = state
+        return (i < maxiter) & ~converged
+
+    unc_params0 = np.asarray(unc_params0)
+    m0 = np.zeros_like(unc_params0)
+    v0 = np.zeros_like(unc_params0)
+    state0 = (unc_params0, m0, v0, np.asarray(0, dtype=np.int32), np.asarray(np.inf), np.asarray(False))
+    stateT = lax.while_loop(_not_converged, _adam_step, state0)
+    unc_params, _, _, niter, final_loss, is_converged = stateT
+
+    constr = _link(unc_params)
+    Z = constr["Lambda"]
+    H = constr["Sigma_eps"]
+    ystar, Hstar = _collapse(data, Z, H)
+    kf = _filter(ystar, _dynamics, constr | {"Hstar": Hstar}, carry_initial)
+
+    out = {
+        "loglikelihood": -final_loss,
+        "niter": niter,
+        "is_converged": is_converged,
+        "ystar": ystar,
+    }
+    return constr | kf | out
+
+_fit_collapsed = jax.jit(_fit_collapsed, static_argnames=("_dynamics", "_link", "_invlink", "maxiter"))
+
 def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int, key: jax.Array):
     Qt, Ht = fit_output["Q"][-1], fit_output["H"][-1]
     at, Pt = fit_output["a"][-1], fit_output["P"][-1]
