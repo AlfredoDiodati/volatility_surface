@@ -1,6 +1,4 @@
 """Base for the implementation of the IV models of Zou, Lin and Lucas (2025)
-
-TODO: generalize to nonbucketed data (covariance in filter, storing eps)
 """
 
 import numpy as np
@@ -58,4 +56,3 @@ def _fit(data:pd.DataFrame) -> dict:
     dates = data["DATE"].to_numpy()
     M = data.drop(columns=["DATE", "logIV"])
     dates_unique = np.unique(dates)
-
