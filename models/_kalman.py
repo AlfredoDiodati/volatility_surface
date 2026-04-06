@@ -80,6 +80,40 @@ def _filter_light(data: np.ndarray, dynamics: callable, params: dict, carry0: tu
     _, (logdetF, quad) = lax.scan(_step, carry0, data)
     return {"logdetF": logdetF, "quad": quad}
 
+def _filter_light_univariate(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -> dict:
+    """Univariate treatment of the Kalman filter. Requires diagonal Ht.
+    Replaces the O(p^3) Cholesky at each t with p scalar divisions."""
+    def _outer_step(carry, yt):
+        at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry
+        Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
+        H_diag = np.diag(Ht)
+        dt_vec = np.zeros(Zt.shape[0], dtype=float) + np.asarray(dt, dtype=float)
+
+        def _inner_step(inner_carry, obs_slice):
+            at_i, Pt_i, logdet_acc, quad_acc = inner_carry
+            y_it, Z_it, H_it, dt_it = obs_slice
+            missing = np.isnan(y_it)
+            Z_it = np.where(missing, np.zeros_like(Z_it), Z_it)
+            y_it = np.where(missing, 0.0, y_it)
+            F_it = Z_it @ Pt_i @ Z_it + H_it
+            K_it = Pt_i @ Z_it / F_it
+            v_it = y_it - Z_it @ at_i - dt_it
+            at_next = at_i + K_it * v_it
+            Pt_next = Pt_i - np.outer(K_it, K_it) * F_it
+            logdet_acc = logdet_acc + np.where(missing, 0.0, np.log(F_it))
+            quad_acc = quad_acc + np.where(missing, 0.0, v_it * v_it / F_it)
+            return (at_next, Pt_next, logdet_acc, quad_acc), None
+
+        (at_f, Pt_f, logdet_t, quad_t), _ = lax.scan(
+            _inner_step, (at, Pt, 0.0, 0.0), (yt, Zt, H_diag, dt_vec)
+        )
+        at_tp1 = Tt @ at_f + ct
+        Pt_tp1 = Tt @ Pt_f @ Tt.T + Rt @ Qt @ Rt.T
+        return (at_tp1, Pt_tp1, Zt, Tt, Ht, Rt, Qt, idx + 1), (logdet_t, quad_t)
+
+    _, (logdetF, quad) = lax.scan(_outer_step, carry0, data)
+    return {"logdetF": logdetF, "quad": quad}
+
 def _loglikelihood(filter_output: dict):
     """Without constant term"""
     return -0.5 * np.sum(filter_output["logdetF"] + filter_output["quad"])
@@ -92,7 +126,10 @@ def _fit(
     _dynamics: callable,
     _link: callable = lambda x: x,
     _invlink: callable = lambda x: x,
-    opt_options: dict = {}, maxiter: int = 5000) -> dict:
+    opt_options: dict = {}, maxiter: int = 5000,
+    extra_loglikelihood_fn: callable = lambda _, __: 0.0,
+    extra_ll_data: np.ndarray = None,
+    _filter_fn: callable = _filter_light) -> dict:
     """
     Args:
         data (np.ndarray)
@@ -116,8 +153,8 @@ def _fit(
 
     def _criterion(params):
         constr_params = _link(params)
-        kf = _filter_light(data, _dynamics, constr_params | {"covariates": covariates}, carry_initial)
-        return -_loglikelihood({"logdetF": kf["logdetF"], "quad": kf["quad"]})
+        kf = _filter_fn(data, _dynamics, constr_params | {"covariates": covariates}, carry_initial)
+        return -(_loglikelihood({"logdetF": kf["logdetF"], "quad": kf["quad"]}) + extra_loglikelihood_fn(constr_params, extra_ll_data))
 
     value_and_grad = jax.value_and_grad(_criterion)
 
@@ -158,7 +195,7 @@ def _fit(
     }
     return params | kf | out
 
-_fit = jax.jit(_fit, static_argnames=("_dynamics", "_link", "_invlink", "maxiter"))
+_fit = jax.jit(_fit, static_argnames=("_dynamics", "_link", "_invlink", "maxiter", "extra_loglikelihood_fn", "_filter_fn"))
 
 def _collapse(data: np.ndarray, Z: np.ndarray, H: np.ndarray):
     Hinv = np.linalg.inv(H)
