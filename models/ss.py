@@ -102,11 +102,11 @@ def fit(
         end_H = 1
         end_Q = end_H + p
         end_B = end_Q + len_uncB
-        end_omega = end_B + n_buckets
+        end_omega = end_B + (n_buckets - 1)
         H = np.exp(unconstrained_params[0]) * np.eye(pH, dtype=float)
         Q = np.diag(np.exp(unconstrained_params[end_H:end_Q]))
         B = _link_stable_matrix(unconstrained_params[end_Q:end_B], p)
-        omega = unconstrained_params[end_B:end_omega]
+        omega = np.concatenate([np.zeros(1), unconstrained_params[end_B:end_omega]])
         bar_beta = unconstrained_params[end_omega:]
         ct = (np.eye(p) - B) @ bar_beta
         return {"Q_param": Q, "H_param": H, "B": B, "bar_beta": bar_beta, "ct": ct, "omega": omega}
@@ -115,7 +115,7 @@ def fit(
         uncH = np.array([np.log(constrained_params["H_param"][0, 0])])
         uncQ = np.log(np.diag(constrained_params["Q_param"]))
         uncB = _invlink_stable_matrix(constrained_params["B"], p)
-        return np.concatenate([uncH, uncQ, uncB, constrained_params["omega"], constrained_params["bar_beta"]])
+        return np.concatenate([uncH, uncQ, uncB, constrained_params["omega"][1:], constrained_params["bar_beta"]])
 
     return _fit(
         data, initial_guess, covariates, initialization,
@@ -134,8 +134,8 @@ def fit_collapsed(
     covariates = np.asarray(covariates, dtype=float)
 
     p = initial_guess["Q_param"].shape[0]
-    pH = initial_guess["H_param"].shape[0]
     n_buckets = initial_guess["omega"].shape[0]
+    N_obs = initial_guess.get("N_obs", covariates.shape[1])   # actual observation dimension
     T_obs = data.shape[0]
     base_covariates = covariates[:, :, :-1]
     bucket_indices = covariates[:, :, -1].astype(np.int32)
@@ -147,11 +147,11 @@ def fit_collapsed(
         end_H = 1
         end_Q = end_H + p
         end_B = end_Q + len_uncB
-        end_omega = end_B + n_buckets
-        H = np.exp(unconstrained_params[0]) * np.eye(pH, dtype=float)
+        end_omega = end_B + (n_buckets - 1)   # omega[0]=0 fixed; estimate n_buckets-1 free values
+        H = np.exp(unconstrained_params[0]) * np.eye(1, dtype=float)   # (1,1) — only sigma2
         Q = np.diag(np.exp(unconstrained_params[end_H:end_Q]))
         B = _link_stable_matrix(unconstrained_params[end_Q:end_B], p)
-        omega = unconstrained_params[end_B:end_omega]
+        omega = np.concatenate([np.zeros(1), unconstrained_params[end_B:end_omega]])
         bar_beta = unconstrained_params[end_omega:]
         ct = (np.eye(p) - B) @ bar_beta
         Zt_all = _build_Zt_all(base_covariates, bucket_indices, omega)
@@ -164,7 +164,7 @@ def fit_collapsed(
             "omega": omega,
             "Gamma": Gamma,
             "ystar": ystar,
-            "n_half_ph_minus_p": np.asarray(-float(T_obs) / 2 * float(pH - p)),
+            "n_half_ph_minus_p": np.asarray(-float(T_obs) / 2 * float(N_obs - p)),
             "sum_logdet_Gamma": np.sum(np.linalg.slogdet(Gamma)[1]),
             "sum_resid_sq": np.sum(e ** 2),
         }
@@ -173,7 +173,7 @@ def fit_collapsed(
         uncH = np.array([np.log(constrained_params["H_param"][0, 0])])
         uncQ = np.log(np.diag(constrained_params["Q_param"]))
         uncB = _invlink_stable_matrix(constrained_params["B"], p)
-        return np.concatenate([uncH, uncQ, uncB, constrained_params["omega"], constrained_params["bar_beta"]])
+        return np.concatenate([uncH, uncQ, uncB, constrained_params["omega"][1:], constrained_params["bar_beta"]])
 
     initial_Zt_all = _build_Zt_all(base_covariates, bucket_indices, initial_guess["omega"])
     initial_ZtTZt = np.einsum("npi,npj->nij", initial_Zt_all, initial_Zt_all)
@@ -184,7 +184,7 @@ def fit_collapsed(
     initial_guess_augmented = initial_guess | {
         "Gamma": initial_Gamma,
         "ystar": initial_ystar,
-        "n_half_ph_minus_p": np.asarray(-float(T_obs) / 2 * float(pH - p)),
+        "n_half_ph_minus_p": np.asarray(-float(T_obs) / 2 * float(N_obs - p)),
         "sum_logdet_Gamma": np.sum(np.linalg.slogdet(initial_Gamma)[1]),
         "sum_resid_sq": np.sum(initial_e ** 2),
     }
