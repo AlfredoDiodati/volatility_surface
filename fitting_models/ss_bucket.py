@@ -10,13 +10,13 @@ OUTPUT_PATH  = "out/SPX/put/params.json"
 
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = len(FACTOR_LOADING_COLS)
-P = P_BASE + 1
+P      = P_BASE + 1
 
 
 def load_and_reshape(path: str) -> tuple[np.ndarray, np.ndarray, int]:
-    """Return (log_iv_matrix, covariates_cube, n_buckets).
+    """Return (log_iv_matrix, covariates, n_buckets).
 
-    covariates_cube has shape (T, N, P_BASE + 1):
+    covariates has shape (N, P_BASE + 1) — time-invariant, stored once:
       - columns 0..P_BASE-1 : continuous factor loadings
       - column  P_BASE       : integer bucket index (float-encoded for JAX)
 
@@ -32,7 +32,6 @@ def load_and_reshape(path: str) -> tuple[np.ndarray, np.ndarray, int]:
     bucket_cols = sorted([c for c in raw.columns if c.startswith("bucket_")])
     n_buckets = len(bucket_cols) + 1          # +1 for reference category
 
-    # Compute per-row bucket index (0 = reference, 1-indexed otherwise)
     raw = raw.with_columns(
         pl.max_horizontal(
             [pl.when(pl.col(c)).then(i + 1).otherwise(0) for i, c in enumerate(bucket_cols)]
@@ -50,12 +49,13 @@ def load_and_reshape(path: str) -> tuple[np.ndarray, np.ndarray, int]:
     )
     N = full_grid.height
 
-    base_vals   = full_grid[FACTOR_LOADING_COLS].to_numpy()
-    bucket_vals = full_grid["bucket_idx"].to_numpy().astype(float)
+    base_vals   = full_grid[FACTOR_LOADING_COLS].to_numpy()          # (N, P_BASE)
+    bucket_vals = full_grid["bucket_idx"].to_numpy().astype(float)   # (N,)
 
-    covariates_cube = np.zeros((T, N, P_BASE + 1), dtype=np.float64)
-    covariates_cube[:, :, :P_BASE] = base_vals[None, :, :]
-    covariates_cube[:, :, P_BASE]  = bucket_vals[None, :]
+    # Single (N, P_BASE+1) array — no T copies
+    covariates = np.empty((N, P_BASE + 1), dtype=np.float64)
+    covariates[:, :P_BASE] = base_vals
+    covariates[:, P_BASE]  = bucket_vals
 
     log_iv_matrix = np.full((T, N), np.nan, dtype=np.float64)
     for t, date in enumerate(dates):
@@ -63,30 +63,29 @@ def load_and_reshape(path: str) -> tuple[np.ndarray, np.ndarray, int]:
         joined  = full_grid.join(slice_t, on=FACTOR_LOADING_COLS, how="left")
         log_iv_matrix[t] = joined["logIV"].to_numpy()
 
-    return log_iv_matrix, covariates_cube, n_buckets
+    return log_iv_matrix, covariates, n_buckets
 
 
 def pooled_ols_beta(
     log_iv_matrix: np.ndarray,
-    covariates_cube: np.ndarray) -> np.ndarray:
-    T, N, _ = covariates_cube.shape
-    X = covariates_cube[:, :, :P_BASE].reshape(T * N, P_BASE)
-    y = log_iv_matrix.reshape(T * N)
-    mask = ~np.isnan(y)
-    beta_ols, *_ = np.linalg.lstsq(X[mask], y[mask], rcond=None)
+    covariates: np.ndarray) -> np.ndarray:
+    """OLS beta using time-invariant (N, P_BASE+1) covariates."""
+    Xbase = covariates[:, :P_BASE]  # (N, P_BASE)
+    mask  = ~np.isnan(log_iv_matrix)           # (T, N)
+    count_n = mask.sum(axis=0)                 # (N,) — valid obs per option
+    XtX  = (Xbase * count_n[:, None]).T @ Xbase          # (P_BASE, P_BASE)
+    Xty  = Xbase.T @ np.where(mask, log_iv_matrix, 0.0).sum(axis=0)  # (P_BASE,)
+    beta_ols, *_ = np.linalg.lstsq(XtX, Xty, rcond=None)
     return beta_ols
 
 
 def residual_variance(
     log_iv_matrix: np.ndarray,
-    covariates_cube: np.ndarray,
+    covariates: np.ndarray,
     beta: np.ndarray) -> float:
-    T, N, _ = covariates_cube.shape
-    X = covariates_cube[:, :, :P_BASE].reshape(T * N, P_BASE)
-    y = log_iv_matrix.reshape(T * N)
-    mask = ~np.isnan(y)
-    residuals = y[mask] - X[mask] @ beta
-    return float(np.var(residuals))
+    fitted    = covariates[:, :P_BASE] @ beta  # (N,) — time-invariant
+    residuals = log_iv_matrix - fitted[None, :]  # (T, N), broadcasting
+    return float(np.nanvar(residuals))
 
 
 def build_initial_guess(
@@ -95,10 +94,10 @@ def build_initial_guess(
     N: int,
     n_buckets: int) -> dict:
     B        = 0.95 * np.eye(P, dtype=np.float64)
-    bar_beta = np.append(beta_ols, 0.0)                          # (P,)
+    bar_beta = np.append(beta_ols, 0.0)                 # (P,)
     Q_param  = np.diag(np.full(P, 1e-3, dtype=np.float64))
-    H_param  = np.array([[sigma2]], dtype=np.float64)            # (1, 1) — scalar sigma2; avoids N×N allocation
-    omega    = np.zeros(n_buckets, dtype=np.float64)             # (n_buckets,)
+    H_param  = np.array([[sigma2]], dtype=np.float64)   # (1, 1) — scalar sigma2
+    omega    = np.zeros(n_buckets, dtype=np.float64)    # (n_buckets,)
     return {"Q_param": Q_param, "H_param": H_param, "B": B, "bar_beta": bar_beta, "omega": omega, "N_obs": N}
 
 
@@ -108,16 +107,15 @@ def build_jax_initial_guess(initial_guess: dict) -> dict:
 
 def build_initialization(
     beta_ols: np.ndarray,
-    sigma2: float,
-    N: int) -> tuple:
+    sigma2: float) -> tuple:
     """8-tuple (a1, P1, Z0, T0, H0, R0, Q0, idx0) expected by fit_collapsed."""
-    a1   = jnp.array(np.append(beta_ols, 0.0), dtype=float)   # (P,)
-    P1   = 10.0 * jnp.eye(P, dtype=float)                      # (P, P)
-    Z0   = jnp.zeros((P, P), dtype=float)                      # (P, P) — shape matches collapsed dynamics
-    T0   = 0.95 * jnp.eye(P, dtype=float)                      # (P, P)
-    H0   = sigma2 * jnp.eye(P, dtype=float)                    # (P, P) — overwritten by collapsed dynamics
-    R0   = jnp.eye(P, dtype=float)                             # (P, P)
-    Q0   = jnp.diag(jnp.full(P, 1e-3, dtype=float))           # (P, P)
+    a1   = jnp.array(np.append(beta_ols, 0.0), dtype=float)  # (P,)
+    P1   = 10.0 * jnp.eye(P, dtype=float)                    # (P, P)
+    Z0   = jnp.zeros((P, P), dtype=float)                    # (P, P)
+    T0   = 0.95 * jnp.eye(P, dtype=float)                    # (P, P)
+    H0   = sigma2 * jnp.eye(P, dtype=float)                  # (P, P) — overwritten by collapsed dynamics
+    R0   = jnp.eye(P, dtype=float)                           # (P, P)
+    Q0   = jnp.diag(jnp.full(P, 1e-3, dtype=float))         # (P, P)
     idx0 = jnp.asarray(0, dtype=jnp.int32)
     return (a1, P1, Z0, T0, H0, R0, Q0, idx0)
 
@@ -132,25 +130,25 @@ def serialize_params(fit_output: dict) -> dict:
 
 def main():
     print("Loading data...")
-    log_iv_matrix, covariates_cube, n_buckets = load_and_reshape(PARQUET_PATH)
+    log_iv_matrix, covariates, n_buckets = load_and_reshape(PARQUET_PATH)
     T, N = log_iv_matrix.shape
     print(f"  T={T} dates, N={N} obs per date, P_base={P_BASE} factors, n_buckets={n_buckets}")
 
     print("Computing OLS initialisation...")
-    beta_ols = pooled_ols_beta(log_iv_matrix, covariates_cube)
-    sigma2   = residual_variance(log_iv_matrix, covariates_cube, beta_ols)
+    beta_ols = pooled_ols_beta(log_iv_matrix, covariates)
+    sigma2   = residual_variance(log_iv_matrix, covariates, beta_ols)
     print(f"  bar_beta (OLS) = {np.round(beta_ols, 4)}")
     print(f"  sigma2 (OLS residual) = {sigma2:.6f}")
 
     initial_guess  = build_jax_initial_guess(
         build_initial_guess(beta_ols, sigma2, N, n_buckets)
     )
-    initialization = build_initialization(beta_ols, sigma2, N)
+    initialization = build_initialization(beta_ols, sigma2)
 
     print("Fitting model...")
     fit_output = fit_collapsed(
         data=jnp.array(log_iv_matrix),
-        covariates=jnp.array(covariates_cube),
+        covariates=jnp.array(covariates),     # (N, P_BASE+1) — single copy
         initial_guess=initial_guess,
         initialization=initialization,
     )

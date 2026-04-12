@@ -19,12 +19,12 @@ def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx):
 def _dynamics_collapsed(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx):
     Q = params["Q_param"]
     sigma2 = params["H_param"][0, 0]
-    Gamma_t = jax.lax.dynamic_index_in_dim(params["Gamma"], idx, axis=0, keepdims=False)
+    Gamma  = params["Gamma"]   # (P, P) — time-invariant, no per-step indexing
     ystar_t = jax.lax.dynamic_index_in_dim(params["ystar"], idx, axis=0, keepdims=False)
     B = params["B"]
     Z = identity_mat
     T = B @ bt
-    H = sigma2 * Gamma_t
+    H = sigma2 * Gamma
     d = -ystar_t
     return Z, T, H, identity_mat, Q, d, params["ct"]
 
@@ -124,49 +124,68 @@ def fit(
     )
 
 
+def _build_Zt(base_covariates_2d, bucket_indices_2d, omega):
+    """Build time-invariant loading matrix. Returns (N, P)."""
+    omega_col = omega[bucket_indices_2d]                               # (N,)
+    return np.concatenate([base_covariates_2d, omega_col[:, None]], axis=-1)  # (N, P)
+
+
 def fit_collapsed(
     data: np.ndarray,
     covariates: np.ndarray,
     initial_guess: dict,
     initialization: tuple,
     opt_options: dict | None = None):
+    """
+    Expects covariates as (N, P_BASE+1) — time-invariant, single copy.
+    Avoids O(T·N·P) intermediates by computing Zt once and using batch matmuls.
+    """
     data = np.asarray(data, dtype=float)
-    covariates = np.asarray(covariates, dtype=float)
+    covariates = np.asarray(covariates, dtype=float)  # (N, P_BASE+1)
 
-    p = initial_guess["Q_param"].shape[0]
+    p         = initial_guess["Q_param"].shape[0]
     n_buckets = initial_guess["omega"].shape[0]
-    N_obs = initial_guess.get("N_obs", covariates.shape[1])   # actual observation dimension
-    T_obs = data.shape[0]
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
-    dummy_data = np.zeros((T_obs, p), dtype=float)
+    N_obs     = initial_guess.get("N_obs", covariates.shape[0])
+    T_obs     = data.shape[0]
+
+    base_covariates = covariates[:, :-1]              # (N, P_BASE)
+    bucket_indices  = covariates[:, -1].astype(np.int32)  # (N,)
+    dummy_data      = np.zeros((T_obs, p), dtype=float)
 
     def _link(unconstrained_params: np.ndarray) -> dict:
         unconstrained_params = np.asarray(unconstrained_params, dtype=float)
-        len_uncB = (p * (p - 1) // 2) + (p * (p - 1) // 2) + p
-        end_H = 1
-        end_Q = end_H + p
-        end_B = end_Q + len_uncB
-        end_omega = end_B + (n_buckets - 1)   # omega[0]=0 fixed; estimate n_buckets-1 free values
-        H = np.exp(unconstrained_params[0]) * np.eye(1, dtype=float)   # (1,1) — only sigma2
-        Q = np.diag(np.exp(unconstrained_params[end_H:end_Q]))
-        B = _link_stable_matrix(unconstrained_params[end_Q:end_B], p)
-        omega = np.concatenate([np.zeros(1), unconstrained_params[end_B:end_omega]])
+        len_uncB  = (p * (p - 1) // 2) + (p * (p - 1) // 2) + p
+        end_H     = 1
+        end_Q     = end_H + p
+        end_B     = end_Q + len_uncB
+        end_omega = end_B + (n_buckets - 1)
+        H        = np.exp(unconstrained_params[0]) * np.eye(1, dtype=float)  # (1,1)
+        Q        = np.diag(np.exp(unconstrained_params[end_H:end_Q]))
+        B        = _link_stable_matrix(unconstrained_params[end_Q:end_B], p)
+        omega    = np.concatenate([np.zeros(1), unconstrained_params[end_B:end_omega]])
         bar_beta = unconstrained_params[end_omega:]
-        ct = (np.eye(p) - B) @ bar_beta
-        Zt_all = _build_Zt_all(base_covariates, bucket_indices, omega)
-        ZtTZt = np.einsum("npi,npj->nij", Zt_all, Zt_all)
-        Gamma = np.linalg.inv(ZtTZt)
-        ystar = np.einsum("nij,npj,np->ni", Gamma, Zt_all, data)
-        e = data - np.einsum("npi,ni->np", Zt_all, ystar)
+        ct       = (np.eye(p) - B) @ bar_beta
+
+        # Zt computed once — (N, P), not (T, N, P)
+        Zt    = _build_Zt(base_covariates, bucket_indices, omega)
+        ZtTZt = Zt.T @ Zt                           # (P, P)
+        Gamma = np.linalg.inv(ZtTZt)               # (P, P) — time-invariant
+
+        # ystar_t = Gamma @ Zt^T @ y_t = (y_t @ Zt) @ Gamma (Gamma symmetric)
+        ystar = (data @ Zt) @ Gamma                 # (T, P)
+
+        # ‖e‖² = ‖y‖² − ‖P_Z y‖² = ‖y‖² − tr(ystar^T ZtTZt ystar)
+        # avoids materialising the (T, N) residual matrix
+        sum_resid_sq = np.sum(data ** 2) - np.sum(ystar * (ystar @ ZtTZt))
+
         return {
             "Q_param": Q, "H_param": H, "B": B, "bar_beta": bar_beta, "ct": ct,
             "omega": omega,
-            "Gamma": Gamma,
-            "ystar": ystar,
+            "Gamma": Gamma,                                               # (P, P)
+            "ystar": ystar,                                               # (T, P)
             "n_half_ph_minus_p": np.asarray(-float(T_obs) / 2 * float(N_obs - p)),
-            "sum_logdet_Gamma": np.sum(np.linalg.slogdet(Gamma)[1]),
-            "sum_resid_sq": np.sum(e ** 2),
+            "sum_logdet_Gamma":  np.asarray(float(T_obs) * np.linalg.slogdet(Gamma)[1]),
+            "sum_resid_sq":      sum_resid_sq,
         }
 
     def _invlink(constrained_params: dict):
@@ -175,18 +194,21 @@ def fit_collapsed(
         uncB = _invlink_stable_matrix(constrained_params["B"], p)
         return np.concatenate([uncH, uncQ, uncB, constrained_params["omega"][1:], constrained_params["bar_beta"]])
 
-    initial_Zt_all = _build_Zt_all(base_covariates, bucket_indices, initial_guess["omega"])
-    initial_ZtTZt = np.einsum("npi,npj->nij", initial_Zt_all, initial_Zt_all)
-    initial_Gamma = np.linalg.inv(initial_ZtTZt)
-    initial_ystar = np.einsum("nij,npj,np->ni", initial_Gamma, initial_Zt_all, data)
-    initial_e = data - np.einsum("npi,ni->np", initial_Zt_all, initial_ystar)
+    # Initial values (outside _link so they don't re-run every opt step)
+    initial_Zt    = _build_Zt(base_covariates, bucket_indices, initial_guess["omega"])
+    initial_ZtTZt = initial_Zt.T @ initial_Zt                  # (P, P)
+    initial_Gamma = np.linalg.inv(initial_ZtTZt)               # (P, P)
+    initial_ystar = (data @ initial_Zt) @ initial_Gamma        # (T, P)
+    initial_sum_resid_sq = (
+        np.sum(data ** 2) - np.sum(initial_ystar * (initial_ystar @ initial_ZtTZt))
+    )
 
     initial_guess_augmented = initial_guess | {
-        "Gamma": initial_Gamma,
-        "ystar": initial_ystar,
-        "n_half_ph_minus_p": np.asarray(-float(T_obs) / 2 * float(N_obs - p)),
-        "sum_logdet_Gamma": np.sum(np.linalg.slogdet(initial_Gamma)[1]),
-        "sum_resid_sq": np.sum(initial_e ** 2),
+        "Gamma":              initial_Gamma,
+        "ystar":              initial_ystar,
+        "n_half_ph_minus_p":  np.asarray(-float(T_obs) / 2 * float(N_obs - p)),
+        "sum_logdet_Gamma":   np.asarray(float(T_obs) * np.linalg.slogdet(initial_Gamma)[1]),
+        "sum_resid_sq":       initial_sum_resid_sq,
     }
 
     a1, P1, _Z0, T0, _H0, R0, Q0, _idx = initialization
@@ -194,7 +216,7 @@ def fit_collapsed(
         a1, P1,
         np.eye(p, dtype=float),
         T0,
-        initial_guess["H_param"][0, 0] * initial_Gamma[0],
+        initial_guess["H_param"][0, 0] * initial_Gamma,   # (P, P) — Gamma is now (P,P)
         R0, Q0,
         np.asarray(0, dtype=np.int32),
     )
@@ -207,12 +229,16 @@ def fit_collapsed(
     )
 
     fitted_params = {k: result[k] for k in ["Q_param", "H_param", "B", "bar_beta", "ct", "omega"]}
-    fitted_params["covariates"] = covariates
+    # Broadcast (N, P+1) → (T, N, P+1) for _dynamics, which indexes by time step.
+    # broadcast_to is zero-copy; XLA optimises the indexing to a slice of the base array.
+    fitted_params["covariates"] = np.broadcast_to(
+        covariates[None], (T_obs,) + covariates.shape
+    )
     kf = _filter(data, _dynamics, fitted_params, initialization)
     return fitted_params | kf | {
         "loglikelihood": result["loglikelihood"],
-        "niter": result["niter"],
-        "is_converged": result["is_converged"],
+        "niter":         result["niter"],
+        "is_converged":  result["is_converged"],
     }
 
 def simulation(fit_output, nsim, npaths, key: jax.Array):
