@@ -181,7 +181,7 @@ def fit_collapsed(
 
         Zt_cube = _build_Zt_cube(omega)                               # (T, max_n, P)
         ZtTZt   = np.einsum("tnp,tnq->tpq", Zt_cube, Zt_cube)        # (T, P, P)
-        Gamma   = np.linalg.inv(ZtTZt)                               # (T, P, P)
+        Gamma   = np.linalg.inv(ZtTZt + 1e-8 * np.eye(p))           # (T, P, P) — regularised
         ystar   = np.einsum("tpq,tnq,tn->tp", Gamma, Zt_cube, y_masked)  # (T, P)
 
         # ‖e‖² via projection identity — avoids (T, max_n) residual on AD tape
@@ -210,7 +210,7 @@ def fit_collapsed(
     # Initial values outside _link
     initial_Zt_cube = _build_Zt_cube(initial_guess["omega"])
     initial_ZtTZt   = np.einsum("tnp,tnq->tpq", initial_Zt_cube, initial_Zt_cube)
-    initial_Gamma   = np.linalg.inv(initial_ZtTZt)                              # (T, P, P)
+    initial_Gamma   = np.linalg.inv(initial_ZtTZt + 1e-8 * np.eye(p))          # (T, P, P) — regularised
     initial_ystar   = np.einsum("tpq,tnq,tn->tp",
                                  initial_Gamma, initial_Zt_cube, y_masked)       # (T, P)
     init_sum_yy     = float(np.sum(y_masked ** 2))

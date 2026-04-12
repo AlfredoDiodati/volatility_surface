@@ -86,6 +86,7 @@ def build_initial_guess(
     Q_param  = np.diag(np.full(P, 1e-3, dtype=np.float64))
     H_param  = np.array([[sigma2]], dtype=np.float64)  # (1,1) — scalar sigma2
     omega    = np.zeros(n_buckets, dtype=np.float64)
+    omega[1:] = 1e-2    # non-zero to avoid singular Zt'Zt (omega=0 ⇒ last column of Z is zero)
     return {"Q_param": Q_param, "H_param": H_param, "B": B, "bar_beta": bar_beta, "omega": omega}
 
 
