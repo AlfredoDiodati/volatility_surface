@@ -138,6 +138,8 @@ def main():
         covariates=jnp.array(Z_cube),    # (T, max_n, P_BASE+1)
         initial_guess=initial_guess,
         initialization=initialization,
+        opt_options={"learning_rate": 1e-3, "tol": 1e-6},
+        maxiter=20_000,
     )
 
     print("Saving parameter estimates...")

@@ -129,7 +129,8 @@ def fit_collapsed(
     covariates: np.ndarray,
     initial_guess: dict,
     initialization: tuple,
-    opt_options: dict | None = None):
+    opt_options: dict | None = None,
+    maxiter: int = 5000):
     """
     data:       (T, max_n)          — logIV, NaN-padded for short dates
     covariates: (T, max_n, P_BASE+1)— per-date loading matrices, zero-padded
@@ -238,6 +239,7 @@ def fit_collapsed(
     result = _fit(
         dummy_data, initial_guess_augmented, initial_Gamma, carry_collapsed,
         _dynamics_collapsed, _link, _invlink, opt_options or {},
+        maxiter=maxiter,
         extra_loglikelihood_fn=_collapsed_correction,
         extra_ll_data=np.zeros(4),
     )

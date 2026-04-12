@@ -167,7 +167,7 @@ def _fit(
         mhat = m_new / (1.0 - beta1**i1)
         vhat = v_new / (1.0 - beta2**i1)
         params_new = params - learning_rate * mhat / (np.sqrt(vhat) + eps)
-        converged_new = np.abs(loss - prev_loss) < tol
+        converged_new = np.abs(loss - prev_loss) / (np.abs(prev_loss) + 1.0) < tol
         return (params_new, m_new, v_new, i1, loss, converged_new)
 
     def _not_converged(state):
@@ -254,7 +254,7 @@ def _fit_collapsed(
         mhat = m_new / (1.0 - beta1**i1)
         vhat = v_new / (1.0 - beta2**i1)
         params_new = params - learning_rate * mhat / (np.sqrt(vhat) + eps)
-        converged_new = np.abs(loss - prev_loss) < tol
+        converged_new = np.abs(loss - prev_loss) / (np.abs(prev_loss) + 1.0) < tol
         return (params_new, m_new, v_new, i1, loss, converged_new)
 
     def _not_converged(state):
