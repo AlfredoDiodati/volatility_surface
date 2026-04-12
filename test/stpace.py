@@ -12,15 +12,25 @@ time_to_maturity_grid = np.array([10.0, 50.0, 100.0, 180.0], dtype=float) / 255.
 moneyness_mesh, time_to_maturity_mesh = np.meshgrid(moneyness_grid, time_to_maturity_grid, indexing="xy")
 moneyness_vector = moneyness_mesh.reshape(-1)
 time_to_maturity_vector = time_to_maturity_mesh.reshape(-1)
-Mt = np.column_stack([np.ones(moneyness_vector.shape[0], dtype=float), moneyness_vector, time_to_maturity_vector])
+
+n_buckets = time_to_maturity_grid.shape[0]
+bucket_indices_vector = np.repeat(np.arange(n_buckets, dtype=float), moneyness_grid.shape[0])
+
+Mt = np.column_stack([
+    np.ones(moneyness_vector.shape[0], dtype=float),
+    moneyness_vector,
+    time_to_maturity_vector,
+    bucket_indices_vector,
+])
 
 pH = Mt.shape[0]
 p = Mt.shape[1]
 
-B_true = np.diag(np.array([0.98, 0.93, 0.90], dtype=float))
-Q_true = np.diag(np.array([0.001, 0.005, 0.004], dtype=float))
+B_true = np.diag(np.array([0.98, 0.93, 0.90, 0.85], dtype=float))
+Q_true = np.diag(np.array([0.001, 0.005, 0.004, 0.003], dtype=float))
 sigma2_eps_true = 0.05
 H_true = sigma2_eps_true * np.eye(pH, dtype=float)
+omega_true = time_to_maturity_grid
 
 key, key_bar = jax.random.split(key, 2)
 bar_beta_true = jax.random.uniform(key_bar, shape=(p,), minval=0.0, maxval=1.0)
@@ -43,6 +53,7 @@ fit_output_true = {
     "B": B_true,
     "bar_beta": bar_beta_true,
     "ct": ct_true,
+    "omega": omega_true,
     "covariates": covariates,
     "a": np.asarray([a1]),
     "P": np.asarray([P1]),
@@ -62,6 +73,7 @@ initial_guess = {
     "H_param": 5e-2 * np.eye(pH, dtype=float),
     "B": 0.9 * np.eye(p, dtype=float),
     "bar_beta": 0.5 * np.ones((p,), dtype=float),
+    "omega": np.linspace(time_to_maturity_grid[0], time_to_maturity_grid[-1], n_buckets),
 }
 
 opt_options = {"maxiter": 400, "learning_rate": 1e-2, "tol": 1e-6}
@@ -72,10 +84,12 @@ bar_beta_hat = onp.asarray(jax.device_get(fitted["bar_beta"]))
 B_hat = onp.asarray(jax.device_get(fitted["B"]))
 Q_hat = onp.asarray(jax.device_get(fitted["Q_param"]))
 H_hat = onp.asarray(jax.device_get(fitted["H_param"]))
+omega_hat = onp.asarray(jax.device_get(fitted["omega"]))
 
 bar_beta_true_ = onp.asarray(jax.device_get(bar_beta_true))
 B_true_ = onp.asarray(jax.device_get(B_true))
 Q_true_ = onp.asarray(jax.device_get(Q_true))
+omega_true_ = onp.asarray(jax.device_get(omega_true))
 
 print("param        true                              estimated                         abs_err      rel_err")
 print("-" * 110)
@@ -95,3 +109,7 @@ print(f"{'diag(Q)':<12} {onp.diag(Q_true_)} {onp.diag(Q_hat)} {abs_err:>10.6g} {
 abs_err = float(abs(H_hat[0, 0] - sigma2_eps_true))
 rel_err = abs_err / (sigma2_eps_true + 1e-18)
 print(f"{'sigma2_eps':<12} {sigma2_eps_true} {H_hat[0, 0]} {abs_err:>10.6g} {rel_err:>10.6g}")
+
+abs_err = float(onp.linalg.norm(omega_hat - omega_true_))
+rel_err = abs_err / (float(onp.linalg.norm(omega_true_)) + 1e-18)
+print(f"{'omega':<12} {omega_true_} {omega_hat} {abs_err:>10.6g} {rel_err:>10.6g}")

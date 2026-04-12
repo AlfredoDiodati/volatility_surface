@@ -3,7 +3,7 @@ import numpy as np
 import jax.numpy as jnp
 import polars as pl
 
-from models.ss import fit
+from models.ss import fit_collapsed
 
 PARQUET_PATH = "data/SPX/put/bucket.parquet"
 OUTPUT_PATH  = "out/SPX/put/params.json"
@@ -93,7 +93,7 @@ def main():
     initialization = diffuse_kalman_initialization(beta_ols)
 
     print("Fitting model...")
-    fit_output = fit(
+    fit_output = fit_collapsed(
         data=jnp.array(log_iv_matrix),
         covariates=jnp.array(covariates_cube),
         initial_guess=initial_guess,
