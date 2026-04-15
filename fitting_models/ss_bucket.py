@@ -13,7 +13,7 @@ from scaling.scaling_reg import moment_scaling, _make_time_lags
 
 PARQUET_PATH       = "data/SPX/put/bucket.parquet"
 BUCKET_MATRIX_PATH = "data/SPX/put/bucket_matrix.parquet"
-OUTPUT_PATH        = "out/SPX/put/params.json"
+OUTPUT_PATH        = "out/SPX/put/ss_params.json"
 PLOT_BASE          = "plot/SPX/put/scaling"
 
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]

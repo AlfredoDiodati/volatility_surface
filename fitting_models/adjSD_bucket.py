@@ -74,12 +74,14 @@ def residual_variance(y_cube, Z_cube, beta):
 
 
 def build_initial_guess(beta_ols, sigma2, n_buckets):
+    omega = np.zeros(n_buckets)
+    omega[1:] = 1e-2
     return {
         "beta_bar": jnp.array(np.append(beta_ols, 0.0)),
         "B":        jnp.array(0.95 * np.eye(P, dtype=np.float64)),
         "A":        jnp.array(0.05 * np.eye(P, dtype=np.float64)),
         "sigma2":   jnp.array(sigma2),
-        "omega":    jnp.zeros(n_buckets),
+        "omega":    jnp.array(omega),
         "C":        jnp.array(1e-3 * np.eye(P, dtype=np.float64)),
         "nu":       jnp.array(10.0),
     }
@@ -136,7 +138,7 @@ def student_t_absolute_moment_const(q, nu):
     )
 
 
-def model_implied_partition(B, C, sigma2, nu, loading_series, delta_ts, moments):
+def model_implied_partition(sigma2, nu, loading_series, betas, delta_ts, moments):
     T      = loading_series.shape[0]
     log_t  = np.log(delta_ts)
     n_q    = len(moments)
@@ -145,8 +147,6 @@ def model_implied_partition(B, C, sigma2, nu, loading_series, delta_ts, moments)
 
     for i_dt, delta_t in enumerate(delta_ts):
         dt   = int(delta_t)
-        B_dt = np.linalg.matrix_power(B, dt)
-        BC   = B_dt @ C
         N    = T // dt
 
         gammas = []
@@ -157,12 +157,9 @@ def model_implied_partition(B, C, sigma2, nu, loading_series, delta_ts, moments)
             m_next = loading_series[t_next]
             if np.any(np.isnan(m_t)) or np.any(np.isnan(m_next)):
                 continue
-            gamma = (
-                m_next @ C @ m_next
-                - 2.0 * m_next @ BC @ m_t
-                + m_t @ C @ m_t
-                + 2.0 * sigma2
-            )
+            hat_y_t    = float(m_t    @ betas[t])
+            hat_y_next = float(m_next @ betas[t_next])
+            gamma = (hat_y_next - hat_y_t) ** 2 + 2.0 * sigma2
             gammas.append(max(gamma, 1e-16))
 
         if len(gammas) == 0:
@@ -311,6 +308,7 @@ def main():
     sigma2 = float(np.array(fit_output["sigma2"]).ravel()[0])
     nu     = float(np.array(fit_output["nu"]).ravel()[0])
     omega  = np.array(fit_output["omega"])
+    betas  = np.array(fit_output["betas"])
 
     print(f"  nu={nu:.2f}, sigma2={sigma2:.4f}")
 
@@ -354,7 +352,7 @@ def main():
         emp_scaling   = moment_scaling(col, MIN_SCALE, MAX_SCALE, MOMENTS)
         loading_series = loadings_by_bucket[bucket_name]
         mdl_scaling    = model_implied_partition(
-            B, C, sigma2, nu, loading_series, delta_ts, MOMENTS
+            sigma2, nu, loading_series, betas, delta_ts, MOMENTS
         )
 
         empirical_scalings[matrix_label] = emp_scaling
