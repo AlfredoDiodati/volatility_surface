@@ -241,7 +241,7 @@ def make_panel_plots(empirical_scalings, model_scalings, moments, group_dim, cro
     plt.close()
 
 
-def make_partition_plots(empirical_scaling, model_scaling, label):
+def make_partition_plots(empirical_scaling, model_scaling, label, moments):
     delta_ts = empirical_scaling["delta_ts"]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
@@ -257,7 +257,7 @@ def make_partition_plots(empirical_scaling, model_scaling, label):
         for x in TICK_DAYS:
             ax.axvline(x, linestyle="--", linewidth=0.6, color="black")
 
-        for q in MOMENTS:
+        for q in moments:
             y = np.exp(scaling[q]["shifted_power_var"])
             line, = ax.loglog(delta_ts, y)
             ax.text(delta_ts[-1] * 1.01, y[-1], f"q={q}",
@@ -349,23 +349,23 @@ def main():
 
         col           = bucket_matrix[matrix_label].to_numpy().astype(float)
         col[col == 0] = np.nan
-        emp_scaling   = moment_scaling(col, MIN_SCALE, MAX_SCALE, MOMENTS)
+        emp_scaling   = moment_scaling(col, MIN_SCALE, MAX_SCALE, valid_moments)
         loading_series = loadings_by_bucket[bucket_name]
         mdl_scaling    = model_implied_partition(
-            sigma2, nu, loading_series, betas, delta_ts, MOMENTS
+            sigma2, nu, loading_series, betas, delta_ts, valid_moments
         )
 
         empirical_scalings[matrix_label] = emp_scaling
         model_scalings[matrix_label]     = mdl_scaling
 
-        fig = make_partition_plots(emp_scaling, mdl_scaling, matrix_label)
+        fig = make_partition_plots(emp_scaling, mdl_scaling, matrix_label, valid_moments)
         fig.savefig(os.path.join(PLOT_BASE, f"partition_{matrix_label}.pdf"))
         plt.close(fig)
 
     print("Making panel plots...")
-    make_panel_plots(empirical_scalings, model_scalings, MOMENTS,
+    make_panel_plots(empirical_scalings, model_scalings, valid_moments,
                      group_dim=0, cross_dim=1, subfolder=PLOT_BASE)
-    make_panel_plots(empirical_scalings, model_scalings, MOMENTS,
+    make_panel_plots(empirical_scalings, model_scalings, valid_moments,
                      group_dim=1, cross_dim=0, subfolder=PLOT_BASE)
 
     print("Done.")
