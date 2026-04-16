@@ -20,7 +20,7 @@ P_BASE  = len(FACTOR_LOADING_COLS)
 P_TILDE = P_BASE
 P_FULL  = P_TILDE + 1
 
-K_VALUES = [3, 5, 8, 10, 15, 20, 30, 40, 50]
+K_VALUES = [3]
 
 ETA   = 0.4
 RHO_K = 0.999
