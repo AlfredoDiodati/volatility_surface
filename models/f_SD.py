@@ -21,7 +21,7 @@ def _solve_weights(eta, rho_K, K):
 
     def _loss(x):
         w, rho = _decode(x)
-        Gamma = np.outer(w, w) / (1.0 - np.outer(rho, rho))
+        Gamma = np.outer(w, w) / np.maximum(1.0 - np.outer(rho, rho), 1e-8)
         gamma_0 = np.sum(Gamma)
         w_star = np.sum(Gamma, axis=1)
         taus = np.arange(1, K + 1, dtype=float)
@@ -41,6 +41,8 @@ def _solve_weights(eta, rho_K, K):
     def _adam_step(state, _):
         x, m, v, t = state
         g = _grad(x)
+        g = np.where(np.isfinite(g), g, 0.0)
+        g = np.clip(g, -5.0, 5.0)
         t1 = t + 1.0
         m_new = 0.9 * m + 0.1 * g
         v_new = 0.999 * v + 0.001 * g * g
@@ -236,6 +238,8 @@ def fit(
     def _adam_step(state):
         theta, m, v, i, prev_loss, converged = state
         loss, g = value_and_grad(theta)
+        g = np.where(np.isfinite(g), g, 0.0)
+        g = np.clip(g, -10.0, 10.0)
         m_new = b1 * m + (1.0 - b1) * g
         v_new = b2 * v + (1.0 - b2) * g * g
         i1 = i + 1
@@ -246,8 +250,8 @@ def fit(
         return (theta_new, m_new, v_new, i1, loss, converged_new)
 
     def _not_converged(state):
-        _, _, _, i, _, converged = state
-        return (i < maxiter) & ~converged
+        _, _, _, i, loss, converged = state
+        return (i < maxiter) & ~converged & np.isfinite(loss)
 
     theta0 = np.asarray(_invlink(initial_guess))
     state0 = (
