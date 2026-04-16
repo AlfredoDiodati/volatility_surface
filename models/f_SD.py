@@ -3,7 +3,6 @@ import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
-from models.ss import _link_stable_matrix, _invlink_stable_matrix
 
 def _solve_weights(eta, rho_K, K):
     K1 = K + 1
@@ -164,20 +163,17 @@ def fit(
     mask_f = mask_bool.astype(float)
     base_covariates = covariates[:, :, :-1]
     bucket_indices = covariates[:, :, -1].astype(np.int32)
-    tril_r, tril_c = np.tril_indices(p_full)
-    len_uncB = (p_tilde * (p_tilde - 1) // 2) * 2 + p_tilde
-    len_A = p_tilde * p_tilde
-    n_chol = p_full * (p_full + 1) // 2
 
     def _link(theta):
         idx = 0
         beta_bar = theta[idx:idx + p_tilde]
         idx += p_tilde
-        B = _link_stable_matrix(theta[idx:idx + len_uncB], p_tilde)
-        idx += len_uncB
-        A_raw = theta[idx:idx + len_A]
-        idx += len_A
-        A = A_raw.reshape(p_tilde, p_tilde)
+        B_diag = np.tanh(theta[idx:idx + p_tilde])
+        idx += p_tilde
+        B = np.diag(B_diag)
+        A_diag = theta[idx:idx + p_tilde]
+        idx += p_tilde
+        A = np.diag(A_diag)
         sigma2 = np.exp(theta[idx])
         idx += 1
         sigma_0 = theta[idx]
@@ -188,9 +184,9 @@ def fit(
         idx += 1
         rho_K = jax.nn.sigmoid(theta[idx])
         idx += 1
-        L = np.zeros((p_full, p_full)).at[tril_r, tril_c].set(theta[idx:idx + n_chol])
-        idx += n_chol
-        C = L @ L.T
+        C_diag = np.exp(theta[idx:idx + p_full])
+        idx += p_full
+        C = np.diag(C_diag)
         nu = np.exp(theta[idx]) + 2.0
         return {
             "beta_bar": beta_bar,
@@ -206,14 +202,16 @@ def fit(
         }
 
     def _invlink(params):
-        unc_B = _invlink_stable_matrix(params["B"], p_tilde)
-        unc_A = params["A"].ravel()
+        B_diag = np.diag(params["B"])
+        unc_B = np.arctanh(B_diag)
+        A_diag = np.diag(params["A"])
+        unc_A = A_diag
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
         unc_eta = np.log(params["eta"])
         unc_rho_K = np.log(params["rho_K"] / (1.0 - params["rho_K"]))
-        L_C = np.linalg.cholesky(params["C"] + 1e-8 * np.eye(p_full))
-        unc_C = L_C[tril_r, tril_c]
+        C_diag = np.diag(params["C"])
+        unc_C = np.log(C_diag)
         unc_nu = np.log(params["nu"] - 2.0)
         return np.concatenate([
             params["beta_bar"],

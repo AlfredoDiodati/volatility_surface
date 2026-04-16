@@ -7,23 +7,35 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FixedFormatter
 from scipy.special import gamma as gamma_func
 
-from models.adjSD import fit
+from models.f_SD import fit
 from scaling.scaling_reg import moment_scaling, _make_time_lags
 
 PARQUET_PATH       = "data/SPX/put/bucket.parquet"
 BUCKET_MATRIX_PATH = "data/SPX/put/bucket_matrix.parquet"
-OUTPUT_PATH        = "out/SPX/put/params_adjSD.json"
-PLOT_BASE          = "plot/SPX/put/scaling_adjSD"
+OUTPUT_DIR         = "out/SPX/put/fSD"
+PLOT_DIR           = "plot/SPX/put/fSD"
 
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
-P_BASE = len(FACTOR_LOADING_COLS)
-P      = P_BASE + 1
+P_BASE  = len(FACTOR_LOADING_COLS)
+P_TILDE = P_BASE
+P_FULL  = P_TILDE + 1
 
-MIN_SCALE = 1.0
-MAX_SCALE = 126.0
-MOMENTS   = np.arange(1, 9) / 2
+K_VALUES = [3, 5, 8, 10, 15, 20, 30]
+
+ETA   = 0.4
+RHO_K = 0.999
+
+MIN_SCALE   = 1.0
+MAX_SCALE   = 126.0
+MOMENTS     = np.arange(1, 9) / 2
 TICK_DAYS   = np.array([1, 5, 21, 63, 126])
 TICK_LABELS = ["1d", "1 week", "1 month", "3 months", "6 months"]
+
+def output_path(k):
+    return os.path.join(OUTPUT_DIR, f"K{k}", "params.json")
+
+def plot_base(k):
+    return os.path.join(PLOT_DIR, f"K{k}")
 
 def load_and_reshape(path):
     raw = (
@@ -55,7 +67,6 @@ def load_and_reshape(path):
 
     return y_cube, Z_cube, n_buckets, bucket_cols, dates
 
-
 def pooled_ols_beta(y_cube, Z_cube):
     T, max_n, _ = Z_cube.shape
     X    = Z_cube[:, :, :P_BASE].reshape(T * max_n, P_BASE)
@@ -64,25 +75,40 @@ def pooled_ols_beta(y_cube, Z_cube):
     beta_ols, *_ = np.linalg.lstsq(X[mask], y[mask], rcond=None)
     return beta_ols
 
-
 def residual_variance(y_cube, Z_cube, beta):
     X    = Z_cube[:, :, :P_BASE].reshape(-1, P_BASE)
     y    = y_cube.reshape(-1)
     mask = ~np.isnan(y)
     return float(np.var(y[mask] - X[mask] @ beta))
 
-
 def build_initial_guess(beta_ols, sigma2, n_buckets):
-    omega = np.zeros(n_buckets)
-    omega[1:] = 1e-2
+    omega_load = np.zeros(n_buckets)
+    omega_load[1:] = 1e-2
     return {
-        "beta_bar": jnp.array(np.append(beta_ols, 0.0)),
-        "B":        jnp.array(0.95 * np.eye(P, dtype=np.float64)),
-        "A":        jnp.array(0.05 * np.eye(P, dtype=np.float64)),
-        "sigma2":   jnp.array(sigma2),
-        "omega":    jnp.array(omega),
-        "C":        jnp.array(1e-3 * np.ones(P, dtype=np.float64)),
-        "nu":       jnp.array(10.0),
+        "beta_bar":   jnp.array(beta_ols),
+        "B":          jnp.array(0.95 * np.eye(P_TILDE, dtype=np.float64)),
+        "A":          jnp.array(0.05 * np.eye(P_TILDE, dtype=np.float64)),
+        "sigma2":     jnp.array(sigma2),
+        "sigma_0":    jnp.array(0.1),
+        "omega_load": jnp.array(omega_load),
+        "eta":        jnp.array(ETA),
+        "rho_K":      jnp.array(RHO_K),
+        "C":          jnp.array(1e-3 * np.eye(P_FULL, dtype=np.float64)),
+        "nu":         jnp.array(10.0),
+    }
+
+def warm_start_guess(prev_params):
+    return {
+        "beta_bar":   jnp.array(np.array(prev_params["beta_bar"])),
+        "B":          jnp.array(np.array(prev_params["B"])),
+        "A":          jnp.array(np.array(prev_params["A"])),
+        "sigma2":     jnp.array(float(np.array(prev_params["sigma2"]).ravel()[0])),
+        "sigma_0":    jnp.array(float(np.array(prev_params["sigma_0"]).ravel()[0])),
+        "omega_load": jnp.array(np.array(prev_params["omega_load"])),
+        "eta":        jnp.array(float(np.array(prev_params["eta"]).ravel()[0])),
+        "rho_K":      jnp.array(float(np.array(prev_params["rho_K"]).ravel()[0])),
+        "C":          jnp.array(np.array(prev_params["C"])),
+        "nu":         jnp.array(float(np.array(prev_params["nu"]).ravel()[0])),
     }
 
 def serialize_params(fit_output):
@@ -96,8 +122,12 @@ def serialize_params(fit_output):
             serializable[key] = value
     return serializable
 
+def load_params(path):
+    with open(path) as f:
+        raw = json.load(f)
+    return {k: np.array(v) if isinstance(v, list) else v for k, v in raw.items()}
 
-def build_per_bucket_loadings(parquet_path, bucket_cols, dates, omega):
+def build_per_bucket_loadings(parquet_path, bucket_cols, dates, omega_load):
     raw = (
         pl.read_parquet(parquet_path)
         .with_columns(pl.col("DATE").cast(pl.Utf8))
@@ -112,7 +142,7 @@ def build_per_bucket_loadings(parquet_path, bucket_cols, dates, omega):
     date_to_idx  = {d: i for i, d in enumerate(dates)}
     bucket_names = ["ref"] + [c.replace("bucket_", "") for c in bucket_cols]
 
-    loadings_by_bucket = {name: np.full((T, P), np.nan) for name in bucket_names}
+    loadings_by_bucket = {name: np.full((T, P_FULL), np.nan) for name in bucket_names}
 
     for k, name in enumerate(bucket_names):
         subset = raw.filter(pl.col("bucket_idx") == k)
@@ -121,11 +151,10 @@ def build_per_bucket_loadings(parquet_path, bucket_cols, dates, omega):
         subset_dates = subset["DATE"].to_list()
         t_indices    = np.array([date_to_idx[d] for d in subset_dates], dtype=int)
         cont         = subset[FACTOR_LOADING_COLS].to_numpy()
-        omega_col    = np.full((len(subset), 1), float(omega[k]))
+        omega_col    = np.full((len(subset), 1), float(omega_load[k]))
         loadings_by_bucket[name][t_indices] = np.hstack([cont, omega_col])
 
     return loadings_by_bucket, bucket_names
-
 
 def student_t_absolute_moment_const(q, nu):
     return (
@@ -134,7 +163,6 @@ def student_t_absolute_moment_const(q, nu):
         * gamma_func((nu - q) / 2.0)
         / (np.sqrt(np.pi) * gamma_func(nu / 2.0))
     )
-
 
 def model_implied_partition(sigma2, nu, loading_series, betas, delta_ts, moments):
     T      = loading_series.shape[0]
@@ -192,7 +220,6 @@ def model_implied_partition(sigma2, nu, loading_series, betas, delta_ts, moments
     out["log_t"]    = log_t
     return out
 
-
 def make_panel_plots(empirical_scalings, model_scalings, moments, group_dim, cross_dim, subfolder):
     group_labels = sorted(set(label.split("_")[group_dim] for label in empirical_scalings))
     cross_labels = sorted(set(label.split("_")[cross_dim] for label in empirical_scalings))
@@ -230,14 +257,13 @@ def make_panel_plots(empirical_scalings, model_scalings, moments, group_dim, cro
 
     dim_name_title = "Maturity" if group_dim == 0 else "Moneyness"
     fig.suptitle(
-        rf"$\tau(q)$ by {dim_name_title} — solid: data, dashed: model",
+        rf"$\tau(q)$ by {dim_name_title} — solid: data, dashed: model (K={subfolder.split('K')[-1]})",
         fontsize=12
     )
     plt.tight_layout()
     fname = "by_maturity" if group_dim == 0 else "by_moneyness"
     plt.savefig(os.path.join(subfolder, f"panel_tau_{fname}_model_vs_data.pdf"))
     plt.close()
-
 
 def make_partition_plots(empirical_scaling, model_scaling, label, moments):
     delta_ts = empirical_scaling["delta_ts"]
@@ -269,78 +295,23 @@ def make_partition_plots(empirical_scaling, model_scaling, label, moments):
     plt.tight_layout()
     return fig
 
+def run_scaling(fit_output, bucket_cols, dates, bucket_matrix, matrix_cols, label_map,
+                delta_ts, valid_moments):
+    sigma2     = float(np.array(fit_output["sigma2"]).ravel()[0])
+    nu         = float(np.array(fit_output["nu"]).ravel()[0])
+    omega_load = np.array(fit_output["omega_load"])
+    betas      = np.array(fit_output["betas"])
 
-def main():
-    print("Loading data...")
-    y_cube, Z_cube, n_buckets, bucket_cols, dates = load_and_reshape(PARQUET_PATH)
-    T, max_n = y_cube.shape
-    print(f"  T={T}, max_n={max_n}, n_buckets={n_buckets}")
-
-    if os.path.exists(OUTPUT_PATH):
-        print("Found existing params, loading...")
-        with open(OUTPUT_PATH) as f:
-            raw_params = json.load(f)
-        fit_output = {k: np.array(v) if isinstance(v, list) else v
-                      for k, v in raw_params.items()}
-    else:
-        print("No params found, fitting model...")
-        beta_ols = pooled_ols_beta(y_cube, Z_cube)
-        sigma2   = residual_variance(y_cube, Z_cube, beta_ols)
-
-        initial_guess = build_initial_guess(beta_ols, sigma2, n_buckets)
-
-        fit_output = fit(
-            data=jnp.array(y_cube),
-            covariates=jnp.array(Z_cube),
-            initial_guess=initial_guess,
-            opt_options={"learning_rate": 1e-3, "tol": 1e-6},
-            maxiter=20_000,
-        )
-        os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-        with open(OUTPUT_PATH, "w") as f:
-            json.dump(serialize_params(fit_output), f, indent=2)
-        print(f"  Saved to {OUTPUT_PATH}")
-
-    sigma2 = float(np.array(fit_output["sigma2"]).ravel()[0])
-    nu     = float(np.array(fit_output["nu"]).ravel()[0])
-    omega  = np.array(fit_output["omega"])
-    betas  = np.array(fit_output["betas"])
-
-    print(f"  nu={nu:.2f}, sigma2={sigma2:.4f}")
-
-    valid_moments = MOMENTS[MOMENTS < nu]
-    if len(valid_moments) < len(MOMENTS):
-        print(f"  Dropping moments >= nu={nu:.2f}: {MOMENTS[MOMENTS >= nu]}")
-
-    print("Building per-bucket loading series...")
     loadings_by_bucket, bucket_names = build_per_bucket_loadings(
-        PARQUET_PATH, bucket_cols, dates, omega
+        PARQUET_PATH, bucket_cols, dates, omega_load
     )
 
-    print("Loading bucket matrix for empirical scaling...")
-    bucket_matrix = pl.read_parquet(BUCKET_MATRIX_PATH)
-    matrix_cols   = [c for c in bucket_matrix.columns if c != "DATE"]
-
-    stripped_names  = set(bucket_names) - {"ref"}
-    ref_candidates  = set(matrix_cols) - stripped_names
-    ref_label       = ref_candidates.pop() if len(ref_candidates) == 1 else None
-
-    label_map = {name: name for name in bucket_names if name != "ref"}
-    if ref_label is not None:
-        label_map["ref"] = ref_label
-
-    delta_ts = _make_time_lags(MIN_SCALE, MAX_SCALE)
-
-    print("Computing empirical and model-implied scaling...")
     empirical_scalings = {}
     model_scalings     = {}
-
-    os.makedirs(PLOT_BASE, exist_ok=True)
 
     for bucket_name in bucket_names:
         matrix_label = label_map.get(bucket_name)
         if matrix_label is None or matrix_label not in matrix_cols:
-            print(f"  skipping {bucket_name}: no matching column in bucket matrix")
             continue
 
         col           = bucket_matrix[matrix_label].to_numpy().astype(float)
@@ -354,18 +325,98 @@ def main():
         empirical_scalings[matrix_label] = emp_scaling
         model_scalings[matrix_label]     = mdl_scaling
 
-        fig = make_partition_plots(emp_scaling, mdl_scaling, matrix_label, valid_moments)
-        fig.savefig(os.path.join(PLOT_BASE, f"partition_{matrix_label}.pdf"))
-        plt.close(fig)
+    return empirical_scalings, model_scalings
 
-    print("Making panel plots...")
-    make_panel_plots(empirical_scalings, model_scalings, valid_moments,
-                     group_dim=0, cross_dim=1, subfolder=PLOT_BASE)
-    make_panel_plots(empirical_scalings, model_scalings, valid_moments,
-                     group_dim=1, cross_dim=0, subfolder=PLOT_BASE)
+def main():
+    print("Loading data...")
+    y_cube, Z_cube, n_buckets, bucket_cols, dates = load_and_reshape(PARQUET_PATH)
+    T, max_n = y_cube.shape
+    print(f"  T={T}, max_n={max_n}, n_buckets={n_buckets}")
 
-    print("Done.")
+    beta_ols = pooled_ols_beta(y_cube, Z_cube)
+    sigma2   = residual_variance(y_cube, Z_cube, beta_ols)
 
+    print("Loading bucket matrix for empirical scaling...")
+    bucket_matrix = pl.read_parquet(BUCKET_MATRIX_PATH)
+    matrix_cols   = [c for c in bucket_matrix.columns if c != "DATE"]
+
+    bucket_names_ref = ["ref"] + [c.replace("bucket_", "") for c in bucket_cols]
+    stripped_names   = set(bucket_names_ref) - {"ref"}
+    ref_candidates   = set(matrix_cols) - stripped_names
+    ref_label        = ref_candidates.pop() if len(ref_candidates) == 1 else None
+    label_map        = {name: name for name in bucket_names_ref if name != "ref"}
+    if ref_label is not None:
+        label_map["ref"] = ref_label
+
+    delta_ts = _make_time_lags(MIN_SCALE, MAX_SCALE)
+
+    prev_params = None
+
+    for k in K_VALUES:
+        opath = output_path(k)
+        pbase = plot_base(k)
+
+        print(f"\n--- K={k} ---")
+
+        if os.path.exists(opath):
+            print(f"  Found existing params, loading from {opath}")
+            fit_output = load_params(opath)
+        else:
+            if prev_params is None:
+                print(f"  Cold start")
+                initial_guess = build_initial_guess(beta_ols, sigma2, n_buckets)
+            else:
+                print(f"  Warm start from K={K_VALUES[K_VALUES.index(k) - 1]}")
+                initial_guess = warm_start_guess(prev_params)
+
+            fit_output = fit(
+                data=jnp.array(y_cube),
+                covariates=jnp.array(Z_cube),
+                initial_guess=initial_guess,
+                K=k,
+                opt_options={"learning_rate": 1e-3, "tol": 1e-6},
+                maxiter=20_000,
+            )
+            
+            os.makedirs(os.path.dirname(opath), exist_ok=True)
+            with open(opath, "w") as f:
+                json.dump(serialize_params(fit_output), f, indent=2)
+            print(f"  Saved to {opath}")
+
+        nu         = float(np.array(fit_output["nu"]).ravel()[0])
+        sigma2_fit = float(np.array(fit_output["sigma2"]).ravel()[0])
+        print(f"  nu={nu:.2f}, sigma2={sigma2_fit:.4f}")
+        print(f"  log_lik={float(np.array(fit_output['log_likelihood']).ravel()[0]):.2f}")
+
+        prev_params = fit_output
+
+        valid_moments = MOMENTS[MOMENTS < nu]
+        if len(valid_moments) < len(MOMENTS):
+            print(f"  Dropping moments >= nu={nu:.2f}: {MOMENTS[MOMENTS >= nu]}")
+
+        print(f"  Computing scaling...")
+        empirical_scalings, model_scalings = run_scaling(
+            fit_output, bucket_cols, dates, bucket_matrix, matrix_cols,
+            label_map, delta_ts, valid_moments
+        )
+
+        os.makedirs(pbase, exist_ok=True)
+
+        for matrix_label in empirical_scalings:
+            fig = make_partition_plots(
+                empirical_scalings[matrix_label],
+                model_scalings[matrix_label],
+                matrix_label, valid_moments
+            )
+            fig.savefig(os.path.join(pbase, f"partition_{matrix_label}.pdf"))
+            plt.close(fig)
+
+        make_panel_plots(empirical_scalings, model_scalings, valid_moments,
+                         group_dim=0, cross_dim=1, subfolder=pbase)
+        make_panel_plots(empirical_scalings, model_scalings, valid_moments,
+                         group_dim=1, cross_dim=0, subfolder=pbase)
+
+    print("\nDone.")
 
 if __name__ == "__main__":
     main()

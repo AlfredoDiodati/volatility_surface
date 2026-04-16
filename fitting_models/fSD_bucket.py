@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FixedFormatter
 from scipy.special import gamma as gamma_func
 
-from models.f_SD import fit, solve_weights
+from models.f_SD import fit, _solve_weights
 from scaling.scaling_reg import moment_scaling, _make_time_lags
 
 PARQUET_PATH       = "data/SPX/put/bucket.parquet"
@@ -31,14 +31,11 @@ MOMENTS     = np.arange(1, 9) / 2
 TICK_DAYS   = np.array([1, 5, 21, 63, 126])
 TICK_LABELS = ["1d", "1 week", "1 month", "3 months", "6 months"]
 
-
 def output_path(k):
     return os.path.join(OUTPUT_DIR, f"K{k}", "params.json")
 
-
 def plot_base(k):
     return os.path.join(PLOT_DIR, f"K{k}")
-
 
 def load_and_reshape(path):
     raw = (
@@ -70,7 +67,6 @@ def load_and_reshape(path):
 
     return y_cube, Z_cube, n_buckets, bucket_cols, dates
 
-
 def pooled_ols_beta(y_cube, Z_cube):
     T, max_n, _ = Z_cube.shape
     X    = Z_cube[:, :, :P_BASE].reshape(T * max_n, P_BASE)
@@ -79,13 +75,11 @@ def pooled_ols_beta(y_cube, Z_cube):
     beta_ols, *_ = np.linalg.lstsq(X[mask], y[mask], rcond=None)
     return beta_ols
 
-
 def residual_variance(y_cube, Z_cube, beta):
     X    = Z_cube[:, :, :P_BASE].reshape(-1, P_BASE)
     y    = y_cube.reshape(-1)
     mask = ~np.isnan(y)
     return float(np.var(y[mask] - X[mask] @ beta))
-
 
 def build_initial_guess(beta_ols, sigma2, n_buckets):
     omega_load = np.zeros(n_buckets)
@@ -93,29 +87,29 @@ def build_initial_guess(beta_ols, sigma2, n_buckets):
     return {
         "beta_bar":   jnp.array(beta_ols),
         "B":          jnp.array(0.95 * np.eye(P_TILDE, dtype=np.float64)),
-        "A_tilde":    jnp.array(0.05 * np.ones(P_TILDE, dtype=np.float64)),
+        "A":          jnp.array(0.05 * np.eye(P_TILDE, dtype=np.float64)),
         "sigma2":     jnp.array(sigma2),
-        "omega_mu":   jnp.array(0.0),
+        "sigma_0":    jnp.array(0.1),
         "omega_load": jnp.array(omega_load),
-        "alpha":      jnp.array(0.05),
+        "eta":        jnp.array(ETA),
+        "rho_K":      jnp.array(RHO_K),
         "C":          jnp.array(1e-3 * np.eye(P_FULL, dtype=np.float64)),
         "nu":         jnp.array(10.0),
     }
-
 
 def warm_start_guess(prev_params):
     return {
         "beta_bar":   jnp.array(np.array(prev_params["beta_bar"])),
         "B":          jnp.array(np.array(prev_params["B"])),
-        "A_tilde":    jnp.array(np.array(prev_params["A_tilde"])),
+        "A":          jnp.array(np.array(prev_params["A"])),
         "sigma2":     jnp.array(float(np.array(prev_params["sigma2"]).ravel()[0])),
-        "omega_mu":   jnp.array(float(np.array(prev_params["omega_mu"]).ravel()[0])),
+        "sigma_0":    jnp.array(float(np.array(prev_params["sigma_0"]).ravel()[0])),
         "omega_load": jnp.array(np.array(prev_params["omega_load"])),
-        "alpha":      jnp.array(float(np.array(prev_params["alpha"]).ravel()[0])),
+        "eta":        jnp.array(float(np.array(prev_params["eta"]).ravel()[0])),
+        "rho_K":      jnp.array(float(np.array(prev_params["rho_K"]).ravel()[0])),
         "C":          jnp.array(np.array(prev_params["C"])),
         "nu":         jnp.array(float(np.array(prev_params["nu"]).ravel()[0])),
     }
-
 
 def serialize_params(fit_output):
     serializable = {}
@@ -128,12 +122,10 @@ def serialize_params(fit_output):
             serializable[key] = value
     return serializable
 
-
 def load_params(path):
     with open(path) as f:
         raw = json.load(f)
     return {k: np.array(v) if isinstance(v, list) else v for k, v in raw.items()}
-
 
 def build_per_bucket_loadings(parquet_path, bucket_cols, dates, omega_load):
     raw = (
@@ -164,7 +156,6 @@ def build_per_bucket_loadings(parquet_path, bucket_cols, dates, omega_load):
 
     return loadings_by_bucket, bucket_names
 
-
 def student_t_absolute_moment_const(q, nu):
     return (
         (nu - 2.0) ** (q / 2.0)
@@ -172,7 +163,6 @@ def student_t_absolute_moment_const(q, nu):
         * gamma_func((nu - q) / 2.0)
         / (np.sqrt(np.pi) * gamma_func(nu / 2.0))
     )
-
 
 def model_implied_partition(sigma2, nu, loading_series, betas, delta_ts, moments):
     T      = loading_series.shape[0]
@@ -230,7 +220,6 @@ def model_implied_partition(sigma2, nu, loading_series, betas, delta_ts, moments
     out["log_t"]    = log_t
     return out
 
-
 def make_panel_plots(empirical_scalings, model_scalings, moments, group_dim, cross_dim, subfolder):
     group_labels = sorted(set(label.split("_")[group_dim] for label in empirical_scalings))
     cross_labels = sorted(set(label.split("_")[cross_dim] for label in empirical_scalings))
@@ -276,7 +265,6 @@ def make_panel_plots(empirical_scalings, model_scalings, moments, group_dim, cro
     plt.savefig(os.path.join(subfolder, f"panel_tau_{fname}_model_vs_data.pdf"))
     plt.close()
 
-
 def make_partition_plots(empirical_scaling, model_scaling, label, moments):
     delta_ts = empirical_scaling["delta_ts"]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
@@ -306,7 +294,6 @@ def make_partition_plots(empirical_scaling, model_scaling, label, moments):
 
     plt.tight_layout()
     return fig
-
 
 def run_scaling(fit_output, bucket_cols, dates, bucket_matrix, matrix_cols, label_map,
                 delta_ts, valid_moments):
@@ -340,7 +327,6 @@ def run_scaling(fit_output, bucket_cols, dates, bucket_matrix, matrix_cols, labe
 
     return empirical_scalings, model_scalings
 
-
 def main():
     print("Loading data...")
     y_cube, Z_cube, n_buckets, bucket_cols, dates = load_and_reshape(PARQUET_PATH)
@@ -354,7 +340,6 @@ def main():
     bucket_matrix = pl.read_parquet(BUCKET_MATRIX_PATH)
     matrix_cols   = [c for c in bucket_matrix.columns if c != "DATE"]
 
-    _, _, _, _, _ = load_and_reshape(PARQUET_PATH)
     bucket_names_ref = ["ref"] + [c.replace("bucket_", "") for c in bucket_cols]
     stripped_names   = set(bucket_names_ref) - {"ref"}
     ref_candidates   = set(matrix_cols) - stripped_names
@@ -373,11 +358,11 @@ def main():
 
         print(f"\n--- K={k} ---")
         print(f"  Solving weights (eta={ETA}, rho_K={RHO_K})...")
-        w_tilde_norm, rho = solve_weights(ETA, RHO_K, k)
+        w_tilde_norm, rho = _solve_weights(ETA, RHO_K, k)
         print(f"  rho={rho.round(4)}")
         print(f"  w_tilde_norm={w_tilde_norm.round(4)}")
 
-        if os.path.exists(opath):
+        if os.path.exists(opath) and os.path.getsize(opath) > 0:
             print(f"  Found existing params, loading from {opath}")
             fit_output = load_params(opath)
         else:
@@ -392,25 +377,19 @@ def main():
                 data=jnp.array(y_cube),
                 covariates=jnp.array(Z_cube),
                 initial_guess=initial_guess,
-                w_tilde_norm=jnp.array(w_tilde_norm),
-                rho=jnp.array(rho),
+                K=k,
                 opt_options={"learning_rate": 1e-3, "tol": 1e-6},
                 maxiter=20_000,
             )
-            fit_output["w_tilde_norm"] = w_tilde_norm
-            fit_output["rho"] = rho
-            fit_output["eta"] = ETA
-            fit_output["rho_K"] = RHO_K
-            fit_output["K"] = k
+            
             os.makedirs(os.path.dirname(opath), exist_ok=True)
             with open(opath, "w") as f:
                 json.dump(serialize_params(fit_output), f, indent=2)
             print(f"  Saved to {opath}")
 
-        nu     = float(np.array(fit_output["nu"]).ravel()[0])
+        nu         = float(np.array(fit_output["nu"]).ravel()[0])
         sigma2_fit = float(np.array(fit_output["sigma2"]).ravel()[0])
-        alpha_fit  = float(np.array(fit_output["alpha"]).ravel()[0])
-        print(f"  nu={nu:.2f}, sigma2={sigma2_fit:.4f}, alpha={alpha_fit:.4f}")
+        print(f"  nu={nu:.2f}, sigma2={sigma2_fit:.4f}")
         print(f"  log_lik={float(np.array(fit_output['log_likelihood']).ravel()[0]):.2f}")
 
         prev_params = fit_output
@@ -442,7 +421,6 @@ def main():
                          group_dim=1, cross_dim=0, subfolder=pbase)
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()
