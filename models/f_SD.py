@@ -4,6 +4,13 @@ from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
 
+import math
+
+def _debug_step(quad, log_det_F, ll_t, N_t, sigma_t, sum_b):
+    if not (math.isfinite(float(quad)) and math.isfinite(float(log_det_F)) and math.isfinite(float(ll_t))):
+        print(f"  [BAD STEP] N_t={float(N_t):.0f} sigma_t={float(sigma_t):.4f} sum_b={float(sum_b):.4f} quad={float(quad):.6f} log_det_F={float(log_det_F):.6f} ll_t={float(ll_t):.6f}")
+
+
 def _solve_weights(eta, rho_K, K):
     K1 = K + 1
     n_inner = max(300, K * 40)
@@ -115,6 +122,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K):
             - 0.5 * log_det_F
             - 0.5 * (nu + N_t) * np.log(1.0 + quad / (nu - 2.0))
         )
+        jax.debug.callback(_debug_step, quad, log_det_F, ll_t, N_t, sigma_t, np.sum(b_t))
         b_next = rho * b_t + w_tilde_norm * xi_sigma
         beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
 
@@ -223,6 +231,15 @@ def fit(
     def _criterion(theta):
         params = _link(theta)
         _, lls = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K)
+        jax.debug.print(
+            "[criterion] min_ll={mn} max_ll={mx} n_finite={nf} total={tot} sigma2={s2} nu={nu}",
+            mn=np.min(lls),
+            mx=np.max(lls),
+            nf=np.sum(np.isfinite(lls).astype(float)),
+            tot=np.sum(lls),
+            s2=params["sigma2"],
+            nu=params["nu"],
+        )
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -240,8 +257,8 @@ def fit(
         return (theta_new, m_new, v_new, i1, loss, converged_new)
 
     def _not_converged(state):
-        _, _, _, i, _, converged = state
-        return (i < maxiter) & ~converged
+        _, _, _, i, loss, converged = state
+        return (i < maxiter) & ~converged & (np.isfinite(loss) | (i == 0))
 
     theta0 = np.asarray(_invlink(initial_guess))
     state0 = (
