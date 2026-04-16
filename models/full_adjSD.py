@@ -1,3 +1,5 @@
+# TODO: make sure A, B, C are full matrices, not diagonal
+
 import jax
 import jax.numpy as np
 from jax import lax

@@ -81,10 +81,9 @@ def build_initial_guess(beta_ols, sigma2, n_buckets):
         "A":        jnp.array(0.05 * np.eye(P, dtype=np.float64)),
         "sigma2":   jnp.array(sigma2),
         "omega":    jnp.array(omega),
-        "C":        jnp.array(1e-3 * np.eye(P, dtype=np.float64)),
+        "C":        jnp.array(1e-3 * np.ones(P, dtype=np.float64)),
         "nu":       jnp.array(10.0),
     }
-
 
 def serialize_params(fit_output):
     serializable = {}
@@ -302,8 +301,6 @@ def main():
             json.dump(serialize_params(fit_output), f, indent=2)
         print(f"  Saved to {OUTPUT_PATH}")
 
-    B      = np.array(fit_output["B"])
-    C      = np.array(fit_output["C"])
     sigma2 = float(np.array(fit_output["sigma2"]).ravel()[0])
     nu     = float(np.array(fit_output["nu"]).ravel()[0])
     omega  = np.array(fit_output["omega"])
