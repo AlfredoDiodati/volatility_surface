@@ -61,7 +61,7 @@ def _solve_weights(eta, rho_K, K):
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K):
     B = params["B"]
-    A_tilde = params["A_tilde"]
+    A = params["A"]
     sigma2 = params["sigma2"]
     sigma_0 = params["sigma_0"]
     omega_load = params["omega_load"]
@@ -104,7 +104,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K):
         weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_H / (nu - 2.0))
 
         xi_sigma = weight * gls_step[-1]
-        xi_tilde = A_tilde * (weight * gls_step[:-1])
+        xi_tilde = A @ (weight * gls_step[:-1])
 
         S = C_inv + h_inv * ZtZ
         L_S = np.linalg.cholesky(S + 1e-8 * np.eye(p_full))
@@ -166,6 +166,7 @@ def fit(
     bucket_indices = covariates[:, :, -1].astype(np.int32)
     tril_r, tril_c = np.tril_indices(p_full)
     len_uncB = (p_tilde * (p_tilde - 1) // 2) * 2 + p_tilde
+    len_A = p_tilde * p_tilde
     n_chol = p_full * (p_full + 1) // 2
 
     def _link(theta):
@@ -174,8 +175,9 @@ def fit(
         idx += p_tilde
         B = _link_stable_matrix(theta[idx:idx + len_uncB], p_tilde)
         idx += len_uncB
-        A_tilde = np.exp(theta[idx:idx + p_tilde])
-        idx += p_tilde
+        A_raw = theta[idx:idx + len_A]
+        idx += len_A
+        A = A_raw.reshape(p_tilde, p_tilde)
         sigma2 = np.exp(theta[idx])
         idx += 1
         sigma_0 = theta[idx]
@@ -193,7 +195,7 @@ def fit(
         return {
             "beta_bar": beta_bar,
             "B": B,
-            "A_tilde": A_tilde,
+            "A": A,
             "sigma2": sigma2,
             "sigma_0": sigma_0,
             "omega_load": omega_load,
@@ -205,7 +207,7 @@ def fit(
 
     def _invlink(params):
         unc_B = _invlink_stable_matrix(params["B"], p_tilde)
-        unc_A = np.log(params["A_tilde"])
+        unc_A = params["A"].ravel()
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
         unc_eta = np.log(params["eta"])

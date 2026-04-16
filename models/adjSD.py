@@ -24,33 +24,33 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params):
     def _step(beta_t, inputs):
         y_t, base_t, bidx_t, mask_t = inputs
         omega_col = omega[bidx_t]
-        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        Z_t    = np.concatenate([base_t, omega_col[:, None]], axis=-1)
         Z_mask = Z_t * mask_t[:, None]
-        eps_t = (y_t - Z_t @ beta_t) * mask_t
-        N_t = np.sum(mask_t)
-        ZtZ = Z_mask.T @ Z_mask
-        Zte = Z_mask.T @ eps_t
-        ZtHinvZ = h_inv * ZtZ
+        eps_t  = (y_t - Z_t @ beta_t) * mask_t
+        N_t    = np.sum(mask_t)
+        ZtZ      = Z_mask.T @ Z_mask
+        Zte      = Z_mask.T @ eps_t
+        ZtHinvZ  = h_inv * ZtZ
         gls_step = np.linalg.solve(ZtHinvZ + 1e-8 * np.eye(p), h_inv * Zte)
-        mahal_H = h_inv * (eps_t @ eps_t)
-        weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_H / (nu - 2.0))
-        xi = A @ (weight * gls_step)
-        S = C_inv + h_inv * ZtZ
-        L_S = np.linalg.cholesky(S + 1e-8 * np.eye(p))
-        log_det_F = (
-            N_t * np.log(sigma2)
-            + log_det_C
-            + 2.0 * np.sum(np.log(np.diag(L_S)))
-        )
-        v = solve_triangular(L_S, Zte, lower=True)
+        mahal_H  = h_inv * (eps_t @ eps_t)
+        weight   = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_H / (nu - 2.0))
+        xi       = A @ (weight * gls_step)
+
+        S     = C_inv + h_inv * ZtZ
+        L_S   = np.linalg.cholesky(S + 1e-8 * np.eye(p))
+        log_det_F = (N_t * np.log(sigma2)
+                     + log_det_C
+                     + 2.0 * np.sum(np.log(np.diag(L_S))))
+
+        v    = solve_triangular(L_S, Zte, lower=True)
         quad = h_inv * (eps_t @ eps_t) - h_inv**2 * (v @ v)
-        ll_t = (
-            gammaln((nu + N_t) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
-            - 0.5 * log_det_F
-            - 0.5 * (nu + N_t) * np.log(1.0 + quad / (nu - 2.0))
-        )
+
+        ll_t = (gammaln((nu + N_t) / 2.0)
+                - gammaln(nu / 2.0)
+                - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
+                - 0.5 * log_det_F
+                - 0.5 * (nu + N_t) * np.log(1.0 + quad / (nu - 2.0)))
+
         beta_next = IminusB @ beta_bar + B @ beta_t + xi
         return beta_next, (ll_t, beta_t)
 
@@ -61,13 +61,14 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params):
     betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
     return betas, lls
 
+
 def fit(
     data: np.ndarray,
     covariates: np.ndarray,
     initial_guess: dict,
     opt_options: dict | None = None,
-    maxiter: int = 5000,
-):
+    maxiter: int = 5000,):
+
     data = np.asarray(data, dtype=float)
     covariates = np.asarray(covariates, dtype=float)
     p = initial_guess["beta_bar"].shape[0]
@@ -96,15 +97,15 @@ def fit(
         idx += len_uncB
         A = np.diag(np.exp(theta[idx:idx + p]))
         idx += p
-        sigma2 = np.exp(theta[idx])
-        idx += 1
+        sigma2 = np.exp(theta[idx]); idx += 1
         omega = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]])
         idx += n_buckets - 1
         L = np.zeros((p, p)).at[tril_r, tril_c].set(theta[idx:idx + n_chol])
         idx += n_chol
         C = L @ L.T
         nu = np.exp(theta[idx]) + 2.0
-        return {"beta_bar": beta_bar, "B": B, "A": A, "sigma2": sigma2, "omega": omega, "C": C, "nu": nu}
+        return {"beta_bar": beta_bar, "B": B, "A": A,
+                "sigma2": sigma2, "omega": omega, "C": C, "nu": nu}
 
     def _invlink(params):
         unc_B = _invlink_stable_matrix(params["B"], p)
@@ -114,11 +115,9 @@ def fit(
         L_C = np.linalg.cholesky(params["C"] + 1e-8 * np.eye(p))
         unc_C = L_C[tril_r, tril_c]
         unc_nu = np.log(params["nu"] - 2.0)
-        return np.concatenate([
-            params["beta_bar"], unc_B, unc_A,
+        return np.concatenate([params["beta_bar"], unc_B, unc_A,
             np.array([unc_s2]), unc_omega,
-            unc_C, np.array([unc_nu]),
-        ])
+            unc_C, np.array([unc_nu])])
 
     def _criterion(theta):
         params = _link(theta)
@@ -144,19 +143,20 @@ def fit(
         return (i < maxiter) & ~converged
 
     theta0 = np.asarray(_invlink(initial_guess))
-    state0 = (
-        theta0,
+    state0 = (theta0,
         np.zeros_like(theta0),
         np.zeros_like(theta0),
         np.asarray(0, dtype=np.int32),
         np.asarray(np.inf),
-        np.asarray(False),
-    )
+        np.asarray(False))
+    
     theta_opt, _, _, niter, final_loss, is_converged = lax.while_loop(
         _not_converged, _adam_step, state0
     )
+
     params_opt = _link(theta_opt)
     betas, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt)
+
     return params_opt | {
         "betas": betas,
         "log_likelihood": -final_loss,
