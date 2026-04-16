@@ -1,61 +1,19 @@
+import math
 import jax
 import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
 
-def _solve_weights(eta, rho_K, K):
-    K1 = K + 1
-    n_inner = max(300, K * 40)
+from models.f_SD import _solve_weights, _filter as _filter_clean, fit as fit_clean
 
-    def _decode(x):
-        w = jax.nn.softmax(x[:K1])
-        rho_0 = rho_K * jax.nn.sigmoid(x[K1])
-        def _rho_step(rho_prev, phi_i):
-            rho_next = rho_prev + (rho_K - rho_prev) * jax.nn.sigmoid(phi_i)
-            return rho_next, rho_next
-        carry, rho_stack = lax.scan(_rho_step, rho_0, x[K1 + 1:K1 + K])
-        rho_inner = np.concatenate([np.array([rho_0]), rho_stack])
-        rho = np.concatenate([rho_inner, np.array([rho_K])])
-        return w, rho
-
-    def _loss(x):
-        w, rho = _decode(x)
-        Gamma = np.outer(w, w) / (1.0 - np.outer(rho, rho))
-        gamma_0 = np.sum(Gamma)
-        w_star = np.sum(Gamma, axis=1)
-        taus = np.arange(1, K + 1, dtype=float)
-        log_rho = np.log(np.clip(rho, 1e-10, 1.0 - 1e-10))
-        rho_powers = np.exp(np.outer(taus, log_rho))
-        gamma_taus = rho_powers @ w_star
-        ratios = gamma_taus / gamma_0
-        targets = taus ** (-eta)
-        return np.sum((ratios - targets) ** 2)
-
-    _grad = jax.grad(_loss)
-
-    x0 = np.zeros(K1 + K)
-    m0 = np.zeros(K1 + K)
-    v0 = np.zeros(K1 + K)
-
-    def _adam_step(state, _):
-        x, m, v, t = state
-        g = _grad(x)
-        t1 = t + 1.0
-        m_new = 0.9 * m + 0.1 * g
-        v_new = 0.999 * v + 0.001 * g * g
-        mhat = m_new / (1.0 - 0.9 ** t1)
-        vhat = v_new / (1.0 - 0.999 ** t1)
-        x_new = x - 0.05 * mhat / (np.sqrt(vhat) + 1e-8)
-        return (x_new, m_new, v_new, t1), None
-
-    (x_opt, _, _, _), _ = lax.scan(
-        _adam_step,
-        (x0, m0, v0, np.array(0.0)),
-        None,
-        length=n_inner,
-    )
-    return _decode(x_opt)
+def _debug_step(quad, log_det_F, ll_t, N_t, sigma_t, sum_b):
+    if not (math.isfinite(float(quad)) and math.isfinite(float(log_det_F)) and math.isfinite(float(ll_t))):
+        print(
+            f"  [BAD STEP] N_t={float(N_t):.0f} sigma_t={float(sigma_t):.4f} "
+            f"sum_b={float(sum_b):.4f} quad={float(quad):.6f} "
+            f"log_det_F={float(log_det_F):.6f} ll_t={float(ll_t):.6f}"
+        )
 
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K):
@@ -115,6 +73,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K):
             - 0.5 * log_det_F
             - 0.5 * (nu + N_t) * np.log(1.0 + quad / (nu - 2.0))
         )
+        jax.debug.callback(_debug_step, quad, log_det_F, ll_t, N_t, sigma_t, np.sum(b_t))
         b_next = rho * b_t + w_tilde_norm * xi_sigma
         beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
 
@@ -223,6 +182,15 @@ def fit(
     def _criterion(theta):
         params = _link(theta)
         _, lls = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K)
+        jax.debug.print(
+            "[criterion] min_ll={mn} max_ll={mx} n_finite={nf} total={tot} sigma2={s2} nu={nu}",
+            mn=np.min(lls),
+            mx=np.max(lls),
+            nf=np.sum(np.isfinite(lls).astype(float)),
+            tot=np.sum(lls),
+            s2=params["sigma2"],
+            nu=params["nu"],
+        )
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -263,5 +231,3 @@ def fit(
         "niter": niter,
         "is_converged": is_converged,
     }
-
-fit = jax.jit(fit, static_argnames=("maxiter", "K"))
