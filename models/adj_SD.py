@@ -2,8 +2,6 @@ import jax
 import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
-from jax.scipy.linalg import solve_triangular
-from models.ss import _link_stable_matrix, _invlink_stable_matrix
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params):
     B = params["B"]
@@ -16,10 +14,8 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params):
     p = beta_bar.shape[0]
     h_inv = 1.0 / sigma2
     IminusB = np.eye(p) - B
-    C_reg = C + 1e-8 * np.eye(p)
-    L_C = np.linalg.cholesky(C_reg)
-    log_det_C = 2.0 * np.sum(np.log(np.diag(L_C)))
-    C_inv = np.linalg.inv(C_reg)
+    C_diag = C
+    C_inv = 1.0 / C_diag
 
     def _step(beta_t, inputs):
         y_t, base_t, bidx_t, mask_t = inputs
@@ -35,14 +31,9 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params):
         mahal_H = h_inv * (eps_t @ eps_t)
         weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_H / (nu - 2.0))
         xi = A @ (weight * gls_step)
-        S = C_inv + h_inv * ZtZ
-        L_S = np.linalg.cholesky(S + 1e-8 * np.eye(p))
-        log_det_F = (
-            N_t * np.log(sigma2)
-            + log_det_C
-            + 2.0 * np.sum(np.log(np.diag(L_S)))
-        )
-        v = solve_triangular(L_S, Zte, lower=True)
+        S_diag = C_inv + h_inv * np.diag(ZtZ)
+        log_det_F = N_t * np.log(sigma2) + np.sum(np.log(C_diag)) + np.sum(np.log(S_diag))
+        v = Zte / S_diag
         quad = h_inv * (eps_t @ eps_t) - h_inv**2 * (v @ v)
         ll_t = (
             gammaln((nu + N_t) / 2.0)
@@ -84,35 +75,33 @@ def fit(
     mask_f = mask_bool.astype(float)
     base_covariates = covariates[:, :, :-1]
     bucket_indices = covariates[:, :, -1].astype(np.int32)
-    tril_r, tril_c = np.tril_indices(p)
-    len_uncB = (p * (p - 1) // 2) * 2 + p
-    n_chol = p * (p + 1) // 2
 
     def _link(theta):
         idx = 0
         beta_bar = theta[idx:idx + p]
         idx += p
-        B = _link_stable_matrix(theta[idx:idx + len_uncB], p)
-        idx += len_uncB
+        B_diag = np.tanh(theta[idx:idx + p])
+        B = np.diag(B_diag)
+        idx += p
         A = np.diag(theta[idx:idx + p])
         idx += p
         sigma2 = np.exp(theta[idx])
         idx += 1
         omega = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]])
         idx += n_buckets - 1
-        L = np.zeros((p, p)).at[tril_r, tril_c].set(theta[idx:idx + n_chol])
-        idx += n_chol
-        C = L @ L.T
+        C_diag = theta[idx:idx + p]
+        idx += p
         nu = np.exp(theta[idx]) + 2.0
-        return {"beta_bar": beta_bar, "B": B, "A": A, "sigma2": sigma2, "omega": omega, "C": C, "nu": nu}
+        return {"beta_bar": beta_bar, "B": B, "A": A, "sigma2": sigma2,
+                "omega": omega, "C": C_diag, "nu": nu}
 
     def _invlink(params):
-        unc_B = _invlink_stable_matrix(params["B"], p)
+        B_diag = np.diag(params["B"])
+        unc_B = np.arctanh(B_diag)
         unc_A = np.diag(params["A"])
         unc_s2 = np.log(params["sigma2"])
         unc_omega = params["omega"][1:]
-        L_C = np.linalg.cholesky(params["C"] + 1e-8 * np.eye(p))
-        unc_C = L_C[tril_r, tril_c]
+        unc_C = params["C"]
         unc_nu = np.log(params["nu"] - 2.0)
         return np.concatenate([
             params["beta_bar"], unc_B, unc_A,
