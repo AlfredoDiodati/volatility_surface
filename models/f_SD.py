@@ -5,24 +5,18 @@ from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
 from models.ss import _link_stable_matrix, _invlink_stable_matrix
 
-
 def _solve_weights(eta, rho_K, K):
     K1 = K + 1
     n_inner = max(300, K * 40)
 
     def _decode(x):
         w = jax.nn.softmax(x[:K1])
-        if K == 0:
-            return w, np.array([rho_K])
         rho_0 = rho_K * jax.nn.sigmoid(x[K1])
-        if K == 1:
-            rho_inner = np.array([rho_0])
-        else:
-            def _rho_step(rho_prev, phi_i):
-                rho_next = rho_prev + (rho_K - rho_prev) * jax.nn.sigmoid(phi_i)
-                return rho_next, rho_next
-            _, rho_rest = lax.scan(_rho_step, rho_0, x[K1 + 1:K1 + K])
-            rho_inner = np.concatenate([np.array([rho_0]), rho_rest])
+        def _rho_step(rho_prev, phi_i):
+            rho_next = rho_prev + (rho_K - rho_prev) * jax.nn.sigmoid(phi_i)
+            return rho_next, rho_next
+        carry, rho_stack = lax.scan(_rho_step, rho_0, x[K1 + 1:K1 + K])
+        rho_inner = np.concatenate([np.array([rho_0]), rho_stack])
         rho = np.concatenate([rho_inner, np.array([rho_K])])
         return w, rho
 
