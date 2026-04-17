@@ -3,7 +3,7 @@ import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
 
-def _filter(y_masked, base_covariates, bucket_indices, mask_f, params):
+def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0=None):
     B = params["B"]
     A = params["A"]
     sigma2 = params["sigma2"]
@@ -45,12 +45,14 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params):
         beta_next = IminusB @ beta_bar + B @ beta_t + xi
         return beta_next, (ll_t, beta_t)
 
+    init = beta_bar if state0 is None else state0
+
     beta_T, (lls, betas_prev) = lax.scan(
-        _step, beta_bar,
+        _step, init,
         (y_masked, base_covariates, bucket_indices, mask_f),
     )
     betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
-    return betas, lls
+    return betas, lls, beta_T
 
 def fit(
     data: np.ndarray,
@@ -111,7 +113,7 @@ def fit(
 
     def _criterion(theta):
         params = _link(theta)
-        _, lls = _filter(y_masked, base_covariates, bucket_indices, mask_f, params)
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params)
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -145,12 +147,41 @@ def fit(
         _not_converged, _adam_step, state0
     )
     params_opt = _link(theta_opt)
-    betas, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt)
+    betas, _, beta_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt)
     return params_opt | {
         "betas": betas,
+        "beta_T": beta_T,
         "log_likelihood": -final_loss,
         "niter": niter,
         "is_converged": is_converged,
     }
 
 fit = jax.jit(fit, static_argnames=("maxiter",))
+
+def forecast(fit_result, covariates, q_alpha):
+    state0 = fit_result["beta_T"]
+
+    covariates = np.asarray(covariates, dtype=float)
+    H = covariates.shape[0]
+    n_obs = covariates.shape[1]
+    base_covariates = covariates[:, :, :-1]
+    bucket_indices = covariates[:, :, -1].astype(np.int32)
+
+    y_zeros = np.zeros((H, n_obs))
+    mask_zeros = np.zeros((H, n_obs))
+
+    betas, _, _ = _filter(y_zeros, base_covariates, bucket_indices, mask_zeros, fit_result, state0=state0)
+
+    omega_cols = fit_result["omega"][bucket_indices]
+    Z = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
+    predictions = np.einsum("hni,hi->hn", Z, betas[:H])
+
+    P = predictions.mean(axis=1)
+
+    z_sum = Z.sum(axis=1)
+    F_sum = n_obs * fit_result["sigma2"] + (z_sum ** 2 * fit_result["C"]).sum(axis=1)
+    VaR = P + q_alpha / n_obs * np.sqrt(F_sum)
+
+    return predictions, betas, P, VaR
+
+forecast = jax.jit(forecast)

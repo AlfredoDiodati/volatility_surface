@@ -38,7 +38,7 @@ def _solve_weights(eta, beta, K):
     
     return w, rhos
 
-def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K):
+def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0=None):
     B = params["B"]
     A = params["A"]
     sigma2 = params["sigma2"]
@@ -100,16 +100,16 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K):
 
         return (b_next, beta_tilde_next), (ll_t, beta_full_t)
 
-    state0 = (np.zeros(K1), beta_bar)
+    init = (np.zeros(K1), beta_bar) if state0 is None else state0
 
     (b_T, beta_tilde_T), (lls, betas_prev) = lax.scan(
-        _step, state0,
+        _step, init,
         (y_masked, base_covariates, bucket_indices, mask_f),
     )
     sigma_T = sigma_0 + np.sum(b_T)
     beta_T = np.concatenate([beta_tilde_T, np.array([sigma_T])])
     betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
-    return betas, lls
+    return betas, lls, (b_T, beta_tilde_T)
 
 
 def fit(
@@ -202,7 +202,7 @@ def fit(
 
     def _criterion(theta):
         params = _link(theta)
-        _, lls = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K)
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K)
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -236,12 +236,42 @@ def fit(
         _not_converged, _adam_step, state0
     )
     params_opt = _link(theta_opt)
-    betas, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K)
+    betas, _, (b_T, beta_tilde_T) = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K)
     return params_opt | {
         "betas": betas,
+        "b_T": b_T,
+        "beta_tilde_T": beta_tilde_T,
         "log_likelihood": -final_loss,
         "niter": niter,
         "is_converged": is_converged,
     }
-
+    
 fit = jax.jit(fit, static_argnames=("maxiter", "K"))
+
+def forecast(fit_result, covariates, K, q_alpha):
+    state0 = (fit_result["b_T"], fit_result["beta_tilde_T"])
+
+    covariates = np.asarray(covariates, dtype=float)
+    H = covariates.shape[0]
+    n_obs = covariates.shape[1]
+    base_covariates = covariates[:, :, :-1]
+    bucket_indices = covariates[:, :, -1].astype(np.int32)
+
+    y_zeros = np.zeros((H, n_obs))
+    mask_zeros = np.zeros((H, n_obs))
+
+    betas, _, _ = _filter(y_zeros, base_covariates, bucket_indices, mask_zeros, fit_result, K, state0=state0)
+
+    omega_cols = fit_result["omega_load"][bucket_indices]
+    Z = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
+    predictions = np.einsum("hni,hi->hn", Z, betas[:H])
+
+    P = predictions.mean(axis=1)
+
+    z_sum = Z.sum(axis=1)
+    F_sum = n_obs * fit_result["sigma2"] + np.einsum("hi,ij,hj->h", z_sum, fit_result["C"], z_sum)
+    VaR = P + q_alpha / n_obs * np.sqrt(F_sum)
+
+    return predictions, betas, P, VaR
+
+forecast = jax.jit(forecast, static_argnames=("K",))

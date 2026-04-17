@@ -34,41 +34,6 @@ def _collapsed_correction(constr_params, _extra_ll_data):
         - 0.5 / sigma2 * constr_params["sum_resid_sq"]
     )
 
-def _link_stable_matrix(B_unconstrained: np.ndarray, n: int) -> np.ndarray:
-    B_unconstrained = np.asarray(B_unconstrained, dtype=float)
-    number_of_skew_parameters = n * (n - 1) // 2
-    number_of_upper_triangular_parameters = n * (n - 1) // 2
-    lower_row_indices, lower_col_indices = np.tril_indices(n, k=-1)
-    skew_symmetric_matrix = np.zeros((n, n), dtype=float)
-    skew_symmetric_matrix = skew_symmetric_matrix.at[lower_row_indices, lower_col_indices].set(
-        B_unconstrained[:number_of_skew_parameters])
-    skew_symmetric_matrix = skew_symmetric_matrix - skew_symmetric_matrix.T
-    identity = np.eye(n, dtype=float)
-    orthogonal_matrix_q = np.linalg.solve(identity + skew_symmetric_matrix, identity - skew_symmetric_matrix)
-    constrained_schur_matrix = np.zeros((n, n), dtype=float)
-    upper_row_indices, upper_col_indices = np.triu_indices(n, k=1)
-    start_upper = number_of_skew_parameters
-    end_upper = start_upper + number_of_upper_triangular_parameters
-    constrained_schur_matrix = constrained_schur_matrix.at[upper_row_indices, upper_col_indices].set(
-        B_unconstrained[start_upper:end_upper])
-    start_diag = end_upper
-    constrained_schur_matrix = constrained_schur_matrix.at[np.arange(n), np.arange(n)].set(
-        np.tanh(B_unconstrained[start_diag : start_diag + n]))
-    tmp = orthogonal_matrix_q @ constrained_schur_matrix
-    return tmp @ orthogonal_matrix_q.T
-
-def _invlink_stable_matrix(B_constrained: np.ndarray, n: int) -> np.ndarray:
-    B_constrained = np.asarray(B_constrained, dtype=float)
-    _, orthogonal_matrix_q = np.linalg.eigh(B_constrained)
-    constrained_schur_matrix = orthogonal_matrix_q.T @ B_constrained @ orthogonal_matrix_q
-    identity = np.eye(n, dtype=float)
-    cayley_matrix = np.linalg.solve(identity + orthogonal_matrix_q, identity - orthogonal_matrix_q)
-    lower_row_indices, lower_col_indices = np.tril_indices(n, k=-1)
-    skew_lower_triangular_part = cayley_matrix[lower_row_indices, lower_col_indices]
-    upper_row_indices, upper_col_indices = np.triu_indices(n, k=1)
-    upper_triangular_part = constrained_schur_matrix[upper_row_indices, upper_col_indices]
-    diagonal_part = np.arctanh(np.clip(np.diag(constrained_schur_matrix), -0.999999, 0.999999))
-    return np.concatenate([skew_lower_triangular_part, upper_triangular_part, diagonal_part])
 
 def _build_Zt_all(base_covariates, bucket_indices, omega):
     def one_t(base_t, bidx_t):
@@ -91,14 +56,13 @@ def fit(
 
     def _link(unconstrained_params: np.ndarray) -> dict:
         unconstrained_params = np.asarray(unconstrained_params, dtype=float)
-        len_uncB = (p * (p - 1) // 2) + (p * (p - 1) // 2) + p
         end_H = 1
         end_Q = end_H + p
-        end_B = end_Q + len_uncB
+        end_B = end_Q + p
         end_omega = end_B + (n_buckets - 1)
         H = np.exp(unconstrained_params[0]) * np.eye(pH, dtype=float)
         Q = np.diag(np.exp(unconstrained_params[end_H:end_Q]))
-        B = _link_stable_matrix(unconstrained_params[end_Q:end_B], p)
+        B = np.diag(np.tanh(unconstrained_params[end_Q:end_B]))
         omega = np.concatenate([np.zeros(1), unconstrained_params[end_B:end_omega]])
         bar_beta = unconstrained_params[end_omega:]
         ct = (np.eye(p) - B) @ bar_beta
@@ -107,7 +71,7 @@ def fit(
     def _invlink(constrained_params: dict):
         uncH = np.array([np.log(constrained_params["H_param"][0, 0])])
         uncQ = np.log(np.diag(constrained_params["Q_param"]))
-        uncB = _invlink_stable_matrix(constrained_params["B"], p)
+        uncB = np.arctanh(np.clip(np.diag(constrained_params["B"]), -0.999999, 0.999999))
         return np.concatenate([uncH, uncQ, uncB, constrained_params["omega"][1:], constrained_params["bar_beta"]])
 
     return _fit(
@@ -145,14 +109,13 @@ def fit_collapsed(
 
     def _link(unconstrained_params: np.ndarray) -> dict:
         unconstrained_params = np.asarray(unconstrained_params, dtype=float)
-        len_uncB = (p * (p - 1) // 2) * 2 + p
         end_H = 1
         end_Q = end_H + p
-        end_B = end_Q + len_uncB
+        end_B = end_Q + p
         end_omega = end_B + (n_buckets - 1)
         H = np.exp(unconstrained_params[0]) * np.eye(1, dtype=float)
         Q = np.diag(np.exp(unconstrained_params[end_H:end_Q]))
-        B = _link_stable_matrix(unconstrained_params[end_Q:end_B], p)
+        B = np.diag(np.tanh(unconstrained_params[end_Q:end_B]))
         omega = np.concatenate([np.zeros(1), unconstrained_params[end_B:end_omega]])
         bar_beta = unconstrained_params[end_omega:]
         ct = (np.eye(p) - B) @ bar_beta
@@ -176,7 +139,7 @@ def fit_collapsed(
     def _invlink(constrained_params: dict):
         uncH = np.array([np.log(constrained_params["H_param"][0, 0])])
         uncQ = np.log(np.diag(constrained_params["Q_param"]))
-        uncB = _invlink_stable_matrix(constrained_params["B"], p)
+        uncB = np.arctanh(np.clip(np.diag(constrained_params["B"]), -0.999999, 0.999999))
         return np.concatenate([
             uncH, uncQ, uncB,
             constrained_params["omega"][1:],
@@ -218,6 +181,39 @@ def fit_collapsed(
         "niter": result["niter"],
         "is_converged": result["is_converged"],
     }
+
+def forecast(fit_result, covariates, q_alpha):
+    a0 = fit_result["att"][-1]
+    P0 = fit_result["Ptt"][-1]
+    B = fit_result["B"]
+    Q = fit_result["Q_param"]
+    ct = fit_result["ct"]
+    sigma2 = fit_result["H_param"][0, 0]
+    omega = fit_result["omega"]
+
+    covariates = np.asarray(covariates, dtype=float)
+    n_obs = covariates.shape[1]
+    base_covariates = covariates[:, :, :-1]
+    bucket_indices = covariates[:, :, -1].astype(np.int32)
+
+    Z_all = _build_Zt_all(base_covariates, bucket_indices, omega)
+
+    def _step(carry, Z_h):
+        a_t, P_t = carry
+        a_pred = B @ a_t + ct
+        P_pred = B @ P_t @ B.T + Q
+        y_hat = Z_h @ a_pred
+        P_mean = y_hat.mean()
+        z_sum = Z_h.sum(axis=0)
+        F_sum = n_obs * sigma2 + z_sum @ P_pred @ z_sum
+        VaR_h = P_mean + q_alpha / n_obs * np.sqrt(F_sum)
+        return (a_pred, P_pred), (y_hat, P_mean, VaR_h)
+
+    _, (predictions, P_means, VaR) = jax.lax.scan(_step, (a0, P0), Z_all)
+
+    return predictions, P_means, VaR
+
+forecast = jax.jit(forecast)
 
 def simulation(fit_output, nsim, npaths, key: jax.Array):
     return _simulation(fit_output, nsim, _dynamics, npaths, key)
