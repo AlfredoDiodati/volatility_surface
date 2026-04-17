@@ -98,8 +98,8 @@ def fit_collapsed(
     Z_mask = y_mask[:, :, None]
     base_covariates = covariates[:, :, :-1]
     bucket_cube = covariates[:, :, -1].astype(np.int32)
-    total_obs = int(np.sum(y_mask))
-    n_half_total = float(total_obs - T_obs * p) / 2
+    total_obs = np.sum(y_mask)
+    n_half_total = (total_obs - T_obs * p) / 2.0
     dummy_data = np.zeros((T_obs, p), dtype=float)
 
     def _build_Zt_cube(omega):
@@ -150,14 +150,14 @@ def fit_collapsed(
     initial_ZtTZt = np.einsum("tnp,tnq->tpq", initial_Zt_cube, initial_Zt_cube)
     initial_Gamma = np.linalg.inv(initial_ZtTZt + 1e-8 * np.eye(p))
     initial_ystar = np.einsum("tpq,tnq,tn->tp", initial_Gamma, initial_Zt_cube, y_masked)
-    init_sum_yy = float(np.sum(y_masked ** 2))
-    init_sum_ZyZy = float(np.sum(initial_ystar * np.einsum("tpq,tq->tp", initial_ZtTZt, initial_ystar)))
+    init_sum_yy = np.sum(y_masked ** 2)
+    init_sum_ZyZy = np.sum(initial_ystar * np.einsum("tpq,tq->tp", initial_ZtTZt, initial_ystar))
     initial_guess_augmented = initial_guess | {
         "Gamma": initial_Gamma,
         "ystar": initial_ystar,
-        "n_half_ph_minus_p": np.asarray(-n_half_total),
-        "sum_logdet_Gamma": np.asarray(float(np.sum(np.linalg.slogdet(initial_Gamma)[1]))),
-        "sum_resid_sq": np.asarray(init_sum_yy - init_sum_ZyZy),
+        "n_half_ph_minus_p": -n_half_total,
+        "sum_logdet_Gamma": np.sum(np.linalg.slogdet(initial_Gamma)[1]),
+        "sum_resid_sq": init_sum_yy - init_sum_ZyZy,
     }
     a1, P1, _Z0, T0, _H0, R0, Q0, _idx = initialization
     carry_collapsed = (
