@@ -91,7 +91,7 @@ def fit(
         idx += 1
         omega = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]])
         idx += n_buckets - 1
-        C_diag = theta[idx:idx + p]
+        C_diag = np.exp(theta[idx:idx + p])
         idx += p
         nu = np.exp(theta[idx]) + 2.0
         return {"beta_bar": beta_bar, "B": B, "A": A, "sigma2": sigma2,
@@ -103,7 +103,7 @@ def fit(
         unc_A = np.diag(params["A"])
         unc_s2 = np.log(params["sigma2"])
         unc_omega = params["omega"][1:]
-        unc_C = params["C"]
+        unc_C = np.log(params["C"])
         unc_nu = np.log(params["nu"] - 2.0)
         return np.concatenate([
             params["beta_bar"], unc_B, unc_A,
