@@ -4,59 +4,39 @@ from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
 
-def _solve_weights(eta, rho_K, K):
-    K1 = K + 1
-    n_inner = max(300, K * 40)
+import jax.numpy as np
+from jax import lax
 
-    def _decode(x):
-        w = jax.nn.softmax(x[:K1])
-        rho_0 = rho_K * jax.nn.sigmoid(x[K1])
-        def _rho_step(rho_prev, phi_i):
-            rho_next = rho_prev + (rho_K - rho_prev) * jax.nn.sigmoid(phi_i)
-            return rho_next, rho_next
-        carry, rho_stack = lax.scan(_rho_step, rho_0, x[K1 + 1:K1 + K])
-        rho_inner = np.concatenate([np.array([rho_0]), rho_stack])
-        rho = np.concatenate([rho_inner, np.array([rho_K])])
-        return w, rho
+def _solve_weights(eta, beta, K):
+    indices = np.arange(K + 1)
+    
+    lambdas = eta * np.power(beta, -indices)
+    rhos = np.exp(-lambdas)
 
-    def _loss(x):
-        w, rho = _decode(x)
-        Gamma = np.outer(w, w) / (1.0 - np.outer(rho, rho))
-        gamma_0 = np.sum(Gamma)
-        w_star = np.sum(Gamma, axis=1)
-        taus = np.arange(1, K + 1, dtype=float)
-        log_rho = np.log(np.clip(rho, 1e-10, 1.0 - 1e-10))
-        rho_powers = np.exp(np.outer(taus, log_rho))
-        gamma_taus = rho_powers @ w_star
-        ratios = gamma_taus / gamma_0
-        targets = taus ** (-eta)
-        return np.sum((ratios - targets) ** 2)
+    def _rec_step(c_stack, k):
+        i_range = np.arange(K + 1)
+        mask = i_range < k
+        
+        diff = k - i_range
+        terms = c_stack * np.power(beta, -eta * diff) * np.exp(eta * (1.0 - np.power(beta, -diff)))
+        
+        c_next = 1.0 - np.sum(np.where(mask, terms, 0.0))
+        return c_stack.at[k].set(c_next), None
 
-    _grad = jax.grad(_loss)
-
-    x0 = np.zeros(K1 + K)
-    m0 = np.zeros(K1 + K)
-    v0 = np.zeros(K1 + K)
-
-    def _adam_step(state, _):
-        x, m, v, t = state
-        g = _grad(x)
-        t1 = t + 1.0
-        m_new = 0.9 * m + 0.1 * g
-        v_new = 0.999 * v + 0.001 * g * g
-        mhat = m_new / (1.0 - 0.9 ** t1)
-        vhat = v_new / (1.0 - 0.999 ** t1)
-        x_new = x - 0.05 * mhat / (np.sqrt(vhat) + 1e-8)
-        return (x_new, m_new, v_new, t1), None
-
-    (x_opt, _, _, _), _ = lax.scan(
-        _adam_step,
-        (x0, m0, v0, np.array(0.0)),
-        None,
-        length=n_inner,
+    c_init = np.zeros(K + 1)
+    c_init = c_init.at[0].set(1.0)
+    
+    c_final, _ = lax.scan(
+        _rec_step, 
+        c_init, 
+        np.arange(1, K + 1)
     )
-    return _decode(x_opt)
-
+    
+    c_ordered = np.flip(c_final)
+    w_tilde = c_ordered * np.power(beta, -indices * eta)
+    w = w_tilde / np.sum(w_tilde)
+    
+    return w, rhos
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K):
     B = params["B"]
