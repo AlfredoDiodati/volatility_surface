@@ -171,8 +171,8 @@ def _fit(
         return (params_new, m_new, v_new, i1, loss, converged_new)
 
     def _not_converged(state):
-        _, _, _, i, _, converged = state
-        return (i < maxiter) & ~converged
+        _, _, _, i, loss, converged = state
+        return (i < maxiter) & ~converged & (np.isfinite(loss) | (i == 0))
 
     unc_params0 = np.asarray(unc_params0)
     m0 = np.zeros_like(unc_params0)
@@ -258,8 +258,8 @@ def _fit_collapsed(
         return (params_new, m_new, v_new, i1, loss, converged_new)
 
     def _not_converged(state):
-        _, _, _, i, _, converged = state
-        return (i < maxiter) & ~converged
+        _, _, _, i, loss, converged = state
+        return (i < maxiter) & ~converged & (np.isfinite(loss) | (i == 0))
 
     unc_params0 = np.asarray(unc_params0)
     m0 = np.zeros_like(unc_params0)

@@ -131,8 +131,8 @@ def fit(
         return (theta_new, m_new, v_new, i1, loss, converged_new)
 
     def _not_converged(state):
-        _, _, _, i, _, converged = state
-        return (i < maxiter) & ~converged
+        _, _, _, i, loss, converged = state
+        return (i < maxiter) & ~converged & (np.isfinite(loss) | (i == 0))
 
     theta0 = np.asarray(_invlink(initial_guess))
     state0 = (
