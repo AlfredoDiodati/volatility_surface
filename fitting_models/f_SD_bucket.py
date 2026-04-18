@@ -22,8 +22,8 @@ P_FULL  = P_TILDE + 1
 
 K_VALUES = [3, 10, 25, 50, 100, 300, 1000]
 
-ETA   = 0.4
-alpha = 0.999
+ETA   = 0.2
+alpha = 1.2
 
 MIN_SCALE   = 1.0
 MAX_SCALE   = 126.0

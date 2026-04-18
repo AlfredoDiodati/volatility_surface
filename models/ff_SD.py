@@ -173,7 +173,7 @@ def fit(
         idx += n_buckets - 1
         eta = np.exp(theta[idx:idx + p])
         idx += p
-        alpha = jax.nn.sigmoid(theta[idx:idx + p])
+        alpha = jax.nn.softplus(theta[idx:idx + p]) + 1.0
         idx += p
         C_diag = np.exp(theta[idx:idx + p])
         idx += p
@@ -195,7 +195,7 @@ def fit(
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
         unc_eta = np.log(params["eta"])
-        unc_alpha = np.log(params["alpha"] / (1.0 - params["alpha"]))
+        unc_alpha = np.log(np.exp(params["alpha"] - 1.0) - 1.0)
         C_diag = np.diag(params["C"])
         unc_C = np.log(C_diag)
         unc_nu = np.log(params["nu"] - 2.0)
