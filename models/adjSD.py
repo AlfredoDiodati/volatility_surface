@@ -11,11 +11,8 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0=No
     C = params["C"]
     nu = params["nu"]
     beta_bar = params["beta_bar"]
-    p = beta_bar.shape[0]
     h_inv = 1.0 / sigma2
-    IminusB = np.eye(p) - B
-    C_diag = C
-    C_inv = 1.0 / C_diag
+    C_inv = 1.0 / C
 
     def _step(beta_t, inputs):
         y_t, base_t, bidx_t, mask_t = inputs
@@ -24,35 +21,38 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0=No
         Z_mask = Z_t * mask_t[:, None]
         eps_t = (y_t - Z_t @ beta_t) * mask_t
         N_t = np.sum(mask_t)
-        ZtZ = Z_mask.T @ Z_mask
-        Zte = Z_mask.T @ eps_t
-        ZtHinvZ = h_inv * ZtZ
-        gls_step = np.linalg.solve(ZtHinvZ + 1e-8 * np.eye(p), h_inv * Zte)
-        mahal_H = h_inv * (eps_t @ eps_t)
-        weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_H / (nu - 2.0))
-        xi = A @ (weight * gls_step)
-        S_diag = C_inv + h_inv * np.diag(ZtZ)
-        log_det_F = N_t * np.log(sigma2) + np.sum(np.log(C_diag)) + np.sum(np.log(S_diag))
-        v = Zte / S_diag
-        quad = h_inv * (eps_t @ eps_t) - h_inv**2 * (v @ v)
-        ll_t = (
-            gammaln((nu + N_t) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
-            - 0.5 * log_det_F
-            - 0.5 * (nu + N_t) * np.log(1.0 + quad / (nu - 2.0))
-        )
-        beta_next = IminusB @ beta_bar + B @ beta_t + xi
-        return beta_next, (ll_t, beta_t)
+        
+        V_t = h_inv * (Z_mask.T @ Z_mask)
+        G_t = h_inv * (Z_mask.T @ eps_t)
+        S = np.diag(C_inv) + V_t
+        
+        mahal_H = h_inv * np.sum(eps_t**2)
+        S_inv_G = np.linalg.solve(S, G_t)
+        mahal_F = mahal_H - G_t @ S_inv_G
+        
+        weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))
+        xi = A @ (weight * S_inv_G)
+        
+        beta_next = beta_bar + B @ (beta_t - beta_bar) + xi
+        
+        log_det_F = N_t * np.log(sigma2) + np.sum(np.log(C)) + np.linalg.slogdet(S)[1]
+        log_constants = (gammaln((nu + N_t) / 2.0) - gammaln(nu / 2.0) - 
+                         0.5 * N_t * np.log((nu - 2.0) * np.pi))
+        log_lik = log_constants - 0.5 * log_det_F - 0.5 * (nu + N_t) * np.log(1.0 + mahal_F / (nu - 2.0))
+        
+        return beta_next, (beta_t, log_lik, beta_next)
 
-    init = beta_bar if state0 is None else state0
-
-    beta_T, (lls, betas_prev) = lax.scan(
-        _step, init,
-        (y_masked, base_covariates, bucket_indices, mask_f),
+    init_state = lax.cond(
+        state0 is None,
+        lambda _: beta_bar,
+        lambda s: s,
+        state0
     )
-    betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
-    return betas, lls, beta_T
+    
+    _, (betas, log_liks, beta_Ts) = lax.scan(
+        _step, init_state, (y_masked, base_covariates, bucket_indices, mask_f)
+    )
+    return betas, log_liks, beta_Ts[-1]
 
 def fit(
     data: np.ndarray,
@@ -156,7 +156,6 @@ def fit(
         "is_converged": is_converged,
     }
 
-
 def forecast(fit_result, covariates, y_test, q_alpha):
     state0 = fit_result["beta_T"]
 
@@ -182,4 +181,3 @@ def forecast(fit_result, covariates, y_test, q_alpha):
     VaR = P + q_alpha / n_obs_h * np.sqrt(F_sum)
 
     return predictions, P, VaR, log_liks
-

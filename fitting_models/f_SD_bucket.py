@@ -378,6 +378,7 @@ def main():
                 covariates=jnp.array(Z_cube),
                 initial_guess=initial_guess,
                 K=k,
+                score_power= 1.0,
                 opt_options={"learning_rate": 1e-3, "tol": 1e-6},
                 maxiter=20_000,
             )
