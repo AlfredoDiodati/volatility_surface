@@ -1,290 +1,214 @@
-"""
-Generalization of Diebold-Mariano test statistics for multiple model comparisons. Reference:
-Hansen, P. R., A. Lunde, and J. M. Nason (2011). The model confidence set. Econometrica 79 (2), 453-497.
-"""
+import jax
+import jax.numpy as jnp
+import polars as pl
 
-import numpy as np
-import pandas as pd
-from scipy.stats import norm
 
-def loss_differentials(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Given a set of labeled losses at multiple horizon forecasts,
-    returns all pairwise loss differentials between models.
-    The output is a (dataframe) 3-D tensor in long tidy form.
-    """
-    L = df.to_numpy()
-    _, M = L.shape
-    diff = L[:, :, None] - L[:, None, :]
-    h_idx, i_idx, j_idx = np.where(np.triu(np.ones((M, M)), k=1))
-    return pd.DataFrame({
-        "horizon": df.index.values[h_idx],
-        "model_i": df.columns.values[i_idx],
-        "model_j": df.columns.values[j_idx],
-        "loss_diff": diff[h_idx, i_idx, j_idx]
-    })
-
-def _block_bootstrap_indices(T: int, B: int, block_length: int, rng: np.random.Generator) -> np.ndarray:
-    """
-    Moving block bootstrap indices: shape (B, T).
-    """
-    block_length = int(block_length)
-    if block_length <= 0: raise ValueError("block_length must be positive")
-    n_blocks = int(np.ceil(T / block_length))
+def _block_bootstrap_indices(T: int, B: int, block_length: int, key: jax.Array) -> jnp.ndarray:
+    n_blocks = int(jnp.ceil(T / block_length))
     max_start = T - block_length
-    if max_start < 0: raise ValueError("block_length cannot exceed T")
-    starts = rng.integers(0, max_start + 1, size=(B, n_blocks), endpoint=False)
-    offsets = np.arange(block_length, dtype=int)[None, None, :]
+    starts = jax.random.randint(key, shape=(B, n_blocks), minval=0, maxval=max_start + 1)
+    offsets = jnp.arange(block_length)[None, None, :]
     idx = (starts[:, :, None] + offsets).reshape(B, n_blocks * block_length)[:, :T]
     return idx
 
-def _hac_var(x: np.ndarray, L: int) -> np.ndarray:
-    """
-    Bartlett HAC variance of the sample mean, vectorized.
-    x: (..., T)
-    returns: (...) array of Var( mean(x) ) estimates.
-    Matches the common Newey-West style:
-    s = gamma0 + 2*sum_{l=1..L} w_l * gamma_l, with gamma_l = (1/T)*sum x_t x_{t-l}
-    Var(mean) = s / T
-    """
-    x = np.asarray(x, float)
+
+def _hac_var(x: jnp.ndarray, L: int) -> jnp.ndarray:
     T = x.shape[-1]
-    if T < 2:return np.full(x.shape[:-1], np.nan, float)
-    L = int(L)
-    if L < 0: raise ValueError("L must be >= 0")
-    if L >= T: L = T - 1
+    L = min(int(L), T - 1)
     xc = x - x.mean(axis=-1, keepdims=True)
     n_fft = 1 << (2 * T - 1).bit_length()
-    fx = np.fft.rfft(xc, n=n_fft, axis=-1)
-    acov_full = np.fft.irfft(fx * np.conj(fx), n=n_fft, axis=-1)[..., : (L + 1)]
+    fx = jnp.fft.rfft(xc, n=n_fft, axis=-1)
+    acov_full = jnp.fft.irfft(fx * jnp.conj(fx), n=n_fft, axis=-1)[..., : L + 1]
     gamma = acov_full / T
-    w = 1.0 - (np.arange(L + 1, dtype=float) / (L + 1.0))
-    s = gamma[..., 0] + 2.0 * np.sum((w[1:][None, ...] if gamma.ndim == 2 else w[1:]) * gamma[..., 1:], axis=-1)
+    w = 1.0 - jnp.arange(L + 1, dtype=float) / (L + 1.0)
+    s = gamma[..., 0] + 2.0 * jnp.sum(w[1:] * gamma[..., 1:], axis=-1)
     return s / T
 
-def _pairwise_diffs(L: np.ndarray) -> np.ndarray:
-    """
-    L: (T, M)
-    d: (T, M, M) with d[:, m, mp] = L[:, m] - L[:, mp]
-    """
+
+def _pairwise_diffs(L: jnp.ndarray) -> jnp.ndarray:
     return L[:, :, None] - L[:, None, :]
 
-def _t_stats_pairwise(d: np.ndarray, L_hac: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    d: (T, M, M)
-    returns:
-      dbar: (M, M)
-      var_mean: (M, M)
-      t_mm: (M, M)
-    """
+
+def _t_stats_pairwise(d: jnp.ndarray, L_hac: int) -> tuple:
+    T, M, _ = d.shape
     dbar = d.mean(axis=0)
-    d_flat = np.swapaxes(d, 0, 2)
-    var_mean = _hac_var(d_flat, L=L_hac)
-    t_mm = dbar / np.sqrt(var_mean)
-    np.fill_diagonal(t_mm, np.nan)
-    np.fill_diagonal(dbar, np.nan)
-    np.fill_diagonal(var_mean, np.nan)
+    d_hac = jnp.moveaxis(d, 0, -1).reshape(M * M, T)
+    var_mean = _hac_var(d_hac, L=L_hac).reshape(M, M)
+    t_mm = dbar / jnp.sqrt(var_mean)
+    diag = jnp.eye(M, dtype=bool)
+    t_mm = jnp.where(diag, jnp.nan, t_mm)
+    dbar = jnp.where(diag, jnp.nan, dbar)
+    var_mean = jnp.where(diag, jnp.nan, var_mean)
     return dbar, var_mean, t_mm
 
-def _t_stats_dot(L: np.ndarray, L_hac: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    L: (T, M)
-    returns:
-      dbar_dot: (M,)
-      var_mean_dot: (M,)
-      t_mdot: (M,)
-    where d_{m,.}(t) = L_{t,m} - avg_{mp!=m} L_{t,mp}
-    """
-    L = np.asarray(L, float)
+
+def _t_stats_dot(L: jnp.ndarray, L_hac: int) -> tuple:
     T, M = L.shape
     mean_all = L.mean(axis=1, keepdims=True)
     mean_others = (M * mean_all - L) / (M - 1.0)
     d_dot = L - mean_others
     dbar_dot = d_dot.mean(axis=0)
     var_mean_dot = _hac_var(d_dot.T, L=L_hac)
-    t_mdot = dbar_dot / np.sqrt(var_mean_dot)
+    t_mdot = dbar_dot / jnp.sqrt(var_mean_dot)
     return dbar_dot, var_mean_dot, t_mdot
 
-def _T_emp(L: np.ndarray, stat: str, L_hac: int) -> tuple[float, dict]:
-    """
-    Compute empirical test statistic for the current model set.
-    """
+
+def _T_emp(L: jnp.ndarray, stat: str, L_hac: int) -> tuple:
     stat = stat.upper()
     if stat == "TR":
         d = _pairwise_diffs(L)
         dbar, var_mean, t_mm = _t_stats_pairwise(d, L_hac=L_hac)
-        T_emp = np.nanmax(np.abs(t_mm))
-        cache = {"dbar": dbar, "var_mean": var_mean, "t_mm": t_mm}
-        return float(T_emp), cache
+        t_abs = jnp.where(jnp.isnan(t_mm), -jnp.inf, jnp.abs(t_mm))
+        return float(t_abs.max()), {"dbar": dbar, "var_mean": var_mean, "t_mm": t_mm}
     if stat == "TMAX":
         dbar_dot, var_mean_dot, t_mdot = _t_stats_dot(L, L_hac=L_hac)
-        T_emp = np.nanmax(np.abs(t_mdot))
-        cache = {"dbar_dot": dbar_dot, "var_mean_dot": var_mean_dot, "t_mdot": t_mdot}
-        return float(T_emp), cache
+        return float(jnp.abs(t_mdot).max()), {"dbar_dot": dbar_dot, "var_mean_dot": var_mean_dot, "t_mdot": t_mdot}
     raise ValueError("stat must be 'TR' or 'Tmax'")
 
-def _T_star(L: np.ndarray, stat: str,
-    L_hac: int, B: int, block_length: int, rng: np.random.Generator) -> np.ndarray:
-    """
-    Bootstrap distribution of the test statistic under H0 via re-centering.
-    Returns: (B,) array of T*.
-    """
-    L = np.asarray(L, float)
+
+def _T_star(L: jnp.ndarray, stat: str, L_hac: int, B: int, block_length: int, key: jax.Array) -> jnp.ndarray:
     T, M = L.shape
-    idx = _block_bootstrap_indices(T=T, B=B, block_length=block_length, rng=rng)
+    idx = _block_bootstrap_indices(T=T, B=B, block_length=block_length, key=key)
     stat = stat.upper()
 
     if stat == "TR":
         d = _pairwise_diffs(L)
         dbar = d.mean(axis=0)
-
-        T_star = np.empty(B, dtype=float)
-        diag = np.arange(M)
-
-        for b in range(B):
-            idx_b = idx[b]
-            d_star_b = d[idx_b, :, :]
-            dbar_star_b = d_star_b.mean(axis=0)
-
-            d_star_for_hac_b = np.swapaxes(d_star_b, 0, 2)
-            var_mean_star_b = _hac_var(
-                d_star_for_hac_b.reshape(M * M, T), L=L_hac
-            ).reshape(M, M)
-
-            t_star_b = (dbar_star_b - dbar) / np.sqrt(np.maximum(var_mean_star_b, 1e-12))
-            t_star_b[diag, diag] = np.nan
-
-            T_star[b] = np.nanmax(np.abs(t_star_b))
-
-        return T_star.astype(float)
+        d_star = d[idx]
+        dbar_star = d_star.mean(axis=1)
+        var_mean_star = _hac_var(
+            jnp.moveaxis(d_star, 1, -1).reshape(B * M * M, T), L=L_hac
+        ).reshape(B, M, M)
+        t_star = (dbar_star - dbar[None]) / jnp.sqrt(jnp.maximum(var_mean_star, 1e-12))
+        diag = jnp.eye(M, dtype=bool)[None]
+        t_abs = jnp.where(diag, -jnp.inf, jnp.abs(t_star))
+        return t_abs.reshape(B, M * M).max(axis=1)
 
     if stat == "TMAX":
         mean_all = L.mean(axis=1, keepdims=True)
         mean_others = (M * mean_all - L) / (M - 1.0)
         d_dot = L - mean_others
         dbar_dot = d_dot.mean(axis=0)
-        d_dot_star = d_dot[idx, :]
+        d_dot_star = d_dot[idx]
         dbar_dot_star = d_dot_star.mean(axis=1)
-        var_mean_dot_star = _hac_var(np.swapaxes(d_dot_star, 1, 2).reshape(B * M, T), L=L_hac).reshape(B, M)
-        t_mdot_star = (dbar_dot_star - dbar_dot[None, :]) / np.sqrt(var_mean_dot_star)
-        return np.nanmax(np.abs(t_mdot_star), axis=1).astype(float)
+        var_mean_dot_star = _hac_var(
+            jnp.moveaxis(d_dot_star, 1, -1).reshape(B * M, T), L=L_hac
+        ).reshape(B, M)
+        t_mdot_star = (dbar_dot_star - dbar_dot[None]) / jnp.sqrt(var_mean_dot_star)
+        return jnp.abs(t_mdot_star).max(axis=1)
 
     raise ValueError("stat must be 'TR' or 'Tmax'")
 
-def _elimination_rule(L: np.ndarray) -> int:
-    """
-    'Worst' model index based on average loss differential:
-    e_m = mean_{mp!=m} \bar d_{m,mp} = \bar L_m - mean_{mp!=m} \bar L_mp
-    Remove argmax e_m.
-    """
-    L = np.asarray(L, float)
-    mean_loss = L.mean(axis=0)  # (M,)
+
+def _elimination_rule(L: jnp.ndarray) -> int:
+    mean_loss = L.mean(axis=0)
     M = mean_loss.shape[0]
     mean_others = (M * mean_loss.mean() - mean_loss) / (M - 1.0)
-    e = mean_loss - mean_others
-    return int(np.nanargmax(e))
+    return int(jnp.argmax(mean_loss - mean_others))
+
 
 def mcs(
-    losses: pd.DataFrame | np.ndarray,
+    losses: pl.DataFrame | jnp.ndarray,
     alpha: float = 0.05,
     B: int = 2000,
     block_length: int = 10,
     L_hac: int | None = None,
     stat: str = "Tmax",
-    rng: np.random.Generator = np.random.default_rng(123)
-    ) -> dict:
-    """
-    Model Confidence Set (MCS) main routine.
-    losses:
-      - pd.DataFrame with columns = model names, rows = time
-      - or np.ndarray (T, M)
-    Returns dict with:
-      - "mcs_models": list[str] or list[int]
-      - "pvalues": pd.Series or np.ndarray (assigned along elimination path)
-      - "elimination_order": list[str] or list[int] (worst to best)
-      - "final_pvalue": float (p-hat when stopping)
-    """
-    if isinstance(losses, pd.DataFrame):
-        model_names = losses.columns.to_numpy()
-        L_full = losses.to_numpy(dtype=float)
+    key: jax.Array = jax.random.PRNGKey(123),
+) -> dict:
+    if isinstance(losses, pl.DataFrame):
+        model_names = losses.columns
+        L_full = jnp.array(losses.to_numpy())
     else:
         model_names = None
-        L_full = np.asarray(losses, float)
-    if L_full.ndim != 2:
-        raise ValueError("losses must be (T, M)")
+        L_full = jnp.asarray(losses, float)
+
     T, M0 = L_full.shape
-    if M0 < 2: raise ValueError("need at least 2 models")
+    if L_hac is None:
+        L_hac = max(int(block_length) - 1, 0)
 
-    if L_hac is None: L_hac = max(int(block_length) - 1, 0)
-    active = np.arange(M0, dtype=int)
+    active = list(range(M0))
     elimination_order = []
-    pvals = np.full(M0, np.nan, float)
+    pvals = [float("nan")] * M0
     best_p_so_far = 0.0
-    final_pvalue = np.nan
+    final_pvalue = float("nan")
 
-    while active.size >= 2:
-        L = L_full[:, active]
+    while len(active) >= 2:
+        L = L_full[:, jnp.array(active)]
+        key, subkey = jax.random.split(key)
         T_emp, _ = _T_emp(L, stat=stat, L_hac=L_hac)
-        T_star = _T_star(L, stat=stat, L_hac=L_hac, B=B, block_length=block_length, rng=rng)
-        p_hat = float(np.mean(T_star > T_emp))
-
+        T_star = _T_star(L, stat=stat, L_hac=L_hac, B=B, block_length=block_length, key=subkey)
+        p_hat = float((T_star > T_emp).mean())
         best_p_so_far = max(best_p_so_far, p_hat)
+
         if p_hat > alpha:
             final_pvalue = p_hat
             break
+
         worst_local = _elimination_rule(L)
-        worst_global = int(active[worst_local])
+        worst_global = active[worst_local]
         pvals[worst_global] = best_p_so_far
         elimination_order.append(worst_global)
-        active = np.delete(active, worst_local)
-    if active.size > 0: pvals[active] = 1.0
+        active.pop(worst_local)
+
+    for i in active:
+        pvals[i] = 1.0
 
     if model_names is None:
         return {
-            "mcs_models": active.tolist(),
+            "mcs_models": active,
             "pvalues": pvals,
             "elimination_order": elimination_order,
             "final_pvalue": final_pvalue,
         }
     return {
-        "mcs_models": model_names[active].tolist(),
-        "pvalues": pd.Series(pvals, index=model_names, name="pvalue"),
-        "elimination_order": model_names[np.array(elimination_order, dtype=int)].tolist(),
+        "mcs_models": [model_names[i] for i in active],
+        "pvalues": {model_names[i]: pvals[i] for i in range(M0)},
+        "elimination_order": [model_names[i] for i in elimination_order],
         "final_pvalue": final_pvalue,
     }
 
-def calculate_loss(target: np.ndarray, forecast: np.ndarray, method: str = "MSE") -> np.ndarray:
-    """Computes vector of losses for a given target and forecast series. Returns: np.ndarray: vector of losses at time t."""
-    target = np.asarray(target, dtype=float)
-    forecast = np.asarray(forecast, dtype=float)
+
+def loss_differentials(df: pl.DataFrame) -> pl.DataFrame:
+    model_names = df.columns
+    L = jnp.array(df.to_numpy())
+    T, M = L.shape
+    d = L[:, :, None] - L[:, None, :]
+    rows = []
+    for i in range(M):
+        for j in range(i + 1, M):
+            rows.append(pl.DataFrame({
+                "model_i": pl.Series([model_names[i]] * T),
+                "model_j": pl.Series([model_names[j]] * T),
+                "loss_diff": d[:, i, j].tolist(),
+            }))
+    return pl.concat(rows)
+
+
+def calculate_loss(target: jnp.ndarray, forecast: jnp.ndarray, method: str = "MSE") -> jnp.ndarray:
+    target = jnp.asarray(target, float)
+    forecast = jnp.asarray(forecast, float)
     method = method.upper()
-    if method == "MSE": return (target - forecast) ** 2
-    elif method == "MAE": return np.abs(target - forecast)
-    elif method == "QLIKE": return np.log(forecast) + (target / forecast)
-    else: print(f"Unknown loss method: {method}, method must be 'MSE', 'MAE', 'QLIKE'")
+    if method == "MSE":
+        return (target - forecast) ** 2
+    if method == "MAE":
+        return jnp.abs(target - forecast)
+    if method == "QLIKE":
+        return jnp.log(forecast) + target / forecast
+    raise ValueError(f"Unknown loss method: {method}, must be 'MSE', 'MAE', or 'QLIKE'")
 
 
-def diebold_mariano_test(loss1: np.ndarray, loss2: np.ndarray, h: int = 1, L_hac: int | None = None) -> dict:
-    """Performs DM test for predictive accuracy. """
-    loss1 = np.asarray(loss1, dtype=float)
-    loss2 = np.asarray(loss2, dtype=float)
+def diebold_mariano_test(loss1: jnp.ndarray, loss2: jnp.ndarray, h: int = 1, L_hac: int | None = None) -> dict:
+    loss1 = jnp.asarray(loss1, float)
+    loss2 = jnp.asarray(loss2, float)
     d = loss1 - loss2
-    mean_diff = np.mean(d)
-
-    #Compute variance of the mean (This is the HAC)
+    mean_diff = float(d.mean())
     if L_hac is None:
-        L_hac = max(0, h-1)
-    var_mean = _hac_var(d, L=L_hac)
-
-    # Compute the DM test statistic
-    hac_std_error = np.sqrt(var_mean)
-
+        L_hac = max(0, h - 1)
+    var_mean = float(_hac_var(d, L=L_hac))
+    hac_std_error = float(jnp.sqrt(var_mean))
     if hac_std_error < 1e-14:
         return {"dm_stat": 0.0, "p_value": 1.0, "mean_diff": mean_diff, "hac_std_error": 0.0}
-
     dm_stat = mean_diff / hac_std_error
-
-    # Now we compute the P-value (two sided normal approximation)
-    p_value = 2.0 * (1.0 - norm.cdf(np.abs(dm_stat)))
-
-    return {"dm_stat": float(dm_stat), "p_value": float(p_value), "mean_diff": float(mean_diff), "hac_std_error": float(hac_std_error)}
+    p_value = float(2.0 * (1.0 - jax.scipy.stats.norm.cdf(jnp.abs(dm_stat))))
+    return {"dm_stat": dm_stat, "p_value": p_value, "mean_diff": mean_diff, "hac_std_error": hac_std_error}

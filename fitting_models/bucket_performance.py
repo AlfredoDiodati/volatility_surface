@@ -220,26 +220,26 @@ def main():
     n_params_map = {"ss": n_params_ss, "adjSD": n_params_adjSD}
     n_params_map.update({f"fSD_K{k}": n_params_fSD for k in FSD_K_VALUES})
 
-    all_results = {}
-
-    print("Running SS rolling window...")
     ss_step = make_ss_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000)
-    run_ss = jax.jit(lambda carry, idx: lax.scan(ss_step, carry, idx))
-    _, ss_out = run_ss(_ss_cold_carry(y_jax, Z_jax, n_buckets), indices)
-    all_results["ss"] = ss_out
-
-    print("Running adjSD rolling window...")
     adjSD_step = make_adjSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000)
-    run_adjSD = jax.jit(lambda carry, idx: lax.scan(adjSD_step, carry, idx))
-    _, adjSD_out = run_adjSD(_adjSD_cold_carry(y_jax, Z_jax, n_buckets), indices)
-    all_results["adjSD"] = adjSD_out
+    fSD_steps = [make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000, K) for K in FSD_K_VALUES]
 
-    for K in FSD_K_VALUES:
-        print(f"Running fSD K={K} rolling window...")
-        fSD_step = make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000, K)
-        run_fSD = jax.jit(lambda carry, idx, _step=fSD_step: lax.scan(_step, carry, idx))
-        _, fSD_out = run_fSD(_fSD_cold_carry(y_jax, Z_jax, n_buckets), indices)
-        all_results[f"fSD_K{K}"] = fSD_out
+    ss_carry0 = _ss_cold_carry(y_jax, Z_jax, n_buckets)
+    adjSD_carry0 = _adjSD_cold_carry(y_jax, Z_jax, n_buckets)
+    fSD_carry0s = [_fSD_cold_carry(y_jax, Z_jax, n_buckets) for _ in FSD_K_VALUES]
+
+    def run_all(carries, idx):
+        ss_carry, adjSD_carry, fSD_carries = carries
+        _, ss_out = lax.scan(ss_step, ss_carry, idx)
+        _, adjSD_out = lax.scan(adjSD_step, adjSD_carry, idx)
+        fSD_outs = [lax.scan(step, carry, idx)[1] for step, carry in zip(fSD_steps, fSD_carries)]
+        return ss_out, adjSD_out, fSD_outs
+
+    print("Compiling and running all models in a single JIT...")
+    ss_out, adjSD_out, fSD_outs = jax.jit(run_all)((ss_carry0, adjSD_carry0, fSD_carry0s), indices)
+
+    all_results = {"ss": ss_out, "adjSD": adjSD_out}
+    all_results.update({f"fSD_K{K}": out for K, out in zip(FSD_K_VALUES, fSD_outs)})
 
     y_test_all = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
     mask_test_all = ~jnp.isnan(y_test_all)

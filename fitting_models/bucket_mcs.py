@@ -1,7 +1,7 @@
 import os
+import jax
 import jax.numpy as jnp
 import polars as pl
-import pandas as pd
 from scipy.stats import chi2
 from scipy.special import xlogy
 
@@ -17,7 +17,7 @@ VAR_LEVEL = 0.05
 Q_ALPHA = -1.6448536269514722  # must match bucket_performance.py
 
 MCS_ALPHA = 0.10
-MCS_B = 2000
+MCS_B = 10000
 MCS_BLOCK = 10
 MCS_SEED = 42
 
@@ -149,10 +149,10 @@ def main():
         var_forecasts[name] = var_fc
         tick_data[name] = tick_loss_series(realized_P, var_fc, VAR_LEVEL)
 
-    df_mse = pd.DataFrame(mse_data, index=index)
-    df_mae = pd.DataFrame(mae_data, index=index)
-    df_negll = pd.DataFrame(negll_data, index=index)
-    df_tick = pd.DataFrame(tick_data, index=index)
+    df_mse = pl.DataFrame(mse_data)
+    df_mae = pl.DataFrame(mae_data)
+    df_negll = pl.DataFrame(negll_data)
+    df_tick = pl.DataFrame(tick_data)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -183,7 +183,7 @@ def main():
     for crit, df_losses in criteria.items():
         print(f"  {crit}...", flush=True)
         res = mcs(df_losses, alpha=MCS_ALPHA, B=MCS_B, block_length=MCS_BLOCK,
-                  rng=__import__("numpy").random.default_rng(MCS_SEED))
+                  key=jax.random.PRNGKey(MCS_SEED))
         elim_set = res["elimination_order"]
         for name in model_names:
             detail_rows.append({
@@ -212,7 +212,7 @@ def main():
     df_out.write_csv(os.path.join(OUTPUT_DIR, "mcs_results.csv"))
 
     for crit, df_losses in criteria.items():
-        pl.from_pandas(df_losses.reset_index()).write_csv(os.path.join(OUTPUT_DIR, f"losses_{crit}.csv"))
+        df_losses.write_csv(os.path.join(OUTPUT_DIR, f"losses_{crit}.csv"))
 
     print("\n=== MCS Summary ===")
     for crit in criteria:
