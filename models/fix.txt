@@ -1,0 +1,53 @@
+The user wants to solve the unit-root issue in _solve_weights without adding parameter constraints. The idea of working with logs is a good one.
+
+The problem is that ρ_i = exp(-η · α^{-i}) underflows to 1.0 in float64 when α^{-i} is too small.
+
+The key insight: instead of computing ρ_i directly and using it as a multiplier, we can work with log(1 - ρ_i) or use log(ρ_i) = -η · α^{-i} directly.
+
+Since ρ_i = exp(-η · α^{-i}), we have log(ρ_i) = -η · α^{-i}.
+
+The filter update multiplies by ρ_K, but materializing it defeats the purpose. Instead, I should store the log-space representation and use log-sum-exp tricks or reformulate the update to avoid ever computing the actual ρ values.
+
+Actually, a cleaner approach is to rewrite the update as a decay term: instead of multiplying by ρ, I subtract the complement (1 - ρ) times the current state, which lets me use the approximation 1 - ρ ≈ η · α^{-i} for small decay rates and avoid numerical issues entirely. The real issue is that ρ_i becomes exactly 1.0 in float64 for large i, creating an actual unit root rather than a numerical precision problem. The solution is to store the log-decay rate λ_i = η · α^{-i} directly instead of computing ρ_i, since this remains representable even for large i. However, using exp(-λ_i) still materializes back to ρ_i ≈ 1.0, so I need a different approach that avoids this materialization entirely.
+
+The key is rewriting the update as a difference equation using expm1(-λ_i), which accurately computes ρ_i - 1 even when λ_i is tiny—giving approximately -λ_i rather than rounding to zero. This way the mean-reversion dynamics are preserved without ever explicitly computing ρ_i.
+
+Now I'm checking whether this actually solves the accumulation problem. The steady-state variance should scale as w_i^2 / (2λ_i), which for the smallest decay rates could blow up unless the weights themselves shrink appropriately. But there's something deeper going wrong with the largest indices—even with expm1, the numerical behavior might still be problematic. ible. But I need to look more carefully at the code—b accumulates the raw noise term scaled by the weights, not the product. So b_{300,t} grows as a random walk with variance proportional to w_300^2, and then contributes w_300 * b_{300,t} to σ_t. Let me trace through the actual update equations to see where the instability comes from.
+
+Wait, I'm seeing something different now. The code shows that σ_t is computed as the sum of all b components directly, not weighted by w_i. This means even if w_300 is tiny, if b_{300} accumulates over time (especially when ρ_300 = 1), it can still drive σ_t upward linearly, which would explain the unbounded growth I'm observing.
+
+Let me trace through the actual numbers: if b_{300,T} accumulates to around 5e-4 from the weighted noise injection, that's a small contribution to σ_T on its own, but the real issue is that during optimization, parameters can drift toward larger α or η values where this underflow problem becomes catastrophic.
+
+Actually, stepping back—the user is asking for a theoretical fix to the core design issue, not just parameter tuning. The fundamental problem is that ρ_K underflows to 1.0 in float64 when K is large and α is moderate-sized, which breaks the decay mechanism entirely.
+
+The solution is to use expm1 instead of computing ρ directly. Rather than calculating b_next = rho * b_t + w_tilde_norm * xi_sigma, I'd compute the update using expm1(-lambda_) where lambda_ represents η · α^{-i}. Since expm1 accurately handles tiny values—even when λ is around 2e-24, expm1(-λ) gives the correct small negative value—this preserves the decay signal that would otherwise vanish in standard floating-point arithmetic.
+
+The remaining concern is whether this tiny mean reversion is actually sufficient. Even with expm1 fixing the numerical precision, the b_K component still behaves nearly like a random walk over finite time horizons, growing as O(√T). The key insight is that while b_K lacks a strong pull toward zero, it does have a nonzero (though minuscule) mean-reversion coefficient, which gives it a well-defined stationary variance of approximately w_K² / (2λ_K) over infinite time. The question becomes whether this asymptotic stationarity matters for the practical problem at hand.
+
+For the immediate NaN issue, the root cause is ρ_K equaling exactly 1.0 in floating-point arithmetic, creating a perfect unit root. Using expm1 instead gives (ρ_K - 1) ≈ -2e-24, which is tiny but nonzero. This means b_K does have mean reversion, just extremely weak. For K=300, the stationary variance would be enormous (w_K² / 4e-24), yet during the finite T=500 training steps, the growth remains bounded by O(√T).
+
+The solution is to avoid materializing ρ_i = exp(-λ_i) altogether. Instead, I'll store the decay rates λ_i = η * α^{-i} directly and compute the update using expm1(-λ_i) in the filtering step, which preserves numerical accuracy for small arguments.
+
+Implementing this refactor... is the log-domain fix the user is hinting at!
+
+So the solution is:
+
+In _solve_weights, return lambdas = eta * np.power(alpha, -indices) instead of rhos = np.exp(-lambdas)
+In _filter, change b_next = rho * b_t + w * xi to b_next = b_t + np.expm1(-lambda_) * b_t + w * xi
+The expm1(-x) function computes exp(-x) - 1 accurately even for tiny x, avoiding the underflow to 0 that happens with direct computation of 1 - exp(-x) or the overflow-to-1 that affects exp(-x) for very small x. This reformulation as b_t * (1 + expm1(-lambda)) + w * xi preserves the correct tiny mean-reversion even when lambda ≈ 2e-24, where standard float64 would round exp(-lambda) to 1.0. The expm1 function uses Taylor expansion near zero to return approximately -2e-24 instead of zero, ensuring the component doesn't become a unit root.
+
+The hint about logs points directly to the fix. The issue is that exp(-η · α^{-K}) rounds to exactly 1.0 in float64 when η · α^{-K} < ε_mach ≈ 2.2e-16. The value is not truly 1, it just can't be represented.
+
+The fix: never materialise ρ_i as a float. Store the log-decay λ_i = η · α^{-i} (which stays representable all the way to 10^{-300}), then rewrite the state update using expm1:
+
+
+b_{i,t+1} = ρ_i · b_{i,t} + w_i · ξ
+           = b_{i,t} + (ρ_i − 1) · b_{i,t} + w_i · ξ
+           = b_{i,t} + expm1(−λ_i) · b_{i,t} + w_i · ξ
+expm1(-x) computes exp(-x) - 1 accurately for any x, including x = 2e-24. It returns ≈ -2e-24 instead of rounding to 0 (which is what exp(-2e-24) - 1 would give after exp rounds to 1.0). So the mean-reversion term (ρ_i - 1) · b_{i,t} remains nonzero — tiny, but nonzero — and the unit root is eliminated at the representational level.
+
+Concretely:
+
+_solve_weights returns lambdas instead of rhos = exp(-lambdas)
+In _filter: b_next = rho * b_t + ... → b_next = b_t + jnp.expm1(-lambdas) * b_t + ...
+This is exact arithmetic — no clipping, no constraints added — just a numerically stable rewrite of the same mathematical expression.

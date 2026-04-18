@@ -32,7 +32,7 @@ def _solve_weights_ff(eta, alpha, K):
         eta_k = ea[0]
         alpha_k = ea[1]
         indices = np.arange(K + 1)
-        rhos_k = np.exp(-eta_k * np.power(alpha_k, -indices))
+        lambdas_k = eta_k * np.power(alpha_k, -indices)
 
         def _rec_step(c_stack, k):
             i_range = np.arange(K + 1)
@@ -51,10 +51,10 @@ def _solve_weights_ff(eta, alpha, K):
         c_ordered = np.flip(c_final)
         w_tilde = c_ordered * np.power(alpha_k, -indices * eta_k)
         w_k = w_tilde / np.sum(w_tilde)
-        return w_k, rhos_k
+        return w_k, lambdas_k
 
-    ws, rhos = jax.vmap(_single)(np.stack([eta, alpha], axis=-1))
-    return ws.T, rhos.T
+    ws, lambdas = jax.vmap(_single)(np.stack([eta, alpha], axis=-1))
+    return ws.T, lambdas.T
 
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0=None):
@@ -72,7 +72,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
     h_inv = 1.0 / sigma2
     L_C = np.linalg.cholesky(C)
 
-    ws, rhos = _solve_weights_ff(eta, alpha, K)
+    ws, lambdas = _solve_weights_ff(eta, alpha, K)
 
     def _step(state, inputs):
         b_t = state
@@ -119,7 +119,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
 
         xi_t = A @ scaled_score
 
-        b_next = rhos * b_t + xi_t[None, :]
+        b_next = b_t + np.expm1(-lambdas) * b_t + xi_t[None, :]
 
         return b_next, (ll_t, beta_t)
 

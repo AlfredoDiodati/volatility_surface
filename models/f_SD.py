@@ -30,7 +30,6 @@ def _solve_weights(eta, alpha, K):
     indices = np.arange(K + 1)
 
     lambdas = eta * np.power(alpha, -indices)
-    rhos = np.exp(-lambdas)
 
     def _rec_step(c_stack, k):
         i_range = np.arange(K + 1)
@@ -55,7 +54,7 @@ def _solve_weights(eta, alpha, K):
     w_tilde = c_ordered * np.power(alpha, -indices * eta)
     w = w_tilde / np.sum(w_tilde)
 
-    return w, rhos
+    return w, lambdas
 
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0=None):
@@ -77,7 +76,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
     IminusB = np.eye(p_tilde) - B
     L_C = np.linalg.cholesky(C)
 
-    w_tilde_norm, rho = _solve_weights(eta, alpha, K)
+    w_tilde_norm, lambdas = _solve_weights(eta, alpha, K)
 
     def _step(state, inputs):
         b_t, beta_tilde_t = state
@@ -126,7 +125,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         xi_sigma = scaled_score[-1]
         xi_tilde = A @ scaled_score[:-1]
 
-        b_next = rho * b_t + w_tilde_norm * xi_sigma
+        b_next = b_t + np.expm1(-lambdas) * b_t + w_tilde_norm * xi_sigma
         beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
 
         return (b_next, beta_tilde_next), (ll_t, beta_full_t)

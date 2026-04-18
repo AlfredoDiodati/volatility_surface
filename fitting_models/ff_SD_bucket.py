@@ -372,6 +372,9 @@ def main():
         if os.path.exists(opath) and os.path.getsize(opath) > 0:
             print(f"  Found existing params, loading from {opath}")
             fit_output = load_params(opath)
+            ws, rhos = _solve_weights_ff(jnp.array(fit_output["eta"]), jnp.array(fit_output["alpha"]), k)
+            fit_output["ws"] = np.array(ws)
+            fit_output["rhos"] = np.array(rhos)
         else:
             if prev_params is None:
                 print(f"  Cold start")
@@ -389,7 +392,9 @@ def main():
                 opt_options={"learning_rate": 1e-3, "tol": 1e-6},
                 maxiter=20_000,
             )
-
+            ws, rhos = _solve_weights_ff(fit_output["eta"], fit_output["alpha"], k)
+            fit_output["ws"] = np.array(ws)
+            fit_output["rhos"] = np.array(rhos)
             os.makedirs(os.path.dirname(opath), exist_ok=True)
             with open(opath, "w") as f:
                 json.dump(serialize_params(fit_output), f, indent=2)
@@ -403,10 +408,8 @@ def main():
         print(f"  eta={eta_fit.round(4)}")
         print(f"  alpha={alpha_fit.round(4)}")
         print(f"  log_lik={float(np.array(fit_output['log_likelihood']).ravel()[0]):.2f}")
-
-        ws, rhos = _solve_weights_ff(jnp.array(eta_fit), jnp.array(alpha_fit), k)
-        print(f"  rhos (factor 0)={np.array(rhos[:, 0]).round(4)}")
-        print(f"  ws (factor 0)={np.array(ws[:, 0]).round(4)}")
+        print(f"  rhos (factor 0)={fit_output['rhos'][:, 0].round(4)}")
+        print(f"  ws (factor 0)={fit_output['ws'][:, 0].round(4)}")
 
         prev_params = fit_output
 
