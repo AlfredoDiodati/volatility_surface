@@ -26,7 +26,10 @@ CANONICAL_ALPHA = 0.10
 CANONICAL_BLOCK = 10
 MAJORITY = 3
 
-MODEL_ORDER = ["ss", "adjSD", "fSD_K3", "fSD_K10", "fSD_K25", "fSD_K50", "fSD_K100", "fSD_K300"]
+MODEL_ORDER = [
+    "ss", "adjSD",
+    "fSD_K3", "fSD_K10", "fSD_K25", "fSD_K50", "fSD_K100", "fSD_K300"
+]
 
 
 def load_y_test(parquet_path, train_size):
@@ -136,6 +139,12 @@ MODEL_LABELS = {
     "fSD_K50": r"fSD ($K{=}50$)",
     "fSD_K100": r"fSD ($K{=}100$)",
     "fSD_K300": r"fSD ($K{=}300$)",
+    "ffSD_K3": r"ffSD ($K{=}3$)",
+    "ffSD_K10": r"ffSD ($K{=}10$)",
+    "ffSD_K25": r"ffSD ($K{=}25$)",
+    "ffSD_K50": r"ffSD ($K{=}50$)",
+    "ffSD_K100": r"ffSD ($K{=}100$)",
+    "ffSD_K300": r"ffSD ($K{=}300$)",
 }
 
 
