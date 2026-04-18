@@ -4,41 +4,40 @@ from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
 
-import jax.numpy as np
-from jax import lax
 
-def _solve_weights(eta, beta, K):
+def _solve_weights(eta, alpha, K):
     indices = np.arange(K + 1)
-    
-    lambdas = eta * np.power(beta, -indices)
+
+    lambdas = eta * np.power(alpha, -indices)
     rhos = np.exp(-lambdas)
 
     def _rec_step(c_stack, k):
         i_range = np.arange(K + 1)
         mask = i_range < k
-        
+
         diff = k - i_range
-        terms = c_stack * np.power(beta, -eta * diff) * np.exp(eta * (1.0 - np.power(beta, -diff)))
-        
+        terms = c_stack * np.power(alpha, -eta * diff) * np.exp(eta * (1.0 - np.power(alpha, -diff)))
+
         c_next = 1.0 - np.sum(np.where(mask, terms, 0.0))
         return c_stack.at[k].set(c_next), None
 
     c_init = np.zeros(K + 1)
     c_init = c_init.at[0].set(1.0)
-    
+
     c_final, _ = lax.scan(
-        _rec_step, 
-        c_init, 
+        _rec_step,
+        c_init,
         np.arange(1, K + 1)
     )
-    
+
     c_ordered = np.flip(c_final)
-    w_tilde = c_ordered * np.power(beta, -indices * eta)
+    w_tilde = c_ordered * np.power(alpha, -indices * eta)
     w = w_tilde / np.sum(w_tilde)
-    
+
     return w, rhos
 
-def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0=None):
+
+def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0=None):
     B = params["B"]
     A = params["A"]
     sigma2 = params["sigma2"]
@@ -55,8 +54,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
     K1 = K + 1
     h_inv = 1.0 / sigma2
     IminusB = np.eye(p_tilde) - B
-    C_reg = C + 1e-8 * np.eye(p_full)
-    L_C = np.linalg.cholesky(C_reg)
+    L_C = np.linalg.cholesky(C)
 
     w_tilde_norm, rho = _solve_weights(eta, rho_K, K)
 
@@ -70,31 +68,42 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
         omega_col = omega_load[bidx_t]
         Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
         Z_mask = Z_t * mask_t[:, None]
-        eps_t = (y_t - Z_t @ beta_full_t) * mask_t
         N_t = np.sum(mask_t)
 
         ZtZ = Z_mask.T @ Z_mask
-        Zte = Z_mask.T @ eps_t
         ZtHinvZ = h_inv * ZtZ
-        gls_step = np.linalg.solve(ZtHinvZ + 1e-8 * np.eye(p_full), h_inv * Zte)
-        mahal_H = h_inv * (eps_t @ eps_t)
-        weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_H / (nu - 2.0))
+        WLC = ZtHinvZ @ L_C
+        Inner_mat = np.eye(p_full) + L_C.T @ WLC
+        L_Inner = np.linalg.cholesky(Inner_mat)
+        log_det_Sigma = N_t * np.log(sigma2) + 2.0 * np.sum(np.log(np.diag(L_Inner)))
 
-        xi_sigma = weight * gls_step[-1]
-        xi_tilde = A @ (weight * gls_step[:-1])
+        V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
+        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
+        fisher_t = (nu / (nu - 2.0)) * ((nu + N_t) / (nu + N_t + 2.0)) * ZtSigmaInvZ
 
-        M = np.eye(p_full) + h_inv * (L_C.T @ ZtZ @ L_C)
-        L_M = np.linalg.cholesky(M)
-        u = solve_triangular(L_M, h_inv * (L_C.T @ Zte), lower=True)
-        log_det_F = N_t * np.log(sigma2) + 2.0 * np.sum(np.log(np.diag(L_M)))
-        quad = h_inv * (eps_t @ eps_t) - (u @ u)
-        ll_t = (
-            gammaln((nu + N_t) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
-            - 0.5 * log_det_F
-            - 0.5 * (nu + N_t) * np.log(1.0 + quad / (nu - 2.0))
-        )
+        def log_density(beta):
+            eps_beta = (y_t - Z_t @ beta) * mask_t
+            Zte_beta = Z_mask.T @ eps_beta
+            u_beta = solve_triangular(L_Inner, h_inv * (L_C.T @ Zte_beta), lower=True)
+            quad = h_inv * (eps_beta @ eps_beta) - (u_beta @ u_beta)
+            return (
+                gammaln((nu + N_t) / 2.0)
+                - gammaln(nu / 2.0)
+                - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
+                - 0.5 * log_det_Sigma
+                - 0.5 * (nu + N_t) * np.log(1.0 + quad / (nu - 2.0))
+            )
+
+        ll_t, nabla_t = jax.value_and_grad(log_density)(beta_full_t)
+
+        eigvals, eigvecs = np.linalg.eigh(fisher_t)
+        scaling_matrix = (eigvecs * (eigvals ** (-score_power))) @ eigvecs.T
+
+        scaled_score = scaling_matrix @ nabla_t
+
+        xi_sigma = scaled_score[-1]
+        xi_tilde = A @ scaled_score[:-1]
+
         b_next = rho * b_t + w_tilde_norm * xi_sigma
         beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
 
@@ -117,6 +126,7 @@ def fit(
     covariates: np.ndarray,
     initial_guess: dict,
     K: int,
+    score_power: float,
     opt_options: dict | None = None,
     maxiter: int = 5000,
 ):
@@ -202,7 +212,7 @@ def fit(
 
     def _criterion(theta):
         params = _link(theta)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K)
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power)
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -236,7 +246,7 @@ def fit(
         _not_converged, _adam_step, state0
     )
     params_opt = _link(theta_opt)
-    betas, _, (b_T, beta_tilde_T) = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K)
+    betas, _, (b_T, beta_tilde_T) = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, score_power)
     return params_opt | {
         "betas": betas,
         "b_T": b_T,
@@ -244,10 +254,11 @@ def fit(
         "log_likelihood": -final_loss,
         "niter": niter,
         "is_converged": is_converged,
+        "score_power": score_power,
     }
-    
 
-def forecast(fit_result, covariates, y_test, K, q_alpha):
+
+def forecast(fit_result, covariates, y_test, K, score_power, q_alpha):
     state0 = (fit_result["b_T"], fit_result["beta_tilde_T"])
 
     covariates = np.asarray(covariates, dtype=float)
@@ -259,7 +270,7 @@ def forecast(fit_result, covariates, y_test, K, q_alpha):
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
 
-    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, K, state0=state0)
+    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, K, score_power, state0=state0)
 
     omega_cols = fit_result["omega_load"][bucket_indices]
     Z = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
@@ -272,4 +283,3 @@ def forecast(fit_result, covariates, y_test, K, q_alpha):
     VaR = P + q_alpha / n_obs_h * np.sqrt(F_sum)
 
     return predictions, P, VaR, log_liks
-

@@ -6,7 +6,7 @@ import polars as pl
 
 from models.ss import fit_collapsed, forecast as ss_forecast
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
-from models.f0_SD import fit as fSD_fit, forecast as fSD_forecast
+from models.f_SD import fit as fSD_fit, forecast as fSD_forecast
 from fitting_models._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 PARQUET_PATH = "data/SPX/put/bucket.parquet"
