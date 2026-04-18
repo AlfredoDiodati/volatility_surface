@@ -1,8 +1,8 @@
 import os
-import numpy as np
-import pandas as pd
+import jax.numpy as jnp
 import polars as pl
-from scipy.stats import chi2, norm
+import pandas as pd
+from scipy.stats import chi2
 from scipy.special import xlogy
 
 from fitting_models.mcs import mcs
@@ -13,12 +13,12 @@ PARQUET_PATH = "data/SPX/put/bucket.parquet"
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = 3
 TRAIN_SIZE = 500
-VAR_ALPHA = float(norm.ppf(0.05))  # must match Q_ALPHA in bucket_performance.py
 VAR_LEVEL = 0.05
+Q_ALPHA = -1.6448536269514722  # must match bucket_performance.py
 
-MCS_ALPHA = 0.01
+MCS_ALPHA = 0.10
 MCS_B = 2000
-MCS_BLOCK = 100
+MCS_BLOCK = 10
 MCS_SEED = 42
 
 MODEL_ORDER = ["ss", "adjSD", "fSD_K3", "fSD_K10", "fSD_K25", "fSD_K50", "fSD_K100", "fSD_K300"]
@@ -30,28 +30,39 @@ def load_y_test(parquet_path, train_size):
         .with_columns(pl.col("DATE").cast(pl.Utf8))
     )
     bucket_cols = sorted([c for c in raw.columns if c.startswith("bucket_")])
-    raw = raw.with_columns(
-        pl.max_horizontal(
-            [pl.when(pl.col(c)).then(i + 1).otherwise(0) for i, c in enumerate(bucket_cols)]
-        ).alias("bucket_idx")
-    ).sort(["DATE", *FACTOR_LOADING_COLS])
+    raw = (
+        raw
+        .with_columns(
+            pl.max_horizontal(
+                [pl.when(pl.col(c)).then(i + 1).otherwise(0) for i, c in enumerate(bucket_cols)]
+            ).alias("bucket_idx")
+        )
+        .sort(["DATE", *FACTOR_LOADING_COLS])
+        .with_columns(
+            pl.int_range(pl.len()).over("DATE").cast(pl.Int32).alias("row_in_date")
+        )
+    )
     dates = raw["DATE"].unique(maintain_order=True).sort().to_list()
     T = len(dates)
     max_n = int(raw.group_by("DATE").len()["len"].max())
-    y_cube = np.full((T, max_n), np.nan)
-    for t, date in enumerate(dates):
-        s = raw.filter(pl.col("DATE") == date).sort(FACTOR_LOADING_COLS)
-        n_t = len(s)
-        y_cube[t, :n_t] = s["logIV"].to_numpy()
+    raw = raw.with_columns(
+        pl.col("DATE").replace(
+            {d: i for i, d in enumerate(dates)}, return_dtype=pl.Int32
+        ).alias("date_idx")
+    )
+    t_idx = jnp.array(raw["date_idx"], dtype=jnp.int32)
+    n_idx = jnp.array(raw["row_in_date"], dtype=jnp.int32)
+    y_vals = jnp.array(raw["logIV"])
+    y_cube = jnp.full((T, max_n), jnp.nan).at[t_idx, n_idx].set(y_vals)
     return y_cube[train_size:], dates[train_size:]
 
 
 def per_step_mse(y_actual, y_hat, mask):
-    return np.where(mask, (y_actual - y_hat) ** 2, 0.0).sum(axis=1) / mask.sum(axis=1)
+    return (jnp.where(mask, (y_actual - y_hat) ** 2, 0.0).sum(axis=1) / mask.sum(axis=1)).tolist()
 
 
 def per_step_mae(y_actual, y_hat, mask):
-    return np.where(mask, np.abs(y_actual - y_hat), 0.0).sum(axis=1) / mask.sum(axis=1)
+    return (jnp.where(mask, jnp.abs(y_actual - y_hat), 0.0).sum(axis=1) / mask.sum(axis=1)).tolist()
 
 
 def kupiec_test(hits, alpha):
@@ -67,7 +78,7 @@ def kupiec_test(hits, alpha):
 
 
 def christoffersen_test(hits, alpha):
-    H = np.asarray(hits, dtype=int)
+    H = jnp.asarray(hits, dtype=int)
     T = len(H)
     T1 = int(H.sum())
     T0 = T - T1
@@ -101,39 +112,40 @@ def christoffersen_test(hits, alpha):
 
 def tick_loss_series(realized, var_forecast, alpha):
     e = realized - var_forecast
-    return e * (alpha - (e < 0).astype(float))
+    return (e * (alpha - (e < 0).astype(float))).tolist()
 
 
 def main():
     print("Loading bucket_performance results...")
-    df_step = pd.read_parquet(os.path.join(PERF_DIR, "step_results.parquet"))
-    df_agg = pd.read_csv(os.path.join(PERF_DIR, "aggregate_metrics.csv"))
+    df_step = pl.read_parquet(os.path.join(PERF_DIR, "step_results.parquet"))
+    df_agg = pl.read_csv(os.path.join(PERF_DIR, "aggregate_metrics.csv"))
 
-    available = set(df_step["model"].unique())
+    available = set(df_step["model"].unique().to_list())
     model_names = [m for m in MODEL_ORDER if m in available]
-    n_test = df_step[df_step["model"] == model_names[0]].shape[0]
+    n_test = df_step.filter(pl.col("model") == model_names[0]).height
 
     print("Loading actuals...")
     y_test_all, test_dates = load_y_test(PARQUET_PATH, TRAIN_SIZE)
     y_test_all = y_test_all[:n_test]
-    mask_all = ~np.isnan(y_test_all)
+    mask_all = ~jnp.isnan(y_test_all)
     index = test_dates[:n_test]
 
-    realized_P = np.where(mask_all, y_test_all, np.nan).mean(axis=1)  # (n_test,) portfolio mean
+    realized_P = jnp.nanmean(y_test_all, axis=1)
 
     print("Building per-step loss series...")
     mse_data, mae_data, negll_data, tick_data = {}, {}, {}, {}
     var_forecasts = {}
 
     for name in model_names:
-        df_m = df_step[df_step["model"] == name].sort_values("date").reset_index(drop=True)
-        preds = np.load(os.path.join(PERF_DIR, f"predictions_{name}.npy"))[:n_test]
+        df_m = df_step.filter(pl.col("model") == name).sort("date")
+        pred_df = pl.read_parquet(os.path.join(PERF_DIR, f"predictions_{name}.parquet")).sort("date")
+        preds = jnp.array(pred_df["predictions"].to_list())[:n_test]
 
         mse_data[name] = per_step_mse(y_test_all, preds, mask_all)
         mae_data[name] = per_step_mae(y_test_all, preds, mask_all)
-        negll_data[name] = -df_m["oos_loglik"].values[:n_test]
+        negll_data[name] = (-jnp.array(df_m["oos_loglik"].to_list())[:n_test]).tolist()
 
-        var_fc = df_m["VaR"].values[:n_test]
+        var_fc = jnp.array(df_m["VaR"].to_list())[:n_test]
         var_forecasts[name] = var_fc
         tick_data[name] = tick_loss_series(realized_P, var_fc, VAR_LEVEL)
 
@@ -144,7 +156,6 @@ def main():
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # --- VaR tests ---
     print("\nRunning VaR coverage tests...")
     var_rows = []
     for name in model_names:
@@ -152,15 +163,14 @@ def main():
         res = christoffersen_test(hits, VAR_LEVEL)
         var_rows.append({"model": name, **res})
 
-    df_var = pd.DataFrame(var_rows)
-    df_var.to_csv(os.path.join(OUTPUT_DIR, "var_coverage_tests.csv"), index=False)
+    df_var = pl.DataFrame(var_rows)
+    df_var.write_csv(os.path.join(OUTPUT_DIR, "var_coverage_tests.csv"))
 
     print(f"  {'model':20s}  {'hit_rate':>9}  {'pval_uc':>8}  {'pval_ind':>9}  {'pval_cc':>8}")
-    for _, row in df_var.iterrows():
+    for row in df_var.iter_rows(named=True):
         print(f"  {row['model']:20s}  {row['hit_rate']:9.4f}  {row['pval_uc']:8.4f}  "
-              f"{row['pval_ind']:9.4f}  {row['pval_cc']:8.4f}")
+              f"  {row['pval_ind']:9.4f}  {row['pval_cc']:8.4f}")
 
-    # --- MCS ---
     criteria = {
         "mse": df_mse,
         "mae": df_mae,
@@ -173,7 +183,7 @@ def main():
     for crit, df_losses in criteria.items():
         print(f"  {crit}...", flush=True)
         res = mcs(df_losses, alpha=MCS_ALPHA, B=MCS_B, block_length=MCS_BLOCK,
-                  rng=np.random.default_rng(MCS_SEED))
+                  rng=__import__("numpy").random.default_rng(MCS_SEED))
         elim_set = res["elimination_order"]
         for name in model_names:
             detail_rows.append({
@@ -185,45 +195,32 @@ def main():
             })
         print(f"    MCS: {res['mcs_models']}")
 
-    df_detail = pd.DataFrame(detail_rows)
-    df_detail.to_csv(os.path.join(OUTPUT_DIR, "mcs_detail.csv"), index=False)
+    df_detail = pl.DataFrame(detail_rows)
+    df_detail.write_csv(os.path.join(OUTPUT_DIR, "mcs_detail.csv"))
 
-    df_wide = df_detail.pivot(index="model", columns="criterion",
-                               values=["in_mcs", "pvalue", "elimination_step"])
-    df_wide.columns = [f"{metric}_{crit}" for metric, crit in df_wide.columns]
-    df_wide = df_wide.reset_index()
-
-    col_order = (
-        ["model"]
-        + [f"in_mcs_{c}" for c in criteria]
-        + [f"pvalue_{c}" for c in criteria]
-        + [f"elimination_step_{c}" for c in criteria]
+    df_wide = (
+        df_detail
+        .pivot(index="model", on="criterion", values=["in_mcs", "pvalue", "elimination_step"])
     )
-    df_wide = df_wide[[c for c in col_order if c in df_wide.columns]]
 
-    df_out = df_wide.merge(
-        df_agg[["model", "mse", "mae", "total_oos_loglik", "aic", "bic"]], on="model"
-    ).merge(
-        df_var[["model", "hit_rate", "n_hits", "pval_uc", "pval_ind", "pval_cc"]], on="model"
+    df_out = (
+        df_wide
+        .join(df_agg.select(["model", "mse", "mae", "total_oos_loglik", "aic", "bic"]), on="model")
+        .join(df_var.select(["model", "hit_rate", "n_hits", "pval_uc", "pval_ind", "pval_cc"]), on="model")
     )
-    df_out["rank_loglik"] = df_out["total_oos_loglik"].rank(ascending=False).astype(int)
-    df_out["rank_mse"] = df_out["mse"].rank(ascending=True).astype(int)
-    df_out["rank_mae"] = df_out["mae"].rank(ascending=True).astype(int)
-    df_out["rank_tick"] = df_out["hit_rate"].apply(lambda h: abs(h - VAR_LEVEL)).rank().astype(int)
-    df_out = df_out.sort_values("rank_loglik").reset_index(drop=True)
-
-    df_out.to_csv(os.path.join(OUTPUT_DIR, "mcs_results.csv"), index=False)
+    df_out = df_out.sort("total_oos_loglik", descending=True)
+    df_out.write_csv(os.path.join(OUTPUT_DIR, "mcs_results.csv"))
 
     for crit, df_losses in criteria.items():
-        df_losses.to_csv(os.path.join(OUTPUT_DIR, f"losses_{crit}.csv"))
+        pl.from_pandas(df_losses.reset_index()).write_csv(os.path.join(OUTPUT_DIR, f"losses_{crit}.csv"))
 
     print("\n=== MCS Summary ===")
     for crit in criteria:
-        winners = df_detail[(df_detail["criterion"] == crit) & df_detail["in_mcs"]]["model"].tolist()
+        winners = df_detail.filter((pl.col("criterion") == crit) & pl.col("in_mcs"))["model"].to_list()
         print(f"  {crit:20s}: {winners}")
 
     print("\n=== VaR Coverage (nominal 5%) ===")
-    print(df_var[["model", "hit_rate", "n_hits", "pval_uc", "pval_ind", "pval_cc"]].to_string(index=False))
+    print(df_var.select(["model", "hit_rate", "n_hits", "pval_uc", "pval_ind", "pval_cc"]))
 
     print(f"\nSaved to {OUTPUT_DIR}")
 

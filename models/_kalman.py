@@ -195,7 +195,6 @@ def _fit(
     }
     return params | kf | out
 
-_fit = jax.jit(_fit, static_argnames=("_dynamics", "_link", "_invlink", "maxiter", "extra_loglikelihood_fn", "_filter_fn"))
 
 def _collapse(data: np.ndarray, Z: np.ndarray, H: np.ndarray):
     Hinv = np.linalg.inv(H)
@@ -282,7 +281,6 @@ def _fit_collapsed(
     }
     return constr | kf | out
 
-_fit_collapsed = jax.jit(_fit_collapsed, static_argnames=("_dynamics", "_link", "_invlink", "maxiter"))
 
 def _simulation(fit_output: dict, nsim: int, dynamics: callable, npaths: int, key: jax.Array):
     Qt, Ht = fit_output["Q"][-1], fit_output["H"][-1]

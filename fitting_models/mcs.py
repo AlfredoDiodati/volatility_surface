@@ -255,37 +255,19 @@ def mcs(
 
 def calculate_loss(target: np.ndarray, forecast: np.ndarray, method: str = "MSE") -> np.ndarray:
     """Computes vector of losses for a given target and forecast series. Returns: np.ndarray: vector of losses at time t."""
-
     target = np.asarray(target, dtype=float)
     forecast = np.asarray(forecast, dtype=float)
     method = method.upper()
-
-    if method == "MSE":
-        # Standard quadratic loss:
-        return (target - forecast) ** 2
-
-    elif method == "MAE":
-        # Absolute error:
-        return np.abs(target - forecast)
-
-    elif method == "QLIKE":
-        # Quasi Likelihood Loss for volatility
-        # L = log(h_hat) + taret / h_hat
-        # Target here corresponds to the realized variance proxy (y^2 or RK) not raw return
-
-        forecast = np.maximum(forecast, 1e-12)
-        return np.log(forecast) + (target / forecast)
-
-    else:
-        print(f"Unknown loss method: {method}, method must be 'MSE', 'MAE', 'QLIKE'")
+    if method == "MSE": return (target - forecast) ** 2
+    elif method == "MAE": return np.abs(target - forecast)
+    elif method == "QLIKE": return np.log(forecast) + (target / forecast)
+    else: print(f"Unknown loss method: {method}, method must be 'MSE', 'MAE', 'QLIKE'")
 
 
 def diebold_mariano_test(loss1: np.ndarray, loss2: np.ndarray, h: int = 1, L_hac: int | None = None) -> dict:
     """Performs DM test for predictive accuracy. """
     loss1 = np.asarray(loss1, dtype=float)
     loss2 = np.asarray(loss2, dtype=float)
-
-    # First we comput the loss differential
     d = loss1 - loss2
     mean_diff = np.mean(d)
 

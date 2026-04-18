@@ -182,7 +182,7 @@ def fit_collapsed(
         "is_converged": result["is_converged"],
     }
 
-def forecast(fit_result, covariates, q_alpha):
+def forecast(fit_result, covariates, y_test, q_alpha):
     a0 = fit_result["att"][-1]
     P0 = fit_result["Ptt"][-1]
     B = fit_result["B"]
@@ -192,28 +192,34 @@ def forecast(fit_result, covariates, q_alpha):
     omega = fit_result["omega"]
 
     covariates = np.asarray(covariates, dtype=float)
-    n_obs = covariates.shape[1]
+    y_test = np.asarray(y_test, dtype=float)
     base_covariates = covariates[:, :, :-1]
     bucket_indices = covariates[:, :, -1].astype(np.int32)
 
     Z_all = _build_Zt_all(base_covariates, bucket_indices, omega)
 
-    def _step(carry, Z_h):
+    def _step(carry, inputs):
+        Z_h, y_h = inputs
         a_t, P_t = carry
         a_pred = B @ a_t + ct
         P_pred = B @ P_t @ B.T + Q
+        mask_h = ~np.isnan(y_h)
+        n_h = np.sum(mask_h)
         y_hat = Z_h @ a_pred
-        P_mean = y_hat.mean()
+        P_mean = y_hat.sum() / n_h
         z_sum = Z_h.sum(axis=0)
-        F_sum = n_obs * sigma2 + z_sum @ P_pred @ z_sum
-        VaR_h = P_mean + q_alpha / n_obs * np.sqrt(F_sum)
-        return (a_pred, P_pred), (y_hat, P_mean, VaR_h)
+        F_sum = n_h * sigma2 + z_sum @ P_pred @ z_sum
+        VaR_h = P_mean + q_alpha / n_h * np.sqrt(F_sum)
+        y_m = np.where(mask_h, y_h, 0.0)
+        v = (y_m - Z_h @ a_pred) * mask_h
+        F_vec = np.einsum("ip,pq,iq->i", Z_h, P_pred, Z_h) + sigma2
+        oos_ll = -0.5 * (n_h * np.log(2 * np.pi) + np.sum(mask_h * np.log(F_vec)) + np.sum(mask_h * v ** 2 / F_vec))
+        return (a_pred, P_pred), (y_hat, P_mean, VaR_h, oos_ll)
 
-    _, (predictions, P_means, VaR) = jax.lax.scan(_step, (a0, P0), Z_all)
+    _, (predictions, P_means, VaR, log_liks) = jax.lax.scan(_step, (a0, P0), (Z_all, y_test))
 
-    return predictions, P_means, VaR
+    return predictions, P_means, VaR, log_liks
 
-forecast = jax.jit(forecast)
 
 def simulation(fit_output, nsim, npaths, key: jax.Array):
     return _simulation(fit_output, nsim, _dynamics, npaths, key)

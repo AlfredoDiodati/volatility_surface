@@ -156,32 +156,30 @@ def fit(
         "is_converged": is_converged,
     }
 
-fit = jax.jit(fit, static_argnames=("maxiter",))
 
-def forecast(fit_result, covariates, q_alpha):
+def forecast(fit_result, covariates, y_test, q_alpha):
     state0 = fit_result["beta_T"]
 
     covariates = np.asarray(covariates, dtype=float)
+    y_test = np.asarray(y_test, dtype=float)
     H = covariates.shape[0]
-    n_obs = covariates.shape[1]
     base_covariates = covariates[:, :, :-1]
     bucket_indices = covariates[:, :, -1].astype(np.int32)
+    mask_bool = ~np.isnan(y_test)
+    y_masked = np.where(mask_bool, y_test, 0.0)
+    mask_f = mask_bool.astype(float)
 
-    y_zeros = np.zeros((H, n_obs))
-    mask_zeros = np.zeros((H, n_obs))
-
-    betas, _, _ = _filter(y_zeros, base_covariates, bucket_indices, mask_zeros, fit_result, state0=state0)
+    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, state0=state0)
 
     omega_cols = fit_result["omega"][bucket_indices]
     Z = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
     predictions = np.einsum("hni,hi->hn", Z, betas[:H])
 
-    P = predictions.mean(axis=1)
-
+    n_obs_h = mask_bool.sum(axis=1)
+    P = predictions.sum(axis=1) / n_obs_h
     z_sum = Z.sum(axis=1)
-    F_sum = n_obs * fit_result["sigma2"] + (z_sum ** 2 * fit_result["C"]).sum(axis=1)
-    VaR = P + q_alpha / n_obs * np.sqrt(F_sum)
+    F_sum = n_obs_h * fit_result["sigma2"] + (z_sum ** 2 * fit_result["C"]).sum(axis=1)
+    VaR = P + q_alpha / n_obs_h * np.sqrt(F_sum)
 
-    return predictions, betas, P, VaR
+    return predictions, P, VaR, log_liks
 
-forecast = jax.jit(forecast)
