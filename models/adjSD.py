@@ -3,7 +3,7 @@ import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
 
-def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0=None):
+def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
     B = params["B"]
     A = params["A"]
     sigma2 = params["sigma2"]
@@ -11,6 +11,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0=No
     C = params["C"]
     nu = params["nu"]
     beta_bar = params["beta_bar"]
+    p = beta_bar.shape[0]
     h_inv = 1.0 / sigma2
     C_inv = 1.0 / C
 
@@ -42,15 +43,8 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0=No
         
         return beta_next, (beta_t, log_lik, beta_next)
 
-    init_state = lax.cond(
-        state0 is None,
-        lambda _: beta_bar,
-        lambda s: s,
-        state0
-    )
-    
     _, (betas, log_liks, beta_Ts) = lax.scan(
-        _step, init_state, (y_masked, base_covariates, bucket_indices, mask_f)
+        _step, state0, (y_masked, base_covariates, bucket_indices, mask_f)
     )
     return betas, log_liks, beta_Ts[-1]
 
@@ -113,7 +107,7 @@ def fit(
 
     def _criterion(theta):
         params = _link(theta)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params)
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, params["beta_bar"])
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -147,7 +141,7 @@ def fit(
         _not_converged, _adam_step, state0
     )
     params_opt = _link(theta_opt)
-    betas, _, beta_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt)
+    betas, _, beta_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, params_opt["beta_bar"])
     return params_opt | {
         "betas": betas,
         "beta_T": beta_T,
@@ -155,6 +149,7 @@ def fit(
         "niter": niter,
         "is_converged": is_converged,
     }
+
 
 def forecast(fit_result, covariates, y_test, q_alpha):
     state0 = fit_result["beta_T"]
@@ -168,7 +163,7 @@ def forecast(fit_result, covariates, y_test, q_alpha):
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
 
-    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, state0=state0)
+    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, state0)
 
     omega_cols = fit_result["omega"][bucket_indices]
     Z = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)

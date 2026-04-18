@@ -181,15 +181,13 @@ def model_implied_partition(sigma2, nu, loading_series, betas, delta_ts, moments
             t_next = (k + 1) * dt
             m_t    = loading_series[t]
             m_next = loading_series[t_next]
-            if np.any(np.isnan(m_t)) or np.any(np.isnan(m_next)):
-                continue
+            if np.any(np.isnan(m_t)) or np.any(np.isnan(m_next)):continue
             hat_y_t    = float(m_t    @ betas[t])
             hat_y_next = float(m_next @ betas[t_next])
             gamma = (hat_y_next - hat_y_t) ** 2 + 2.0 * sigma2
             gammas.append(max(gamma, 1e-16))
 
-        if len(gammas) == 0:
-            continue
+        if len(gammas) == 0: continue
 
         gammas = np.array(gammas)
         for i_q, q in enumerate(moments):
