@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FixedFormatter
 from scipy.special import gamma as gamma_func
 
-from models.f_SD import fit, _solve_weights
+from models.f0_SD import fit, _solve_weights
 from scaling.scaling_reg import moment_scaling, _make_time_lags
 
 PARQUET_PATH       = "data/SPX/put/bucket.parquet"

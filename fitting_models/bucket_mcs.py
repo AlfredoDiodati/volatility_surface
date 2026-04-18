@@ -16,10 +16,15 @@ TRAIN_SIZE = 500
 VAR_LEVEL = 0.05
 Q_ALPHA = -1.6448536269514722  # must match bucket_performance.py
 
-MCS_ALPHA = 0.15
-MCS_B = 25000
-MCS_BLOCK = 10
+RUN_MCS = False
+
+MCS_ALPHAS = [0.05, 0.10, 0.25]
+MCS_BLOCKS = [1, 5, 10, 15, 20]
+MCS_B = 20000
 MCS_SEED = 42
+CANONICAL_ALPHA = 0.10
+CANONICAL_BLOCK = 10
+MAJORITY = 3
 
 MODEL_ORDER = ["ss", "adjSD", "fSD_K3", "fSD_K10", "fSD_K25", "fSD_K50", "fSD_K100", "fSD_K300"]
 
@@ -115,6 +120,91 @@ def tick_loss_series(realized, var_forecast, alpha):
     return (e * (alpha - (e < 0).astype(float))).tolist()
 
 
+CRIT_LABELS = {
+    "mse": "MSE",
+    "mae": "MAE",
+    "neg_oos_loglik": r"Neg.\ Log-Lik.",
+    "tick_loss": "Tick Loss",
+}
+
+MODEL_LABELS = {
+    "ss": "SS",
+    "adjSD": "adjSD",
+    "fSD_K3": r"fSD ($K{=}3$)",
+    "fSD_K10": r"fSD ($K{=}10$)",
+    "fSD_K25": r"fSD ($K{=}25$)",
+    "fSD_K50": r"fSD ($K{=}50$)",
+    "fSD_K100": r"fSD ($K{=}100$)",
+    "fSD_K300": r"fSD ($K{=}300$)",
+}
+
+
+def _stars(in_mcs_at_alpha: dict) -> str:
+    if in_mcs_at_alpha[0.25]:
+        return r"$^{***}$"
+    if in_mcs_at_alpha[0.10]:
+        return r"$^{**}$"
+    if in_mcs_at_alpha[0.05]:
+        return r"$^{*}$"
+    return ""
+
+
+def _make_var_latex_table(model_names, df_var) -> str:
+    rows_by_name = {r["model"]: r for r in df_var.iter_rows(named=True)}
+    lines = [
+        r"\begin{tabular}{lrrrrr}",
+        r"\toprule",
+        r"Model & Hit Rate & $N_{\text{hits}}$ & $p_{\text{uc}}$ & $p_{\text{ind}}$ & $p_{\text{cc}}$ \\",
+        r"\midrule",
+    ]
+    for name in model_names:
+        r = rows_by_name[name]
+        label = MODEL_LABELS.get(name, name)
+        lines.append(
+            f"{label} & {r['hit_rate']:.4f} & {r['n_hits']} & "
+            f"{r['pval_uc']:.4f} & {r['pval_ind']:.4f} & {r['pval_cc']:.4f}" + r" \\"
+        )
+    lines += [
+        r"\bottomrule",
+        r"\multicolumn{6}{l}{\footnotesize Nominal VaR level $\alpha=5\%$. "
+        r"$p_{\text{uc}}$: Kupiec unconditional coverage; "
+        r"$p_{\text{ind}}$: independence; "
+        r"$p_{\text{cc}}$: conditional coverage.}\\",
+        r"\end{tabular}",
+    ]
+    return "\n".join(lines)
+
+
+def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alpha, block) -> str:
+    n_crits = len(crits)
+    col_spec = "l" + "r" * n_crits
+    crit_header = " & ".join(["Model"] + [CRIT_LABELS[c] for c in crits])
+    footnote_cols = n_crits + 1
+    lines = [
+        r"\begin{tabular}{" + col_spec + "}",
+        r"\toprule",
+        crit_header + r" \\",
+        r"\midrule",
+    ]
+    for name in model_names:
+        cells = [MODEL_LABELS.get(name, name)]
+        for crit in crits:
+            val = metric_means[crit][name]
+            s = _stars(in_mcs_by_name_crit_alpha[name][crit])
+            cells.append(f"{val:.4f}{s}")
+        lines.append(" & ".join(cells) + r" \\")
+    lines += [
+        r"\bottomrule",
+        rf"\multicolumn{{{footnote_cols}}}{{l}}{{\footnotesize "
+        rf"Block length $l={block}$. "
+        r"$^{*}$in MCS at $\alpha=0.05$; "
+        r"$^{**}$at $\alpha=0.10$; "
+        r"$^{***}$at $\alpha=0.25$.}}\\",
+        r"\end{tabular}",
+    ]
+    return "\n".join(lines)
+
+
 def main():
     print("Loading bucket_performance results...")
     df_step = pl.read_parquet(os.path.join(PERF_DIR, "step_results.parquet"))
@@ -128,7 +218,6 @@ def main():
     y_test_all, test_dates = load_y_test(PARQUET_PATH, TRAIN_SIZE)
     y_test_all = y_test_all[:n_test]
     mask_all = ~jnp.isnan(y_test_all)
-    index = test_dates[:n_test]
 
     realized_P = jnp.nanmean(y_test_all, axis=1)
 
@@ -149,10 +238,12 @@ def main():
         var_forecasts[name] = var_fc
         tick_data[name] = tick_loss_series(realized_P, var_fc, VAR_LEVEL)
 
-    df_mse = pl.DataFrame(mse_data)
-    df_mae = pl.DataFrame(mae_data)
-    df_negll = pl.DataFrame(negll_data)
-    df_tick = pl.DataFrame(tick_data)
+    criteria = {
+        "mse": pl.DataFrame(mse_data),
+        "mae": pl.DataFrame(mae_data),
+        "neg_oos_loglik": pl.DataFrame(negll_data),
+        "tick_loss": pl.DataFrame(tick_data),
+    }
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -171,56 +262,84 @@ def main():
         print(f"  {row['model']:20s}  {row['hit_rate']:9.4f}  {row['pval_uc']:8.4f}  "
               f"  {row['pval_ind']:9.4f}  {row['pval_cc']:8.4f}")
 
-    criteria = {
-        "mse": df_mse,
-        "mae": df_mae,
-        "neg_oos_loglik": df_negll,
-        "tick_loss": df_tick,
+    var_tex = _make_var_latex_table(model_names, df_var)
+    with open(os.path.join(OUTPUT_DIR, "var_table.tex"), "w") as f:
+        f.write(var_tex)
+
+    print("\n=== VaR Coverage (nominal 5%) ===")
+    print(df_var.select(["model", "hit_rate", "n_hits", "pval_uc", "pval_ind", "pval_cc"]))
+
+    if not RUN_MCS:
+        print(f"\nSaved to {OUTPUT_DIR}")
+        return
+
+    metric_means = {
+        crit: df_losses.mean().to_dicts()[0]
+        for crit, df_losses in criteria.items()
     }
 
-    print(f"\nRunning MCS (alpha={MCS_ALPHA}, B={MCS_B}, block_length={MCS_BLOCK})...")
-    detail_rows = []
-    for crit, df_losses in criteria.items():
-        print(f"  {crit}...", flush=True)
-        res = mcs(df_losses, alpha=MCS_ALPHA, B=MCS_B, block_length=MCS_BLOCK,
-                  key=jax.random.PRNGKey(MCS_SEED))
-        elim_set = res["elimination_order"]
-        for name in model_names:
-            detail_rows.append({
-                "model": name,
-                "criterion": crit,
-                "in_mcs": name in res["mcs_models"],
-                "pvalue": float(res["pvalues"][name]),
-                "elimination_step": elim_set.index(name) + 1 if name in elim_set else None,
-            })
-        print(f"    MCS: {res['mcs_models']}")
+    print(f"\nRunning MCS grid (alphas={MCS_ALPHAS}, blocks={MCS_BLOCKS}, B={MCS_B})...")
+    all_rows = []
+    in_mcs_grid = {
+        block: {name: {crit: {a: False for a in MCS_ALPHAS} for crit in criteria} for name in model_names}
+        for block in MCS_BLOCKS
+    }
 
-    df_detail = pl.DataFrame(detail_rows)
-    df_detail.write_csv(os.path.join(OUTPUT_DIR, "mcs_detail.csv"))
+    for block in MCS_BLOCKS:
+        for alpha in MCS_ALPHAS:
+            print(f"  block={block}, alpha={alpha}...", flush=True)
+            for crit, df_losses in criteria.items():
+                res = mcs(df_losses, alpha=alpha, B=MCS_B, block_length=block,
+                          key=jax.random.PRNGKey(MCS_SEED))
+                elim_set = res["elimination_order"]
+                for name in model_names:
+                    in_mcs = name in res["mcs_models"]
+                    pval = float(res["pvalues"][name])
+                    in_mcs_grid[block][name][crit][alpha] = in_mcs
+                    all_rows.append({
+                        "model": name,
+                        "criterion": crit,
+                        "alpha": alpha,
+                        "block": block,
+                        "in_mcs": in_mcs,
+                        "pvalue": pval,
+                        "elimination_step": elim_set.index(name) + 1 if name in elim_set else None,
+                    })
 
-    df_wide = (
-        df_detail
-        .pivot(index="model", on="criterion", values=["in_mcs", "pvalue", "elimination_step"])
-    )
-
-    df_out = (
-        df_wide
-        .join(df_agg.select(["model", "mse", "mae", "total_oos_loglik", "aic", "bic"]), on="model")
-        .join(df_var.select(["model", "hit_rate", "n_hits", "pval_uc", "pval_ind", "pval_cc"]), on="model")
-    )
-    df_out = df_out.sort("total_oos_loglik", descending=True)
-    df_out.write_csv(os.path.join(OUTPUT_DIR, "mcs_results.csv"))
+    pl.DataFrame(all_rows).write_csv(os.path.join(OUTPUT_DIR, "mcs_grid.csv"))
 
     for crit, df_losses in criteria.items():
         df_losses.write_csv(os.path.join(OUTPUT_DIR, f"losses_{crit}.csv"))
 
-    print("\n=== MCS Summary ===")
-    for crit in criteria:
-        winners = df_detail.filter((pl.col("criterion") == crit) & pl.col("in_mcs"))["model"].to_list()
-        print(f"  {crit:20s}: {winners}")
+    crits = list(criteria.keys())
+    all_tables = []
+    for block in MCS_BLOCKS:
+        table = _make_latex_table(
+            model_names, crits, metric_means,
+            in_mcs_grid[block], block,
+        )
+        all_tables.append(table)
 
-    print("\n=== VaR Coverage (nominal 5%) ===")
-    print(df_var.select(["model", "hit_rate", "n_hits", "pval_uc", "pval_ind", "pval_cc"]))
+    with open(os.path.join(OUTPUT_DIR, "mcs_table.tex"), "w") as f:
+        f.write("\n\n".join(all_tables))
+
+    df_wide = (
+        pl.DataFrame(all_rows)
+        .filter((pl.col("alpha") == CANONICAL_ALPHA) & (pl.col("block") == CANONICAL_BLOCK))
+        .pivot(index="model", on="criterion", values=["in_mcs", "pvalue", "elimination_step"])
+        .join(df_agg.select(["model", "mse", "mae", "total_oos_loglik", "aic", "bic"]), on="model")
+        .join(df_var.select(["model", "hit_rate", "n_hits", "pval_uc", "pval_ind", "pval_cc"]), on="model")
+        .sort("total_oos_loglik", descending=True)
+    )
+    df_wide.write_csv(os.path.join(OUTPUT_DIR, "mcs_results.csv"))
+
+    print(f"\n=== MCS Summary (canonical alpha={CANONICAL_ALPHA}, block={CANONICAL_BLOCK}) ===")
+    for crit in criteria:
+        winners = [
+            n for n in model_names
+            if in_mcs_grid[CANONICAL_BLOCK][n][crit][CANONICAL_ALPHA]
+        ]
+        print(f"  {crit:20s}: {winners}")
 
     print(f"\nSaved to {OUTPUT_DIR}")
 
