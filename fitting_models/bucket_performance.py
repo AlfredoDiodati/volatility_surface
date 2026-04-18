@@ -18,8 +18,9 @@ P_FULL = P
 
 TRAIN_SIZE = 500
 TEST_SIZE = 250
-Q_ALPHA = -1.6448536269514722  # scipy.stats.norm.ppf(0.05)
-FSD_K_VALUES = [3, 10, 25, 50, 100, 300]
+Q_ALPHA = -1.6448536269514722  # scipy.stats.norm.ppf(0.05) — used for SS (Gaussian)
+ALPHA = 0.05                   # probability level — used for t-distribution models
+FSD_K_VALUES = [3, 10, 25, 50, 100, 300, 1000]
 
 
 def load_and_reshape(path):
@@ -107,7 +108,7 @@ def make_ss_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter
     return step
 
 
-def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter):
+def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter):
     def step(carry, i):
         y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
         Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
@@ -120,7 +121,7 @@ def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxi
                       opt_options={"learning_rate": 1e-3, "tol": 1e-6},
                       maxiter=maxiter)
 
-        preds, P_mean, VaR, oos_ll = adjSD_forecast(r, Z_test, y_test, q_alpha)
+        preds, P_mean, VaR, oos_ll = adjSD_forecast(r, Z_test, y_test, alpha)
 
         new_carry = (r["beta_bar"], r["B"], r["A"], r["sigma2"], r["omega"], r["C"], r["nu"])
         return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
@@ -128,7 +129,7 @@ def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxi
     return step
 
 
-def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter, K):
+def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
     def step(carry, i):
         y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
         Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
@@ -138,11 +139,11 @@ def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxite
         ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "sigma2": carry[3],
               "sigma_0": carry[4], "omega_load": carry[5], "eta": carry[6],
               "rho_K": carry[7], "C": carry[8], "nu": carry[9]}
-        r = fSD_fit(y_win, Z_win, ig, K=K,
+        r = fSD_fit(y_win, Z_win, ig, K=K, score_power=1.0,
                     opt_options={"learning_rate": 1e-3, "tol": 1e-6},
                     maxiter=maxiter)
 
-        preds, P_mean, VaR, oos_ll = fSD_forecast(r, Z_test, y_test, K, q_alpha)
+        preds, P_mean, VaR, oos_ll = fSD_forecast(r, Z_test, y_test, K, 1.0, alpha)
 
         new_carry = (r["beta_bar"], r["B"], r["A"], r["sigma2"], r["sigma_0"],
                      r["omega_load"], r["eta"], r["rho_K"], r["C"], r["nu"])
@@ -221,8 +222,8 @@ def main():
     n_params_map.update({f"fSD_K{k}": n_params_fSD for k in FSD_K_VALUES})
 
     ss_step = make_ss_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000)
-    adjSD_step = make_adjSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000)
-    fSD_steps = [make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000, K) for K in FSD_K_VALUES]
+    adjSD_step = make_adjSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000)
+    fSD_steps = [make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K) for K in FSD_K_VALUES]
 
     ss_carry0 = _ss_cold_carry(y_jax, Z_jax, n_buckets)
     adjSD_carry0 = _adjSD_cold_carry(y_jax, Z_jax, n_buckets)

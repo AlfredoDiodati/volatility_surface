@@ -4,6 +4,28 @@ from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
 
+
+def _t_unit_var_ppf(alpha, nu):
+    a = nu / 2.0
+    p = np.where(alpha <= 0.5, alpha, 1.0 - alpha)
+    z = jax.scipy.special.ndtri(p)
+    x0 = z + (z ** 3 + z) / (4.0 * nu)
+
+    def _newton(x, _):
+        x2 = x * x
+        u = nu / (nu + x2)
+        cdf = 0.5 * jax.scipy.special.betainc(a, 0.5, u)
+        log_pdf = (
+            gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0)
+            - 0.5 * np.log(np.pi * nu)
+            - ((nu + 1.0) / 2.0) * np.log1p(x2 / nu)
+        )
+        return x - (cdf - p) / np.exp(log_pdf), None
+
+    x_star, _ = lax.scan(_newton, x0, None, length=15)
+    q_std = np.where(alpha <= 0.5, x_star, -x_star)
+    return q_std * np.sqrt((nu - 2.0) / nu)
+
 def _solve_weights(eta, alpha, K):
     indices = np.arange(K + 1)
 
@@ -258,7 +280,7 @@ def fit(
     }
 
 
-def forecast(fit_result, covariates, y_test, K, score_power, q_alpha):
+def forecast(fit_result, covariates, y_test, K, score_power, alpha):
     state0 = (fit_result["b_T"], fit_result["beta_tilde_T"])
 
     covariates = np.asarray(covariates, dtype=float)
@@ -280,6 +302,7 @@ def forecast(fit_result, covariates, y_test, K, score_power, q_alpha):
     P = predictions.sum(axis=1) / n_obs_h
     z_sum = Z.sum(axis=1)
     F_sum = n_obs_h * fit_result["sigma2"] + np.einsum("hi,ij,hj->h", z_sum, fit_result["C"], z_sum)
-    VaR = P + q_alpha / n_obs_h * np.sqrt(F_sum)
+    q = _t_unit_var_ppf(alpha, fit_result["nu"])
+    VaR = P + q / n_obs_h * np.sqrt(F_sum)
 
     return predictions, P, VaR, log_liks

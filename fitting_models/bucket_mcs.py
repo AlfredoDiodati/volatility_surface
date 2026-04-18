@@ -16,7 +16,7 @@ TRAIN_SIZE = 500
 VAR_LEVEL = 0.05
 Q_ALPHA = -1.6448536269514722  # must match bucket_performance.py
 
-RUN_MCS = False
+RUN_MCS = True
 
 MCS_ALPHAS = [0.05, 0.10, 0.25]
 MCS_BLOCKS = [1, 5, 10, 15, 20]
