@@ -4,7 +4,6 @@ from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
 
-
 def _solve_weights(eta, alpha, K):
     indices = np.arange(K + 1)
 
@@ -69,6 +68,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
         Z_mask = Z_t * mask_t[:, None]
         N_t = np.sum(mask_t)
+        eps_t = (y_t - Z_t @ beta_full_t) * mask_t
 
         ZtZ = Z_mask.T @ Z_mask
         ZtHinvZ = h_inv * ZtZ
@@ -81,24 +81,24 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
         fisher_t = (nu / (nu - 2.0)) * ((nu + N_t) / (nu + N_t + 2.0)) * ZtSigmaInvZ
 
-        def log_density(beta):
-            eps_beta = (y_t - Z_t @ beta) * mask_t
-            Zte_beta = Z_mask.T @ eps_beta
-            u_beta = solve_triangular(L_Inner, h_inv * (L_C.T @ Zte_beta), lower=True)
-            quad = h_inv * (eps_beta @ eps_beta) - (u_beta @ u_beta)
-            return (
-                gammaln((nu + N_t) / 2.0)
-                - gammaln(nu / 2.0)
-                - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
-                - 0.5 * log_det_Sigma
-                - 0.5 * (nu + N_t) * np.log(1.0 + quad / (nu - 2.0))
-            )
+        ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
+        woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
+        mahal_Sigma = h_inv * (eps_t @ eps_t) - (woodbury_eps @ woodbury_eps)
+        ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
 
-        ll_t, nabla_t = jax.value_and_grad(log_density)(beta_full_t)
+        ll_t = (
+            gammaln((nu + N_t) / 2.0)
+            - gammaln(nu / 2.0)
+            - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
+            - 0.5 * log_det_Sigma
+            - 0.5 * (nu + N_t) * np.log(1.0 + mahal_Sigma / (nu - 2.0))
+        )
+
+        score_weight = (nu + N_t) / ((nu - 2.0) + mahal_Sigma)
+        nabla_t = score_weight * ZtSigmaInv_eps
 
         eigvals, eigvecs = np.linalg.eigh(fisher_t)
         scaling_matrix = (eigvecs * (eigvals ** (-score_power))) @ eigvecs.T
-
         scaled_score = scaling_matrix @ nabla_t
 
         xi_sigma = scaled_score[-1]
