@@ -65,7 +65,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
     sigma_0 = params["sigma_0"]
     omega_load = params["omega_load"]
     eta = params["eta"]
-    rho_K = params["rho_K"]
+    alpha = params["alpha"]
     C = params["C"]
     nu = params["nu"]
     beta_bar = params["beta_bar"]
@@ -77,7 +77,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
     IminusB = np.eye(p_tilde) - B
     L_C = np.linalg.cholesky(C)
 
-    w_tilde_norm, rho = _solve_weights(eta, rho_K, K)
+    w_tilde_norm, rho = _solve_weights(eta, alpha, K)
 
     def _step(state, inputs):
         b_t, beta_tilde_t = state
@@ -188,7 +188,7 @@ def fit(
         idx += n_buckets - 1
         eta = np.exp(theta[idx])
         idx += 1
-        rho_K = jax.nn.sigmoid(theta[idx])
+        alpha = 1.0 + jax.nn.softplus(theta[idx])
         idx += 1
         C_diag = np.exp(theta[idx:idx + p_full])
         idx += p_full
@@ -202,7 +202,7 @@ def fit(
             "sigma_0": sigma_0,
             "omega_load": omega_load,
             "eta": eta,
-            "rho_K": rho_K,
+            "alpha": alpha,
             "C": C,
             "nu": nu,
         }
@@ -215,7 +215,7 @@ def fit(
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
         unc_eta = np.log(params["eta"])
-        unc_rho_K = np.log(params["rho_K"] / (1.0 - params["rho_K"]))
+        unc_alpha = np.log(np.exp(params["alpha"] - 1.0) - 1.0)
         C_diag = np.diag(params["C"])
         unc_C = np.log(C_diag)
         unc_nu = np.log(params["nu"] - 2.0)
@@ -227,7 +227,7 @@ def fit(
             np.array([params["sigma_0"]]),
             unc_omega_load,
             np.array([unc_eta]),
-            np.array([unc_rho_K]),
+            np.array([unc_alpha]),
             unc_C,
             np.array([unc_nu]),
         ])

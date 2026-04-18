@@ -23,7 +23,7 @@ P_FULL  = P_TILDE + 1
 K_VALUES = [3, 10, 25, 50, 100, 300, 1000]
 
 ETA   = 0.4
-RHO_K = 0.999
+alpha = 0.999
 
 MIN_SCALE   = 1.0
 MAX_SCALE   = 126.0
@@ -92,7 +92,7 @@ def build_initial_guess(beta_ols, sigma2, n_buckets):
         "sigma_0":    jnp.array(0.1),
         "omega_load": jnp.array(omega_load),
         "eta":        jnp.array(ETA),
-        "rho_K":      jnp.array(RHO_K),
+        "alpha":      jnp.array(alpha),
         "C":          jnp.array(1e-3 * np.eye(P_FULL, dtype=np.float64)),
         "nu":         jnp.array(10.0),
     }
@@ -106,7 +106,7 @@ def warm_start_guess(prev_params):
         "sigma_0":    jnp.array(float(np.array(prev_params["sigma_0"]).ravel()[0])),
         "omega_load": jnp.array(np.array(prev_params["omega_load"])),
         "eta":        jnp.array(float(np.array(prev_params["eta"]).ravel()[0])),
-        "rho_K":      jnp.array(float(np.array(prev_params["rho_K"]).ravel()[0])),
+        "alpha":      jnp.array(float(np.array(prev_params["alpha"]).ravel()[0])),
         "C":          jnp.array(np.array(prev_params["C"])),
         "nu":         jnp.array(float(np.array(prev_params["nu"]).ravel()[0])),
     }
@@ -355,14 +355,16 @@ def main():
         pbase = plot_base(k)
 
         print(f"\n--- K={k} ---")
-        print(f"  Solving weights (eta={ETA}, rho_K={RHO_K})...")
-        w_tilde_norm, rho = _solve_weights(ETA, RHO_K, k)
+        print(f"  Solving weights (eta={ETA}, alpha={alpha})...")
+        w_tilde_norm, rho = _solve_weights(ETA, alpha, k)
         print(f"  rho={rho.round(4)}")
         print(f"  w_tilde_norm={w_tilde_norm.round(4)}")
 
         if os.path.exists(opath) and os.path.getsize(opath) > 0:
             print(f"  Found existing params, loading from {opath}")
             fit_output = load_params(opath)
+            fit_output["ws"] = np.array(w_tilde_norm)
+            fit_output["rhos"] = np.array(rho)
         else:
             if prev_params is None:
                 print(f"  Cold start")
@@ -380,7 +382,8 @@ def main():
                 opt_options={"learning_rate": 1e-3, "tol": 1e-6},
                 maxiter=20_000,
             )
-            
+            fit_output["ws"] = np.array(w_tilde_norm)
+            fit_output["rhos"] = np.array(rho)
             os.makedirs(os.path.dirname(opath), exist_ok=True)
             with open(opath, "w") as f:
                 json.dump(serialize_params(fit_output), f, indent=2)
