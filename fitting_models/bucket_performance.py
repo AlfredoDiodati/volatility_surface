@@ -140,7 +140,7 @@ def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter,
 
         ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "sigma2": carry[3],
               "sigma_0": carry[4], "omega_load": carry[5], "eta": carry[6],
-              "rho_K": carry[7], "C": carry[8], "nu": carry[9]}
+              "alpha": carry[7], "C": carry[8], "nu": carry[9]}
         r = fSD_fit(y_win, Z_win, ig, K=K, score_power=1.0,
                     opt_options={"learning_rate": 1e-3, "tol": 1e-6},
                     maxiter=maxiter)
@@ -148,7 +148,7 @@ def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter,
         preds, P_mean, VaR, oos_ll = fSD_forecast(r, Z_test, y_test, K, 1.0, alpha)
 
         new_carry = (r["beta_bar"], r["B"], r["A"], r["sigma2"], r["sigma_0"],
-                     r["omega_load"], r["eta"], r["rho_K"], r["C"], r["nu"])
+                     r["omega_load"], r["eta"], r["alpha"], r["C"], r["nu"])
         return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
 
     return step
