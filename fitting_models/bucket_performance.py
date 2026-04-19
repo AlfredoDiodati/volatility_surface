@@ -204,7 +204,7 @@ def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
         sig2,
         omega_load,
         jnp.full(P_FULL, 0.4),
-        jnp.full(P_FULL, 0.999),
+        jnp.full(P_FULL, 1.4255056381225586),
         1e-3 * jnp.eye(P_FULL),
         jnp.array(10.0),
     )
@@ -240,8 +240,8 @@ def _fSD_cold_carry(y_jax, Z_jax, n_buckets):
         sig2,
         jnp.array(0.1),
         omega_load,
-        jnp.array(0.4),
-        jnp.array(0.999),
+        jnp.array(0.06251277029514313),
+        jnp.array(1.4255056381225586),
         1e-3 * jnp.eye(P_FULL),
         jnp.array(10.0),
     )

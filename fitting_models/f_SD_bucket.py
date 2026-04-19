@@ -20,7 +20,7 @@ P_BASE  = len(FACTOR_LOADING_COLS)
 P_TILDE = P_BASE
 P_FULL  = P_TILDE + 1
 
-K_VALUES = [3, 10, 25, 50, 100, 300, 1000]
+K_VALUES = [150, 180]
 
 ETA   = 0.2
 alpha = 1.2

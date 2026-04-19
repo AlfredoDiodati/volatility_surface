@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 import polars as pl
 
-
 def _block_bootstrap_indices(T: int, B: int, block_length: int, key: jax.Array) -> jnp.ndarray:
     n_blocks = int(jnp.ceil(T / block_length))
     max_start = T - block_length
@@ -10,7 +9,6 @@ def _block_bootstrap_indices(T: int, B: int, block_length: int, key: jax.Array) 
     offsets = jnp.arange(block_length)[None, None, :]
     idx = (starts[:, :, None] + offsets).reshape(B, n_blocks * block_length)[:, :T]
     return idx
-
 
 def _hac_var(x: jnp.ndarray, L: int) -> jnp.ndarray:
     T = x.shape[-1]
@@ -24,10 +22,7 @@ def _hac_var(x: jnp.ndarray, L: int) -> jnp.ndarray:
     s = gamma[..., 0] + 2.0 * jnp.sum(w[1:] * gamma[..., 1:], axis=-1)
     return s / T
 
-
-def _pairwise_diffs(L: jnp.ndarray) -> jnp.ndarray:
-    return L[:, :, None] - L[:, None, :]
-
+def _pairwise_diffs(L: jnp.ndarray) -> jnp.ndarray: return L[:, :, None] - L[:, None, :]
 
 def _t_stats_pairwise(d: jnp.ndarray, L_hac: int) -> tuple:
     T, M, _ = d.shape
@@ -41,7 +36,6 @@ def _t_stats_pairwise(d: jnp.ndarray, L_hac: int) -> tuple:
     var_mean = jnp.where(diag, jnp.nan, var_mean)
     return dbar, var_mean, t_mm
 
-
 def _t_stats_dot(L: jnp.ndarray, L_hac: int) -> tuple:
     T, M = L.shape
     mean_all = L.mean(axis=1, keepdims=True)
@@ -51,7 +45,6 @@ def _t_stats_dot(L: jnp.ndarray, L_hac: int) -> tuple:
     var_mean_dot = _hac_var(d_dot.T, L=L_hac)
     t_mdot = dbar_dot / jnp.sqrt(var_mean_dot)
     return dbar_dot, var_mean_dot, t_mdot
-
 
 def _T_emp(L: jnp.ndarray, stat: str, L_hac: int) -> tuple:
     stat = stat.upper()
@@ -64,7 +57,6 @@ def _T_emp(L: jnp.ndarray, stat: str, L_hac: int) -> tuple:
         dbar_dot, var_mean_dot, t_mdot = _t_stats_dot(L, L_hac=L_hac)
         return float(jnp.abs(t_mdot).max()), {"dbar_dot": dbar_dot, "var_mean_dot": var_mean_dot, "t_mdot": t_mdot}
     raise ValueError("stat must be 'TR' or 'Tmax'")
-
 
 def _T_star(L: jnp.ndarray, stat: str, L_hac: int, B: int, block_length: int, key: jax.Array) -> jnp.ndarray:
     T, M = L.shape
@@ -99,13 +91,11 @@ def _T_star(L: jnp.ndarray, stat: str, L_hac: int, B: int, block_length: int, ke
 
     raise ValueError("stat must be 'TR' or 'Tmax'")
 
-
 def _elimination_rule(L: jnp.ndarray) -> int:
     mean_loss = L.mean(axis=0)
     M = mean_loss.shape[0]
     mean_others = (M * mean_loss.mean() - mean_loss) / (M - 1.0)
     return int(jnp.argmax(mean_loss - mean_others))
-
 
 def mcs(
     losses: pl.DataFrame | jnp.ndarray,
@@ -151,8 +141,7 @@ def mcs(
         elimination_order.append(worst_global)
         active.pop(worst_local)
 
-    for i in active:
-        pvals[i] = 1.0
+    for i in active: pvals[i] = 1.0
 
     if model_names is None:
         return {
@@ -196,7 +185,6 @@ def calculate_loss(target: jnp.ndarray, forecast: jnp.ndarray, method: str = "MS
     if method == "QLIKE":
         return jnp.log(forecast) + target / forecast
     raise ValueError(f"Unknown loss method: {method}, must be 'MSE', 'MAE', or 'QLIKE'")
-
 
 def diebold_mariano_test(loss1: jnp.ndarray, loss2: jnp.ndarray, h: int = 1, L_hac: int | None = None) -> dict:
     loss1 = jnp.asarray(loss1, float)
