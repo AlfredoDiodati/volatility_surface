@@ -20,7 +20,7 @@ RUN_MCS = True
 
 MCS_ALPHAS = [0.05, 0.10, 0.25]
 MCS_BLOCKS = [1, 5, 10, 15, 20]
-MCS_B = 20000
+MCS_B = 10000
 MCS_SEED = 42
 CANONICAL_ALPHA = 0.10
 CANONICAL_BLOCK = 10
@@ -28,7 +28,7 @@ MAJORITY = 3
 
 MODEL_ORDER = [
     "ss", "adjSD",
-    "fSD_K3", "fSD_K10", "fSD_K25", "fSD_K50", "fSD_K100", "fSD_K300",
+    "fSD_K3", "fSD_K10", "fSD_K25", "fSD_K50", "fSD_K300",
     "ffSD_K3", "ffSD_K10", "ffSD_K25", "ffSD_K50", "ffSD_K100", "ffSD_K300"
 ]
 

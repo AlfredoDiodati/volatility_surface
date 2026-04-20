@@ -22,7 +22,7 @@ TEST_SIZE = 250
 Q_ALPHA = -1.6448536269514722  # scipy.stats.norm.ppf(0.05) — used for SS (Gaussian)
 ALPHA = 0.05                   # probability level — used for t-distribution models
 FSD_K_VALUES = [3, 10, 25, 50, 100, 150, 180]
-FFSD_K_VALUES = [3, 10, 25, 50, 100]
+FFSD_K_VALUES = [3, 10, 25, 50, 80, 100]
 
 
 def load_and_reshape(path):
