@@ -26,7 +26,9 @@ ADDITIONAL STUFF (order of importance \ feasibility tradeoff)
 
 	- Comparison of models in 1) and 2) with
 			- Fractioannly integrated counterpart
-			- SNM counterpart
+				- fractal in score, fractal in beta
+				- each component with its own d
+			- SNM counterpart: scalar for all
 
 		-> need to add explanation in latex
 
@@ -59,6 +61,14 @@ ADDITIONAL STUFF (order of importance \ feasibility tradeoff)
 			- Learn lag decomposition of ARMA(1,1) level GAS, ARFIMA, level FIGAS
 			- learn lag decomposition of level heterogenous model
 			- can I see a connection with my model?
+
+	additional models: 
+		fractal intercept only
+		truncated fractals
+		factor SNM for each component
+
+	spatial model
+		kernel that gives prices at t-1 adjusted by distance + score driven scalar
 
 	(hard) nonparametric expansion using GMM score and gateaux derivative
 
