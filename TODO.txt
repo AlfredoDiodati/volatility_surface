@@ -1,43 +1,58 @@
 
-PYTHON TESTS
--------------------------------------------------------------
- - make scaling for mixtures of Brownian motions in levels
- - make scaling for ARFIMA and FIGAS in level
-	-> try to combine then to see if you can create (?appharent) multifractality
- - simulation of appharent multifractality
- - double check scalings in code
- - new models fit under bucketed data:
+NEEDS TO BE DONE TO COMPLETE THE THESIS
 
-	3) Comparison of models in 1) and 2) with
-		- Fractioannly integrated counterpart
-		- SNM counterpart
+	Forecast:	
+		- MAIN RESULTS AS PAPER: non-bucketed data, full bucketet data (also call options) 
+		- stress-test periods, (e.g. 2020 like paper, see others)
 
-	3) (probably not) endogenous models
-		- with sigma^2_t as factor
-		- without sigma^2_t as factor
-		- with log K and log St aggregated in different ways: cointegration analysis of their coefficients, how are they made in the original paper
+	Moment scaling and other evidence on slices on full data and full bucketed data
 
-	4) (hard) nonparametric expansion using GMM score and gateaux derivative
+	Writing:
+		Introduction: 
+			what is the research question why factor model and fractals (recycle a bit from phd application)
+		Evidence from moment scaling & others on fractality
+		Models:
+			- review of zou et al models
+			- introduce new models, interpretation as quasi score driven models
+				- approximating fractals: power function integral arguement + example graph
+				- "derive" representation and comparison with base models, make Quasi-Score driven arguement
+		Forecast
+			- main results on forecast (see above)
+		Conclusion: fractal approximation is good
+			
+ADDITIONAL STUFF (order of importance \ feasibility tradeoff)
 
-- fit all relevant models above to nonbucketed data and compare with
-	- calvet and fisher test statistics
-	- search multifractal proper scoring rule
-	- AIC and BIC mcs
-	- computational requirement tests (eg likelihood vs cpu usage or something similar, see thesis on risk neutral seasonalities for tables to copy)
+	- appendix where you make clear how many options you remove 
 
-- test on 
-	- MAIN RESULTS AS PAPER: non-bucketed data, full bucketet data (also call options) 
-	- stress-test periods, (e.g. 2020 like paper, see others)
-	- sample on intraday quotes (see if available on option.dx, see if model needs restructuring, see how to go to continuos time using DK book)
-	- test on other option datasets (BITCOIN, VIX, individual stocks)
+	- Comparison of models in 1) and 2) with
+			- Fractioannly integrated counterpart
+			- SNM counterpart
 
-THEORY + latex
-----------------------------------------------------------
-	- section about power law evidence:
-		- report moment scaling
-		- for individual slices time to maturity against IV to let power law to see power law
-	- approximating fractals: power function integral arguement + example graph
-	- "derive" representation and comparison with base models, make Quasi-Score driven arguement
+		-> need to add explanation in latex
+
+	- compare models oos performance with
+		- calvet and fisher test statistics
+		- search multifractal proper scoring rule
+		- AIC and BIC mcs
+		- computational requirement tests (eg likelihood vs cpu usage or something similar, see thesis on risk neutral seasonalities for tables to copy)
+
+	- other datasets
+		- test on other option datasets (BITCOIN, VIX, individual stocks)
+		- sample on intraday quotes (see if available on option.dx, see if model needs restructuring, see how to go to continuos time using DK book)
+
+	- MOMENT SCALING expansions:
+		 - make scaling for mixtures of Brownian motions in levels
+		 - make scaling for ARFIMA and FIGAS in level
+			-> try to combine then to see if you can create (?appharent) multifractality
+		 - simulation of appharent multifractality
+		 - double check scalings in code, add them in latex
+		- show and explain appharent multifractality with theoretical example + simulation
+			-> is it possible that the adjustment explains the appharent multifractality already?
+		- what is the fractal level\spectrum of a measurable function of fractal processes?
+			-> can you create multifractality with sums of fractals?
+
+	SNM counterpart -> derive tensor representation algorithm adjusted to the model and proove memory efficiency
+
 	- lag decomposition of frequency process and comparison with lag decomposition of equivalent fractionally integrated process
 		-> can you show they are similar, one can approximate the other?
 
@@ -45,11 +60,11 @@ THEORY + latex
 			- learn lag decomposition of level heterogenous model
 			- can I see a connection with my model?
 
-	- show and explain appharent multifractality with theoretical example + simulation
-		-> is it possible that the adjustment explains the appharent multifractality already?
-	- what is the fractal level\spectrum of a measurable function of fractal processes?
-		-> can you create multifractality with sums of fractals?
+	(hard) nonparametric expansion using GMM score and gateaux derivative
 
-	SNM counterpart -> derive tensor representation algorithm adjusted to the model and proove memory efficiency
+	(hard, probably not) add realized volatility as factor
 
-	- consider appendix where you make clear how many options you remove 
+	(probably not) endogenous models
+		- with sigma^2_t as factor
+		- without sigma^2_t as factor
+		- with log K and log St aggregated in different ways: cointegration analysis of their coefficients, how are they made in the original paper
