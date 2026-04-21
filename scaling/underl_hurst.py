@@ -1,7 +1,6 @@
 import numpy as np
 import polars as pl
 import matplotlib.pyplot as plt
-from datetime import datetime
 from pathlib import Path
 import io
 from contextlib import redirect_stdout
