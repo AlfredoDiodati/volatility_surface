@@ -21,7 +21,7 @@ FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = len(FACTOR_LOADING_COLS)
 P_FULL = P_BASE + 1
 
-K_VALUES = [3, 10, 25, 50, 80, 100, 120]
+K_VALUES = [3, 10, 25, 50, 80]
 
 ETA_INIT   = 0.4
 ALPHA_INIT = 1.2
@@ -97,7 +97,7 @@ def build_initial_guess(beta_ols, sigma2, n_buckets):
         "sigma2":     jnp.array(sigma2),
         "omega_load": jnp.array(omega_load),
         "eta":        jnp.full(P_FULL, ETA_INIT),
-        "alpha":      jnp.full(P_FULL, ALPHA_INIT),
+        "alpha":      jnp.array([ALPHA_INIT]),
         "C":          jnp.array(1e-3 * np.eye(P_FULL, dtype=np.float64)),
         "nu":         jnp.array(10.0),
     }
@@ -110,7 +110,7 @@ def warm_start_guess(prev_params):
         "sigma2":     jnp.array(float(np.array(prev_params["sigma2"]).ravel()[0])),
         "omega_load": jnp.array(np.array(prev_params["omega_load"])),
         "eta":        jnp.array(np.array(prev_params["eta"])),
-        "alpha":      jnp.array(np.array(prev_params["alpha"])),
+        "alpha":      jnp.array([float(np.array(prev_params["alpha"]).ravel()[0])]),
         "C":          jnp.array(np.array(prev_params["C"])),
         "nu":         jnp.array(float(np.array(prev_params["nu"]).ravel()[0])),
     }
@@ -455,7 +455,7 @@ def main():
         alpha_fit  = np.array(fit_output["alpha"])
         print(f"  nu={nu_fit:.2f}, sigma2={sigma2_fit:.4f}")
         print(f"  eta={eta_fit.round(4)}")
-        print(f"  alpha={alpha_fit.round(4)}")
+        print(f"  alpha={float(alpha_fit.ravel()[0]):.4f}")
         print(f"  log_lik={float(np.array(fit_output['log_likelihood']).ravel()[0]):.2f}")
         print(f"  rhos (factor 0)={fit_output['rhos'][:, 0].round(4)}")
         print(f"  ws (factor 0)={fit_output['ws'][:, 0].round(4)}")
