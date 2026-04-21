@@ -6,6 +6,7 @@ import polars as pl
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FixedFormatter
 from scipy.special import gamma as gamma_func
+import plotly.graph_objects as go
 
 from models.f_SD import fit, _solve_weights
 from scaling.scaling_reg import moment_scaling, _make_time_lags
@@ -20,7 +21,7 @@ P_BASE  = len(FACTOR_LOADING_COLS)
 P_TILDE = P_BASE
 P_FULL  = P_TILDE + 1
 
-K_VALUES = [150, 180]
+K_VALUES = [3, 10, 25, 50, 80, 100, 120, 150]
 
 ETA   = 0.2
 alpha = 1.2
@@ -263,6 +264,39 @@ def make_panel_plots(empirical_scalings, model_scalings, moments, group_dim, cro
     plt.savefig(os.path.join(subfolder, f"panel_tau_{fname}_model_vs_data.pdf"))
     plt.close()
 
+def _empirical_acf(series, max_lag):
+    x = series - series.mean()
+    n = len(x)
+    var = np.dot(x, x) / n
+    if var == 0:
+        return np.zeros(max_lag + 1)
+    max_lag = min(max_lag, n - 1)
+    return np.array([np.dot(x[:n - h], x[h:]) / (n * var) for h in range(max_lag + 1)])
+
+
+def plot_acf_intercept(betas, eta, k, pbase):
+    sigma_t = betas[:, 0]
+    valid = sigma_t[~np.isnan(sigma_t)]
+    max_lag = min(len(valid) // 4, 500)
+    lags = np.arange(1, max_lag + 1)
+    emp_acf = _empirical_acf(valid, max_lag)[1:]
+    implied_acf = (1.0 + lags) ** (-eta)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=lags, y=emp_acf, mode="lines", name="Empirical ACF",
+                             line=dict(color="steelblue")))
+    fig.add_trace(go.Scatter(x=lags, y=implied_acf, mode="lines",
+                             name=f"Power law (η={eta:.4f})",
+                             line=dict(dash="dash", color="red")))
+    fig.update_layout(
+        title=f"Intercept σ_t ACF vs Power Law — K={k}",
+        xaxis_title="Lag h",
+        yaxis_title="ACF",
+        template="simple_white",
+    )
+    os.makedirs(pbase, exist_ok=True)
+    fig.write_image(os.path.join(pbase, "acf_intercept.pdf"))
+
+
 def make_partition_plots(empirical_scaling, model_scaling, label, moments):
     delta_ts = empirical_scaling["delta_ts"]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
@@ -399,6 +433,11 @@ def main():
         valid_moments = MOMENTS[MOMENTS < nu]
         if len(valid_moments) < len(MOMENTS):
             print(f"  Dropping moments >= nu={nu:.2f}: {MOMENTS[MOMENTS >= nu]}")
+
+        eta_fit = float(np.array(fit_output["eta"]).ravel()[0])
+        betas_fit = np.array(fit_output["betas"])
+        print(f"  Plotting intercept ACF...")
+        plot_acf_intercept(betas_fit, eta_fit, k, pbase)
 
         print(f"  Computing scaling...")
         empirical_scalings, model_scalings = run_scaling(

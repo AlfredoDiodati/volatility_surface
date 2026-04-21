@@ -6,6 +6,8 @@ import polars as pl
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FixedFormatter
 from scipy.special import gamma as gamma_func
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from models.ff_SD import fit, _solve_weights_ff
 from scaling.scaling_reg import moment_scaling, _make_time_lags
@@ -274,6 +276,53 @@ def make_panel_plots(empirical_scalings, model_scalings, moments, group_dim, cro
     plt.close()
 
 
+def _empirical_acf(series, max_lag):
+    x = series - series.mean()
+    n = len(x)
+    var = np.dot(x, x) / n
+    if var == 0:
+        return np.zeros(max_lag + 1)
+    max_lag = min(max_lag, n - 1)
+    return np.array([np.dot(x[:n - h], x[h:]) / (n * var) for h in range(max_lag + 1)])
+
+
+def plot_acf_betas(betas, eta, k, pbase):
+    p = betas.shape[1]
+    factor_names = FACTOR_LOADING_COLS + ["omega"]
+    titles = [f"β_{j} ({factor_names[j]})" for j in range(p)]
+    fig = make_subplots(rows=p, cols=1, shared_xaxes=True, subplot_titles=titles,
+                        vertical_spacing=0.06)
+    for j in range(p):
+        series = betas[:, j]
+        valid = series[~np.isnan(series)]
+        max_lag = min(len(valid) // 4, 500)
+        lags = np.arange(1, max_lag + 1)
+        emp_acf = _empirical_acf(valid, max_lag)[1:]
+        eta_j = float(np.array(eta).ravel()[j])
+        implied_acf = (1.0 + lags) ** (-eta_j)
+        show_legend = j == 0
+        fig.add_trace(
+            go.Scatter(x=lags, y=emp_acf, mode="lines", name="Empirical ACF",
+                       showlegend=show_legend, line=dict(color="steelblue")),
+            row=j + 1, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(x=lags, y=implied_acf, mode="lines",
+                       name=f"Power law (η={eta_j:.4f})",
+                       showlegend=show_legend, line=dict(dash="dash", color="red")),
+            row=j + 1, col=1,
+        )
+        fig.update_yaxes(title_text="ACF", row=j + 1, col=1)
+    fig.update_xaxes(title_text="Lag h", row=p, col=1)
+    fig.update_layout(
+        title=f"Beta ACF vs Power Law — K={k}",
+        height=260 * p,
+        template="simple_white",
+    )
+    os.makedirs(pbase, exist_ok=True)
+    fig.write_image(os.path.join(pbase, "acf_betas.pdf"))
+
+
 def make_partition_plots(empirical_scaling, model_scaling, label, moments):
     delta_ts = empirical_scaling["delta_ts"]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
@@ -416,6 +465,10 @@ def main():
         valid_moments = MOMENTS[MOMENTS < nu_fit]
         if len(valid_moments) < len(MOMENTS):
             print(f"  Dropping moments >= nu={nu_fit:.2f}: {MOMENTS[MOMENTS >= nu_fit]}")
+
+        betas_fit = np.array(fit_output["betas"])
+        print(f"  Plotting beta ACFs...")
+        plot_acf_betas(betas_fit, eta_fit, k, pbase)
 
         print(f"  Computing scaling...")
         empirical_scalings, model_scalings = run_scaling(
