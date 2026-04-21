@@ -52,7 +52,7 @@ def _solve_weights(eta, alpha, K):
 
     c_ordered = np.flip(c_final)
     w_tilde = c_ordered * np.power(alpha, -indices * eta)
-    w = w_tilde / np.sum(w_tilde)
+    w = w_tilde #/ np.sum(w_tilde)
 
     return w, lambdas
 
