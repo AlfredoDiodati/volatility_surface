@@ -6,12 +6,11 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import FixedLocator, FixedFormatter
 from scipy import stats
 
-from scaling.scaling_reg import moment_scaling, _make_time_lags
+from scaling.scaling_reg import moment_scaling
 
 PARQUET_PATH = "data/SPX/put/bucket.parquet"
-PARAMS_PATH  = "out/SPX/put/params_adjSD.json"
-OUTPUT_PATH  = "out/SPX/put/ols_betas_omega.json"
-PLOT_DIR     = "plot/SPX/put/ols_betas_omega"
+OUT_ROOT     = "out/SPX/put"
+PLOT_ROOT    = "plot/SPX/put/betas_scaling"
 
 FACTOR_COLS = ["level", "moneyness", "maturity"]
 BETA_NAMES  = ["level", "moneyness", "maturity", "omega"]
@@ -20,6 +19,35 @@ MIN_SCALE   = 1.0
 MAX_SCALE   = 126.0
 TICK_DAYS   = np.array([1, 5, 21, 63, 126])
 TICK_LABELS = ["1d", "1 week", "1 month", "3 months", "6 months"]
+
+
+def find_json_with_betas(root):
+    matches = []
+    for dirpath, _, files in os.walk(root):
+        for fname in sorted(files):
+            if not fname.endswith(".json"):
+                continue
+            path = os.path.join(dirpath, fname)
+            with open(path) as f:
+                try:
+                    d = json.load(f)
+                except Exception:
+                    continue
+            if not isinstance(d, dict):
+                continue
+            if "betas" not in d:
+                continue
+            omega_key = "omega_load" if "omega_load" in d else ("omega" if "omega" in d else None)
+            if omega_key is None:
+                continue
+            matches.append((path, d, omega_key))
+    return matches
+
+
+def plot_folder(json_path):
+    rel = os.path.relpath(json_path, OUT_ROOT)
+    rel_no_ext = os.path.splitext(rel)[0]
+    return os.path.join(PLOT_ROOT, rel_no_ext)
 
 
 def plot_scaling_q1(beta_series, name, out_dir):
@@ -100,62 +128,33 @@ def plot_hurst_rs(beta_series, name, out_dir):
     return h
 
 
-def main():
-    with open(PARAMS_PATH) as f:
-        params = json.load(f)
-    omega = np.array(params["omega"])
+def process(json_path, d, omega_key):
+    out_dir = plot_folder(json_path)
+    os.makedirs(out_dir, exist_ok=True)
 
-    raw = (
-        pl.read_parquet(PARQUET_PATH)
-        .with_columns(pl.col("DATE").cast(pl.Utf8))
-    )
-    bucket_cols = sorted([c for c in raw.columns if c.startswith("bucket_")])
-    raw = raw.with_columns(
-        pl.max_horizontal(
-            [pl.when(pl.col(c)).then(i + 1).otherwise(0) for i, c in enumerate(bucket_cols)]
-        ).alias("bucket_idx")
-    )
-
-    dates = raw["DATE"].unique(maintain_order=True).sort().to_list()
-
-    results = {}
-    for date in dates:
-        day = raw.filter(pl.col("DATE") == date)
-        y = day["logIV"].to_numpy()
-        Z = day[FACTOR_COLS].to_numpy()
-        bucket_idx = day["bucket_idx"].to_numpy().astype(int)
-        omega_col = omega[bucket_idx].reshape(-1, 1)
-        X = np.hstack([Z, omega_col])
-        mask = np.isfinite(y) & np.all(np.isfinite(X), axis=1)
-        if mask.sum() < X.shape[1]:
-            results[date] = None
-            continue
-        beta, *_ = np.linalg.lstsq(X[mask], y[mask], rcond=None)
-        results[date] = beta.tolist()
-
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"Saved {len(results)} dates to {OUTPUT_PATH}")
-
-    valid_dates = [d for d in dates if results[d] is not None]
-    beta_matrix = np.array([results[d] for d in valid_dates])
-
-    os.makedirs(PLOT_DIR, exist_ok=True)
+    betas = np.array(d["betas"])
+    omega = np.array(d[omega_key])
 
     hurst_summary = {}
     for i, name in enumerate(BETA_NAMES):
-        series = beta_matrix[:, i]
-        print(f"Processing beta: {name}")
-        plot_scaling_q1(series, name, PLOT_DIR)
-        h = plot_hurst_rs(series, name, PLOT_DIR)
+        series = betas[:, i]
+        plot_scaling_q1(series, name, out_dir)
+        h = plot_hurst_rs(series, name, out_dir)
         hurst_summary[name] = {"hurst_rs": float(h)}
-        print(f"  H_RS={h:.4f}")
 
-    summary_path = os.path.join(PLOT_DIR, "hurst_summary.json")
-    with open(summary_path, "w") as f:
+    with open(os.path.join(out_dir, "hurst_summary.json"), "w") as f:
         json.dump(hurst_summary, f, indent=2)
-    print(f"Hurst summary saved to {summary_path}")
+
+
+def main():
+    matches = find_json_with_betas(OUT_ROOT)
+    print(f"Found {len(matches)} JSON files with betas")
+    for json_path, d, omega_key in matches:
+        rel = os.path.relpath(json_path, OUT_ROOT)
+        print(f"  Processing {rel} (omega_key={omega_key})")
+        process(json_path, d, omega_key)
+        print(f"    -> plots saved to {plot_folder(json_path)}")
+    print("Done.")
 
 
 if __name__ == "__main__":
