@@ -21,7 +21,7 @@ FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = len(FACTOR_LOADING_COLS)
 P_FULL = P_BASE + 1
 
-K_VALUES = [10, 25, 50, 80]
+K_VALUES = [3, 10, 25, 50, 80]
 
 ETA_INIT   = 0.4
 ALPHA_INIT = 1.2
