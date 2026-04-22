@@ -29,7 +29,8 @@ MAJORITY = 3
 MODEL_ORDER = [
     "ss", "adjSD",
     "fSD_K3", "fSD_K10", "fSD_K25", "fSD_K50", "fSD_K300",
-    "ffSD_K3", "ffSD_K10", "ffSD_K25", "ffSD_K50", "ffSD_K100", "ffSD_K300"
+    "ffSD_K3", "ffSD_K10", "ffSD_K25", "ffSD_K50", "ffSD_K100",
+    "ifSD_K3", "ifSD_K10", "ifSD_K25", "ifSD_K50", "ifSD_K100",   
 ]
 
 
