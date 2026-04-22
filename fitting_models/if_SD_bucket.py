@@ -12,10 +12,10 @@ from plotly.subplots import make_subplots
 from models.if_SD import fit, _solve_weights_midas
 from scaling.scaling_reg import moment_scaling, _make_time_lags
 
-PARQUET_PATH       = "data/SPX/put/bucket.parquet"
+PARQUET_PATH = "data/SPX/put/bucket.parquet"
 BUCKET_MATRIX_PATH = "data/SPX/put/bucket_matrix.parquet"
-OUTPUT_DIR         = "out/SPX/put/ifSD"
-PLOT_DIR           = "plot/SPX/put/ifSD"
+OUTPUT_DIR = "out/SPX/put/ifSD"
+PLOT_DIR = "plot/SPX/put/ifSD"
 
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = len(FACTOR_LOADING_COLS)
