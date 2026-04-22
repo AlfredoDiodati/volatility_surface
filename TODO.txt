@@ -1,6 +1,8 @@
 
 NEEDS TO BE DONE TO COMPLETE THE THESIS
 
+	try MIDAS specifications
+
 	Forecast:	
 		- MAIN RESULTS AS PAPER: non-bucketed data, full bucketet data (also call options) 
 		- stress-test periods, (e.g. 2020 like paper, see others)
@@ -29,6 +31,7 @@ ADDITIONAL STUFF (order of importance \ feasibility tradeoff)
 				- fractal in score, fractal in beta
 				- each component with its own d
 			- SNM counterpart: scalar for all
+			- truncated MIDAS specifications with only intercept
 
 		-> need to add explanation in latex
 
