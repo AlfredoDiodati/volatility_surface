@@ -57,7 +57,7 @@ def _solve_weights(eta, alpha, K):
     return w, lambdas
 
 
-def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0=None):
+def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0):
     B = params["B"]
     A = params["A"]
     sigma2 = params["sigma2"]
@@ -71,7 +71,6 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
 
     p_tilde = beta_bar.shape[0]
     p_full = p_tilde + 1
-    K1 = K + 1
     h_inv = 1.0 / sigma2
     IminusB = np.eye(p_tilde) - B
     L_C = np.linalg.cholesky(C)
@@ -130,7 +129,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
 
         return (b_next, beta_tilde_next), (ll_t, beta_full_t)
 
-    init = (np.zeros(K1), beta_bar) if state0 is None else state0
+    init = state0
 
     (b_T, beta_tilde_T), (lls, betas_prev) = lax.scan(
         _step, init,
@@ -233,7 +232,7 @@ def fit(
 
     def _criterion(theta):
         params = _link(theta)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power)
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, (np.zeros(K + 1), params["beta_bar"]))
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -267,7 +266,7 @@ def fit(
         _not_converged, _adam_step, state0
     )
     params_opt = _link(theta_opt)
-    betas, _, (b_T, beta_tilde_T) = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, score_power)
+    betas, _, (b_T, beta_tilde_T) = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, score_power, (np.zeros(K + 1), params_opt["beta_bar"]))
     return params_opt | {
         "betas": betas,
         "b_T": b_T,

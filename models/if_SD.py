@@ -30,7 +30,7 @@ def _solve_weights_midas(a, b, eta, alpha_scalar, K):
         a_k, b_k, eta_k = params
         indices = np.arange(K + 1)
         x = indices / K
-        eps = 1e-10
+        eps = 1e-6
         x = np.clip(x, eps, 1.0 - eps)
         log_w = (a_k - 1.0) * np.log(x) + (b_k - 1.0) * np.log(1.0 - x)
         w_k = np.exp(log_w - jax.scipy.special.logsumexp(log_w))
@@ -40,7 +40,7 @@ def _solve_weights_midas(a, b, eta, alpha_scalar, K):
     ws, lambdas = jax.vmap(_single)(np.stack([a, b, eta], axis=-1))
     return ws.T, lambdas.T
 
-def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0=None):
+def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0):
     A = params["A"]
     sigma2 = params["sigma2"]
     omega_load = params["omega_load"]
@@ -53,7 +53,6 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
     beta_bar = params["beta_bar"]
 
     p = beta_bar.shape[0]
-    K1 = K + 1
     h_inv = 1.0 / np.maximum(sigma2, 1e-10)
     L_C = np.linalg.cholesky(C + np.eye(p) * 1e-10)
 
@@ -107,7 +106,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
 
         return b_next, (ll_t, beta_t)
 
-    init = np.zeros((K1, p)) if state0 is None else state0
+    init = state0
 
     b_T, (lls, betas_prev) = lax.scan(
         _step, init,
@@ -192,7 +191,7 @@ def fit(
         
     def _criterion(theta):
         params = _link(theta)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power)
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, np.zeros((K + 1, p)))
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -217,7 +216,7 @@ def fit(
     state0 = (theta0, np.zeros_like(theta0), np.zeros_like(theta0), np.asarray(0, dtype=np.int32), np.asarray(np.inf), np.asarray(False))
     theta_opt, _, _, niter, final_loss, is_converged = lax.while_loop(_not_converged, _adam_step, state0)
     params_opt = _link(theta_opt)
-    betas, _, b_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, score_power)
+    betas, _, b_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, score_power, np.zeros((K + 1, p)))
     return params_opt | {"betas": betas, "b_T": b_T, "log_likelihood": -final_loss, "niter": niter, "is_converged": is_converged, "score_power": score_power}
 
 def forecast(fit_result, covariates, y_test, K, score_power, target_alpha):

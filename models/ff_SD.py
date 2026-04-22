@@ -57,7 +57,7 @@ def _solve_weights_ff(eta, alpha, K):
     return ws.T, lambdas.T
 
 
-def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0=None):
+def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0):
     A = params["A"]
     sigma2 = params["sigma2"]
     omega_load = params["omega_load"]
@@ -68,7 +68,6 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
     beta_bar = params["beta_bar"]
 
     p = beta_bar.shape[0]
-    K1 = K + 1
     h_inv = 1.0 / sigma2
     L_C = np.linalg.cholesky(C)
 
@@ -123,7 +122,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
 
         return b_next, (ll_t, beta_t)
 
-    init = np.zeros((K1, p)) if state0 is None else state0
+    init = state0
 
     b_T, (lls, betas_prev) = lax.scan(
         _step, init,
@@ -212,7 +211,7 @@ def fit(
 
     def _criterion(theta):
         params = _link(theta)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power)
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, np.zeros((K + 1, p)))
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -246,7 +245,7 @@ def fit(
         _not_converged, _adam_step, state0
     )
     params_opt = _link(theta_opt)
-    betas, _, b_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, score_power)
+    betas, _, b_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, score_power, np.zeros((K + 1, p)))
     return params_opt | {
         "betas": betas,
         "b_T": b_T,
