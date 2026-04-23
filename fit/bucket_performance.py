@@ -9,7 +9,7 @@ from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
 from models.f_SD import fit as fSD_fit, forecast as fSD_forecast
 from models.ff_SD import fit as ffSD_fit, forecast as ffSD_forecast
 from models.if_SD import fit as ifSD_fit, forecast as ifSD_forecast
-from fitting_models._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
+from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 PARQUET_PATH = "data/SPX/put/bucket.parquet"
 OUTPUT_DIR = "out/SPX/put/bucket_performance"
@@ -18,13 +18,13 @@ P_BASE = 3
 P = P_BASE + 1
 P_FULL = P
 
-TRAIN_SIZE = 500
+TRAIN_SIZE = 1000
 TEST_SIZE = 250
 Q_ALPHA = -1.6448536269514722  # scipy.stats.norm.ppf(0.05) — used for SS (Gaussian)
 ALPHA = 0.05                   # probability level — used for t-distribution models
-FSD_K_VALUES = [3, 10, 25, 50, 100, 150, 180]
-FFSD_K_VALUES = [3, 10, 25, 50, 80, 100]
-IFSD_K_VALUES = FFSD_K_VALUES
+FSD_K_VALUES = [3, 10]
+FFSD_K_VALUES = [3, 10]
+IFSD_K_VALUES = [3, 100]
 
 
 def load_and_reshape(path):

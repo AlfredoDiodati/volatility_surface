@@ -5,7 +5,7 @@ import polars as pl
 from scipy.stats import chi2
 from scipy.special import xlogy
 
-from fitting_models.mcs import mcs
+from fit.mcs import mcs
 
 PERF_DIR = "out/SPX/put/bucket_performance"
 OUTPUT_DIR = "out/SPX/put/mcs"
