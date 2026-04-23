@@ -18,7 +18,7 @@ P_BASE = 3
 P = P_BASE + 1
 P_FULL = P
 
-TRAIN_SIZE = 1000
+TRAIN_SIZE = 500
 TEST_SIZE = 250
 Q_ALPHA = -1.6448536269514722  # scipy.stats.norm.ppf(0.05) — used for SS (Gaussian)
 ALPHA = 0.05                   # probability level — used for t-distribution models
