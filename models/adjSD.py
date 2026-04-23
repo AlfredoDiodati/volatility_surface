@@ -52,9 +52,9 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
         mahal_H = h_inv * np.sum(eps_t**2)
         S_inv_G = np.linalg.solve(S, G_t)
         mahal_F = mahal_H - G_t @ S_inv_G
-        
+
         weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))
-        xi = A @ (weight * S_inv_G)
+        xi = A @ (weight * np.linalg.solve(V_t, G_t))
         
         beta_next = beta_bar + B @ (beta_t - beta_bar) + xi
         
