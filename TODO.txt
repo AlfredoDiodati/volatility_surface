@@ -31,9 +31,10 @@ ADDITIONAL STUFF (order of importance \ feasibility tradeoff)
 				- fractal in score, fractal in beta
 				- each component with its own d
 			- SNM counterpart: scalar for all
-			- truncated MIDAS specifications with only intercept
 
 		-> need to add explanation in latex
+
+	- derive stationarity and ergodicity using adv econ theorems
 
 	- compare models oos performance with
 		- calvet and fisher test statistics
