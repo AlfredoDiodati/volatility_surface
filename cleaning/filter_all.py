@@ -23,7 +23,7 @@ def main():
     final_path    = "data/" + subfolder + "/otm/filtered.parquet"
     checks_path   = "data/" + subfolder + "/otm/checks/all.parquet"
 
-    files = glob.glob("data/" + subfolder + "/raw/*.txt")
+    files = sorted(glob.glob("data/" + subfolder + "/raw/*.txt"))
 
     Path("data/" + subfolder + "/otm/").mkdir(parents=True, exist_ok=True)
     Path("data/" + subfolder + "/otm/checks/").mkdir(parents=True, exist_ok=True)
@@ -88,7 +88,9 @@ def main():
 
         puts = make_option_side(raw, "put")
         calls = make_option_side(raw, "call")
+        del raw
         merged = pl.concat([puts, calls])
+        del puts, calls
 
         enriched = (
             merged
@@ -158,6 +160,7 @@ def main():
                 (~pl.col("is_REMOVED")).alias("is_NOT_REMOVED"),
             )
         )
+        del merged
 
         final = enriched.filter(~pl.col("is_REMOVED")).drop(
             [c for c in remove_columns if c in enriched.columns]
@@ -166,25 +169,26 @@ def main():
         checks = enriched.select(checks_columns).sum()
         if checks_sum is None: checks_sum = checks
         else: checks_sum = pl.concat([checks_sum, checks]).sum()
+        del checks
 
         table_filtered = enriched.to_arrow()
+        del enriched
         if filtered_writer is None:
             filtered_writer = pq.ParquetWriter(filtered_path, table_filtered.schema)
         filtered_writer.write_table(table_filtered)
+        del table_filtered
 
         table_final = final.to_arrow()
+        del final
         if final_writer is None:
             final_writer = pq.ParquetWriter(final_path, table_final.schema)
         final_writer.write_table(table_final)
+        del table_final
 
-        del raw, puts, calls, merged, enriched, final, checks, table_filtered, table_final
         gc.collect()
 
     if filtered_writer is not None: filtered_writer.close()
     if final_writer is not None: final_writer.close()
-
-    pl.read_parquet(filtered_path).sort("DATE").write_parquet(filtered_path)
-    pl.read_parquet(final_path).sort("DATE").write_parquet(final_path)
 
     checks_sum.write_parquet(checks_path)
 
