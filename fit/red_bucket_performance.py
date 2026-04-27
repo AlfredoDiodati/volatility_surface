@@ -12,8 +12,8 @@ from models.if_SD import fit as ifSD_fit, forecast as ifSD_forecast
 from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
-PARQUET_PATH = "data/SPX/otm/bucket.parquet"
-OUTPUT_DIR = "out/SPX/otm/bucket_performance"
+PARQUET_PATH = "data/SPX/put/bucket.parquet"
+OUTPUT_DIR = "out/SPX/put/bucket_performance"
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = 3
 P = P_BASE + 1

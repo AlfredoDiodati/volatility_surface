@@ -7,9 +7,9 @@ from scipy.special import xlogy
 
 from fit.mcs import mcs
 
-PERF_DIR = "out/SPX/put/bucket_performance"
-OUTPUT_DIR = "out/SPX/put/mcs"
-PARQUET_PATH = "data/SPX/put/bucket.parquet"
+PERF_DIR = "out/SPX/otm/bucket_performance"
+OUTPUT_DIR = "out/SPX/otm/mcs"
+PARQUET_PATH = "data/SPX/otm/bucket.parquet"
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = 3
 TRAIN_SIZE = 500
@@ -27,10 +27,8 @@ CANONICAL_BLOCK = 10
 MAJORITY = 3
 
 MODEL_ORDER = [
-    "ss", "adjSD",
-    "fSD_K3", "fSD_K10", "fSD_K25", "fSD_K50", "fSD_K300",
-    "ffSD_K3", "ffSD_K10", "ffSD_K25", "ffSD_K50", "ffSD_K100",
-    "ifSD_K3", "ifSD_K10", "ifSD_K25", "ifSD_K50", "ifSD_K100",   
+    "ss", "adjSD", "lmSD","fSD_K3", "fSD_K10",
+    "ffSD_K3", "ffSD_K10", "ifSD_K3", "ifSD_K100",   
 ]
 
 
