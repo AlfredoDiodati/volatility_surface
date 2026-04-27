@@ -9,6 +9,7 @@ from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
 from models.f_SD import fit as fSD_fit, forecast as fSD_forecast
 from models.ff_SD import fit as ffSD_fit, forecast as ffSD_forecast
 from models.if_SD import fit as ifSD_fit, forecast as ifSD_forecast
+from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 PARQUET_PATH = "data/SPX/put/bucket.parquet"
@@ -155,7 +156,6 @@ def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter,
 
     return step
 
-
 def make_ifSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
     def step(carry, i):
         y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
@@ -197,6 +197,28 @@ def make_ffSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
 
         new_carry = (r["beta_bar"], r["A"], r["sigma2"], r["omega_load"],
                      r["eta"], r["alpha"], r["C"], r["nu"])
+        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
+
+    return step
+
+
+def make_lmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter):
+    def step(carry, i):
+        y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
+        Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
+        y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
+        Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
+
+        ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "d": carry[3],
+              "sigma2": carry[4], "omega": carry[5], "C": carry[6], "nu": carry[7]}
+        r = lmSD_fit(y_win, Z_win, ig,
+                     opt_options={"learning_rate": 1e-3, "tol": 1e-6},
+                     maxiter=maxiter)
+
+        preds, P_mean, VaR, oos_ll = lmSD_forecast(r, Z_test, y_test, alpha)
+
+        new_carry = (r["beta_bar"], r["B"], r["A"], r["d"], r["sigma2"],
+                     r["omega"], r["C"], r["nu"])
         return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
 
     return step
@@ -292,6 +314,24 @@ def _fSD_cold_carry(y_jax, Z_jax, n_buckets):
     )
 
 
+def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
+    y_win = y_jax[:TRAIN_SIZE]
+    Z_win = Z_jax[:TRAIN_SIZE]
+    beta_ols = _ols_beta(y_win, Z_win)
+    sig2 = _sigma2(y_win, Z_win, beta_ols)
+    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
+    return (
+        jnp.append(beta_ols, 0.0),
+        0.95 * jnp.eye(P),
+        0.05 * jnp.eye(P),
+        jnp.full(P, 0.4),
+        sig2,
+        omega,
+        jnp.full(P, 1e-3),
+        jnp.array(10.0),
+    )
+
+
 def main():
     print("Loading data...")
     y_jax, Z_jax, n_buckets, dates = load_and_reshape(PARQUET_PATH)
@@ -308,7 +348,8 @@ def main():
     n_params_fSD = P_BASE * 3 + 1 + 1 + (n_buckets - 1) + 1 + 1 + P_FULL + 1
     n_params_ffSD = P_FULL * 5 + (n_buckets - 1) + 2
     n_params_ifSD = P_FULL * 7 + (n_buckets - 1) + 2
-    n_params_map = {"ss": n_params_ss, "adjSD": n_params_adjSD}
+    n_params_lmSD = 5 * P_FULL + (n_buckets - 1) + 2
+    n_params_map = {"ss": n_params_ss, "adjSD": n_params_adjSD, "lmSD": n_params_lmSD}
     n_params_map.update({f"fSD_K{k}": n_params_fSD for k in FSD_K_VALUES})
     n_params_map.update({f"ffSD_K{k}": n_params_ffSD for k in FFSD_K_VALUES})
     n_params_map.update({f"ifSD_K{k}": n_params_ifSD for k in IFSD_K_VALUES})
@@ -318,28 +359,31 @@ def main():
     fSD_steps = [make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K) for K in FSD_K_VALUES]
     ffSD_steps = [make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K) for K in FFSD_K_VALUES]
     ifSD_steps = [make_ifSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K) for K in IFSD_K_VALUES]
+    lmSD_step = make_lmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000)
 
     ss_carry0 = _ss_cold_carry(y_jax, Z_jax, n_buckets)
     adjSD_carry0 = _adjSD_cold_carry(y_jax, Z_jax, n_buckets)
     fSD_carry0s = [_fSD_cold_carry(y_jax, Z_jax, n_buckets) for _ in FSD_K_VALUES]
     ffSD_carry0s = [_ffSD_cold_carry(y_jax, Z_jax, n_buckets) for _ in FFSD_K_VALUES]
     ifSD_carry0s = [_ifSD_cold_carry(y_jax, Z_jax, n_buckets) for _ in IFSD_K_VALUES]
+    lmSD_carry0 = _lmSD_cold_carry(y_jax, Z_jax, n_buckets)
 
     def run_all(carries, idx):
-        ss_carry, adjSD_carry, fSD_carries, ffSD_carries, ifSD_carries = carries
+        ss_carry, adjSD_carry, fSD_carries, ffSD_carries, ifSD_carries, lmSD_carry = carries
         _, ss_out = lax.scan(ss_step, ss_carry, idx)
         _, adjSD_out = lax.scan(adjSD_step, adjSD_carry, idx)
         fSD_outs = [lax.scan(step, carry, idx)[1] for step, carry in zip(fSD_steps, fSD_carries)]
         ffSD_outs = [lax.scan(step, carry, idx)[1] for step, carry in zip(ffSD_steps, ffSD_carries)]
         ifSD_outs = [lax.scan(step, carry, idx)[1] for step, carry in zip(ifSD_steps, ifSD_carries)]
-        return ss_out, adjSD_out, fSD_outs, ffSD_outs, ifSD_outs
+        _, lmSD_out = lax.scan(lmSD_step, lmSD_carry, idx)
+        return ss_out, adjSD_out, fSD_outs, ffSD_outs, ifSD_outs, lmSD_out
 
     print("Compiling and running all models in a single JIT...")
-    ss_out, adjSD_out, fSD_outs, ffSD_outs, ifSD_outs = jax.jit(run_all)(
-        (ss_carry0, adjSD_carry0, fSD_carry0s, ffSD_carry0s, ifSD_carry0s), indices
+    ss_out, adjSD_out, fSD_outs, ffSD_outs, ifSD_outs, lmSD_out = jax.jit(run_all)(
+        (ss_carry0, adjSD_carry0, fSD_carry0s, ffSD_carry0s, ifSD_carry0s, lmSD_carry0), indices
     )
 
-    all_results = {"ss": ss_out, "adjSD": adjSD_out}
+    all_results = {"ss": ss_out, "adjSD": adjSD_out, "lmSD": lmSD_out}
     all_results.update({f"fSD_K{K}": out for K, out in zip(FSD_K_VALUES, fSD_outs)})
     all_results.update({f"ffSD_K{K}": out for K, out in zip(FFSD_K_VALUES, ffSD_outs)})
     all_results.update({f"ifSD_K{K}": out for K, out in zip(IFSD_K_VALUES, ifSD_outs)})
@@ -349,7 +393,7 @@ def main():
     test_dates = dates[TRAIN_SIZE:TRAIN_SIZE + n_test]
     total_obs = int(jnp.sum(mask_test_all))
 
-    model_names = (["ss", "adjSD"] + [f"fSD_K{k}" for k in FSD_K_VALUES]
+    model_names = (["ss", "adjSD", "lmSD"] + [f"fSD_K{k}" for k in FSD_K_VALUES]
                    + [f"ffSD_K{k}" for k in FFSD_K_VALUES] + [f"ifSD_K{k}" for k in IFSD_K_VALUES])
     step_frames = []
     agg_rows = []
