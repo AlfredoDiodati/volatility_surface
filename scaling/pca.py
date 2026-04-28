@@ -1,7 +1,6 @@
 import polars as pl
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.backends.backend_pdf as pdf_backend
 from sklearn.decomposition import PCA
 from scipy import stats
 from pathlib import Path
