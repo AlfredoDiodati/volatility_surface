@@ -1,0 +1,468 @@
+\documentclass[12pt]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{microtype}
+\usepackage{bm}
+
+\geometry{margin=1.2in}
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\title{Residual Analysis for the Adjusted Score-Driven Factor Model:\\
+The Bucketed Case}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We develop a systematic residual analysis for the adjusted score-driven factor model
+of Zou, Lin, and Lucas (2025) applied to the 24-dimensional bucketed implied volatility
+surface. The dimension is fixed at $N = 24$ throughout the sample, which allows the full
+battery of univariate, cross-sectional, and multivariate panel tests to be applied without
+the complications arising from a time-varying grid. We cover standardization, marginal
+distributional tests, serial dependence tests, cross-sectional dependence tests, the multivariate
+portmanteau test, and ARCH-LM tests. Throughout, null hypotheses are stated precisely and
+the asymptotic distributions of each statistic are derived or referenced.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%------------------------------------------------------------------
+\section{Setup and Notation}
+%------------------------------------------------------------------
+
+We work with the bucketed dataset in which the log implied volatility surface is represented
+at each date $t = 1, \ldots, T$ by a fixed $N = 24$ dimensional vector
+\begin{equation}
+    y_t = \log IV_t \in \mathbb{R}^{24},
+\end{equation}
+where each entry corresponds to a unique (moneyness, time-to-maturity) bucket. The
+measurement equation of the adjusted score-driven factor model is
+\begin{equation}
+    y_t = M_t \beta_t + \varepsilon_t, \qquad
+    \varepsilon_t \sim h\!\left(\varepsilon_t \mid \Sigma_t;\, \nu\right),
+    \label{eq:measurement}
+\end{equation}
+where $M_t \in \mathbb{R}^{N \times p}$ collects the factor loadings evaluated at the bucket
+representative contracts, $\beta_t \in \mathbb{R}^p$ is the vector of time-varying factors, and
+the measurement noise covariance is
+\begin{equation}
+    \Sigma_t = H_t + M_t C M_t^\top,
+    \label{eq:sigma}
+\end{equation}
+with $H_t$ a diagonal matrix of idiosyncratic variances and $C \in \mathbb{R}^{p \times p}$ the
+additional static parameter matrix introduced to align the predictive covariance of the
+score-driven model with that of its state-space counterpart. In the bucketed case $M_t$
+is effectively time-invariant because each bucket is always represented by its midpoint
+contract, so we write $M_t \equiv M$ and $\Sigma_t \equiv \Sigma$ for the purpose of
+the residual analysis. The state transition is
+\begin{equation}
+    \beta_{t+1} = (I_p - B)\bar{\beta} + B\beta_t + \xi_t,
+\end{equation}
+where $\xi_t$ is the score-driven increment computed from data up to time $t$.
+
+After estimating the static parameter vector $\psi$ by maximum likelihood and obtaining
+the filtered factor path $\{\hat{\beta}_t\}_{t=1}^T$, the raw residuals are
+\begin{equation}
+    \hat{\varepsilon}_t = y_t - M\hat{\beta}_t \in \mathbb{R}^{24}.
+\end{equation}
+The goal of the residual analysis is to determine whether $\{\hat{\varepsilon}_t\}$ is
+consistent with the maintained distributional assumption $h(\,\cdot \mid \hat{\Sigma};\,\hat{\nu})$,
+and in particular whether the residuals are approximately i.i.d.\ after standardization.
+
+%------------------------------------------------------------------
+\section{Standardized Residuals}
+%------------------------------------------------------------------
+
+\subsection{Individual Standardization}
+
+The marginal variance of the $i$-th residual implied by \eqref{eq:sigma} is
+$[\Sigma]_{ii}$. Define the individually standardized residuals
+\begin{equation}
+    z_{i,t} = \frac{\hat{\varepsilon}_{i,t}}{\sqrt{[\hat{\Sigma}]_{ii}}},
+    \qquad i = 1,\ldots,24,\quad t = 1,\ldots,T.
+    \label{eq:zit}
+\end{equation}
+Under correct specification and a Gaussian assumption, $z_{i,t} \overset{iid}{\sim} \mathcal{N}(0,1)$.
+Under Student's $t$ with $\nu$ degrees of freedom, the standardized residuals follow a
+unit-variance $t$ distribution, i.e.\ $z_{i,t} \overset{iid}{\sim} t\!\left(0, 1, \hat{\nu}\right)$.
+Individual standardization is sufficient for univariate tests but not for multivariate
+tests, which require full Mahalanobis standardization as described below.
+
+\subsection{Mahalanobis Standardization}
+
+For multivariate tests one works with the Mahalanobis distance
+\begin{equation}
+    d_t^2 = \hat{\varepsilon}_t^\top \hat{\Sigma}^{-1} \hat{\varepsilon}_t.
+    \label{eq:mahal}
+\end{equation}
+Under correct Gaussian specification, $d_t^2 \overset{iid}{\sim} \chi^2(N)$ with $N = 24$.
+It is convenient to standardize further as
+\begin{equation}
+    w_t = \frac{d_t^2 - N}{\sqrt{2N}},
+\end{equation}
+so that $w_t \overset{iid}{\approx} \mathcal{N}(0,1)$ for large $N$ by the central limit theorem.
+
+For the Student's $t$ case, the Mahalanobis distance has the scaled $F$ distribution
+\begin{equation}
+    \frac{d_t^2 / N}{(\hat{\nu} - 2)/\hat{\nu}} \sim F(N, \hat{\nu}),
+\end{equation}
+and the same $\chi^2$ approximation applies as $\hat{\nu} \to \infty$.
+
+\begin{remark}
+    In the bucketed case $\hat{\Sigma}$ is $24 \times 24$ and time-invariant after
+    plugging in estimated parameters, so inverting it once suffices. In the non-bucketed
+    case $\Sigma_t$ changes dimension with $t$, making \eqref{eq:mahal} substantially
+    harder to use.
+\end{remark}
+
+\subsection{Probability Integral Transform}
+
+For the Gaussian case, define the probability integral transform (PIT) values
+\begin{equation}
+    u_{i,t} = \Phi(z_{i,t}),
+    \label{eq:pit}
+\end{equation}
+where $\Phi$ is the standard normal CDF. Under correct specification,
+$u_{i,t} \overset{iid}{\sim} \mathrm{Uniform}(0,1)$. For the Student's $t$ case, replace
+$\Phi$ with the CDF of the unit-variance $t(\hat{\nu})$ distribution. PIT values are the
+natural input for distribution tests described in Section~\ref{sec:marginal}.
+
+%------------------------------------------------------------------
+\section{Marginal Distribution Tests}
+\label{sec:marginal}
+%------------------------------------------------------------------
+
+\subsection{Normality Tests on $z_{i,t}$}
+
+\paragraph{Jarque-Bera test.}
+For each series $i$, compute the sample skewness $\hat{s}_i$ and excess kurtosis $\hat{k}_i$
+of $\{z_{i,t}\}_{t=1}^T$. The Jarque-Bera statistic is
+\begin{equation}
+    JB_i = \frac{T}{6}\hat{s}_i^2 + \frac{T}{24}\hat{k}_i^2
+    \overset{d}{\to} \chi^2(2) \quad \text{under } H_0.
+\end{equation}
+Run this for each $i = 1,\ldots,24$. To obtain a joint test across all series, apply
+Fisher's combination:
+\begin{equation}
+    \mathcal{F}_{JB} = -2\sum_{i=1}^{24} \log p_i^{JB}
+    \overset{d}{\to} \chi^2(48),
+\end{equation}
+where $p_i^{JB}$ is the p-value of $JB_i$.
+
+\paragraph{Kolmogorov-Smirnov test.}
+For each $i$, let $\hat{F}_i$ denote the empirical CDF of $\{z_{i,t}\}$. The KS statistic is
+\begin{equation}
+    KS_i = \sup_{x \in \mathbb{R}} \left|\hat{F}_i(x) - \Phi(x)\right|.
+\end{equation}
+The distribution of $\sqrt{T} \cdot KS_i$ under $H_0$ is the Kolmogorov distribution and
+does not depend on the null parameters. Combine across $i$ via Fisher's method as above.
+
+\paragraph{Berkowitz test on PIT values.}
+Transform the PIT values \eqref{eq:pit} back via $r_{i,t} = \Phi^{-1}(u_{i,t}) = z_{i,t}$.
+If the $u_{i,t}$ are i.i.d.\ Uniform$(0,1)$, the $r_{i,t}$ should be i.i.d.\ $\mathcal{N}(0,1)$.
+Berkowitz (2001) proposes fitting an AR(1) to $r_{i,t}$:
+\begin{equation}
+    r_{i,t} = \mu_i + \rho_i r_{i,t-1} + \eta_{i,t}, \qquad \eta_{i,t} \sim \mathcal{N}(0, \sigma_i^2),
+\end{equation}
+and testing $H_0: \mu_i = 0,\, \rho_i = 0,\, \sigma_i^2 = 1$ jointly via a likelihood ratio
+statistic:
+\begin{equation}
+    LR_i^{Berk} = -2\left[\ell_0(r_{i,\cdot}) - \ell_1(\hat{\mu}_i, \hat{\rho}_i, \hat{\sigma}_i^2; r_{i,\cdot})\right]
+    \overset{d}{\to} \chi^2(3),
+\end{equation}
+where $\ell_0$ is the log-likelihood under $H_0$ and $\ell_1$ is the unrestricted
+log-likelihood. Apply Fisher's method to combine across $i$.
+
+%------------------------------------------------------------------
+\section{Serial Dependence Tests}
+%------------------------------------------------------------------
+
+\subsection{Ljung-Box Test per Series}
+
+For each series $i$, compute the sample autocorrelation of $z_{i,t}$ at lag $\ell$:
+\begin{equation}
+    \hat{\rho}_{i,\ell} = \frac{\sum_{t=\ell+1}^T z_{i,t} z_{i,t-\ell}}
+    {\sum_{t=1}^T z_{i,t}^2}.
+\end{equation}
+The Ljung-Box statistic at maximum lag $L$ is
+\begin{equation}
+    LB_i(L) = T(T+2) \sum_{\ell=1}^{L} \frac{\hat{\rho}_{i,\ell}^2}{T - \ell}
+    \overset{d}{\to} \chi^2(L) \quad \text{under } H_0.
+    \label{eq:lb}
+\end{equation}
+Repeat for $z_{i,t}^2$ to detect ARCH-type dependence in higher moments, replacing
+$z_{i,t}$ with $z_{i,t}^2 - 1$ in the autocorrelation formula.
+
+\subsection{Combined Serial Dependence Test Across Series}
+
+Denote by $p_i^{LB}$ the p-value of \eqref{eq:lb} for series $i$. Fisher's combination
+statistic is
+\begin{equation}
+    \mathcal{F}_{LB} = -2 \sum_{i=1}^{24} \log p_i^{LB}
+    \overset{d}{\to} \chi^2(48) \quad \text{under } H_0.
+    \label{eq:fisher_lb}
+\end{equation}
+Apply the same procedure separately to $z_{i,t}^2$ to obtain $\mathcal{F}_{LB^2}$. The
+two statistics together test the null of no serial dependence in the first two moments of the
+standardized residuals, jointly across all 24 series.
+
+\begin{remark}
+    Fisher's method assumes independence across the $p_i^{LB}$, which is not guaranteed
+    when the series share common factors. A conservative correction is to apply the
+    Bonferroni-Holm step-down procedure: sort the 24 p-values in ascending order
+    $p_{(1)} \leq \cdots \leq p_{(24)}$ and reject the null for series $j$ if
+    $p_{(j)} \leq \alpha / (25 - j)$. The family-wise error rate is controlled at level
+    $\alpha$.
+\end{remark}
+
+%------------------------------------------------------------------
+\section{Cross-Sectional Dependence Tests}
+%------------------------------------------------------------------
+
+\subsection{Pesaran CD Test}
+
+Under the null of no cross-sectional correlation, the off-diagonal elements of the
+long-run cross-sectional covariance of $\{z_t\}$ are zero. Define the pairwise sample
+correlation between series $i$ and $j$:
+\begin{equation}
+    \hat{\rho}_{ij} = \frac{\sum_{t=1}^T z_{i,t} z_{j,t}}
+    {\sqrt{\sum_{t=1}^T z_{i,t}^2 \cdot \sum_{t=1}^T z_{j,t}^2}}.
+\end{equation}
+Pesaran's (2004) CD statistic is
+\begin{equation}
+    CD = \sqrt{\frac{2T}{N(N-1)}} \sum_{i=1}^{N-1} \sum_{j=i+1}^{N} \hat{\rho}_{ij}
+    \overset{d}{\to} \mathcal{N}(0,1) \quad \text{under } H_0,
+    \label{eq:cd}
+\end{equation}
+where $N = 24$. The null hypothesis is that all pairwise contemporaneous correlations
+are zero. Under the alternative that the factor model has failed to absorb all
+cross-sectional dependence, $\hat{\rho}_{ij} > 0$ on average and $CD$ diverges to
+$+\infty$.
+
+\begin{remark}
+    The CD test has power against both omitted factors and misspecified factor loadings.
+    A significant CD test after estimating the factor model is therefore informative: it
+    signals that the adjusted covariance $\hat{\Sigma} = \hat{H} + M\hat{C}M^\top$ has not
+    fully captured the cross-sectional dependence. In practice, one expects residual
+    dependence to vanish after the covariance adjustment is applied.
+\end{remark}
+
+\subsection{Testing the Full Cross-Sectional Covariance Matrix}
+
+A stronger test examines whether the full sample cross-sectional covariance
+\begin{equation}
+    \hat{\Gamma}_0 = \frac{1}{T} \sum_{t=1}^T z_t z_t^\top
+\end{equation}
+equals the identity matrix $I_{24}$. Define the statistic
+\begin{equation}
+    S_{cov} = \frac{T}{2} \left[\mathrm{tr}\!\left(\hat{\Gamma}_0^2\right) - N - \frac{1}{T}
+    \left(\mathrm{tr}(\hat{\Gamma}_0)\right)^2\right]
+    \overset{d}{\to} \chi^2\!\left(\frac{N(N-1)}{2}\right)
+    \quad \text{under } H_0,
+    \label{eq:covtest}
+\end{equation}
+which tests $H_0: \Gamma_0 = I_N$ against the general alternative of any non-identity
+covariance structure. With $N = 24$ the degrees of freedom are $24 \times 23 / 2 = 276$.
+
+%------------------------------------------------------------------
+\section{Multivariate Portmanteau Test}
+%------------------------------------------------------------------
+
+\subsection{Hosking's Statistic}
+
+The multivariate analogue of the Ljung-Box test is due to Hosking (1980). Define the
+lag-$\ell$ cross-covariance matrix of the standardized residuals:
+\begin{equation}
+    \hat{\Gamma}(\ell) = \frac{1}{T} \sum_{t=\ell+1}^T z_t z_{t-\ell}^\top,
+    \qquad \ell = 1, \ldots, L.
+\end{equation}
+Hosking's multivariate portmanteau statistic is
+\begin{equation}
+    Q_M(L) = T^2 \sum_{\ell=1}^{L} \frac{1}{T-\ell}
+    \mathrm{tr}\!\left[\hat{\Gamma}(\ell)^\top \hat{\Gamma}(0)^{-1}
+    \hat{\Gamma}(\ell) \hat{\Gamma}(0)^{-1}\right]
+    \overset{d}{\to} \chi^2(N^2 L) \quad \text{under } H_0.
+    \label{eq:hosking}
+\end{equation}
+With $N = 24$ and $L = 10$ (a common choice), the degrees of freedom are
+$576 \times 10 = 5760$, which can make the test conservative in finite samples. A
+practical alternative is the Li-McLeod correction:
+\begin{equation}
+    Q_{LM}(L) = Q_M(L) + \frac{N^2 L(L+1)}{2T}
+    \overset{d}{\to} \chi^2(N^2 L),
+\end{equation}
+which has better size in finite samples than Hosking's original formulation.
+
+\begin{remark}
+    The test in \eqref{eq:hosking} uses $\hat{\Gamma}(0)$ rather than $I_N$. If
+    $\hat{\Gamma}(0) \neq I_N$ it is advisable to first test cross-sectional
+    dependence via \eqref{eq:covtest}, and then run \eqref{eq:hosking}
+    on the fully standardized residuals $\tilde{z}_t = \hat{\Gamma}(0)^{-1/2} z_t$,
+    which by construction satisfy $T^{-1}\sum_t \tilde{z}_t \tilde{z}_t^\top = I_N$.
+\end{remark}
+
+\subsection{Recommended Lag Length}
+
+A common rule is $L = \lfloor T^{1/3} \rfloor$. For $T = 500$ (the rolling window used
+in the empirical application), this gives $L \approx 8$. The test should be run for
+several values of $L$ to ensure robustness, as the power profile against different
+alternatives depends on the lag length chosen.
+
+%------------------------------------------------------------------
+\section{ARCH-LM Test}
+%------------------------------------------------------------------
+
+\subsection{Univariate ARCH-LM per Series}
+
+For each series $i$, the Engle (1982) LM test for ARCH effects of order $q$ regresses
+$z_{i,t}^2$ on its own $q$ lags:
+\begin{equation}
+    z_{i,t}^2 = \alpha_{i,0} + \sum_{j=1}^{q} \alpha_{i,j} z_{i,t-j}^2 + \eta_{i,t}.
+    \label{eq:archreg}
+\end{equation}
+The LM statistic is $ARCH_i(q) = T \cdot R_i^2$, where $R_i^2$ is the coefficient of
+determination of \eqref{eq:archreg}. Under $H_0: \alpha_{i,1} = \cdots = \alpha_{i,q} = 0$,
+\begin{equation}
+    ARCH_i(q) \overset{d}{\to} \chi^2(q).
+\end{equation}
+Combine across $i$ via Fisher's method:
+\begin{equation}
+    \mathcal{F}_{ARCH} = -2 \sum_{i=1}^{24} \log p_i^{ARCH}
+    \overset{d}{\to} \chi^2(48).
+\end{equation}
+
+\subsection{Multivariate ARCH-LM}
+
+The multivariate extension proposed by Ling and Li (1997) tests whether the matrix
+sequence $\{z_t z_t^\top\}$ is serially uncorrelated. Stack the unique elements of
+$z_t z_t^\top$ into a vector $\mathrm{vech}(z_t z_t^\top) \in \mathbb{R}^{N(N+1)/2}$,
+which has dimension $300$ for $N = 24$. The multivariate ARCH-LM statistic of lag order
+$q$ is
+\begin{equation}
+    MARCH(q) = T \cdot \mathrm{tr}\!\left(\hat{R}^\top \hat{R}\right),
+\end{equation}
+where $\hat{R}$ is the sample cross-correlation matrix of $\mathrm{vech}(z_t z_t^\top)$
+at lags $1$ through $q$. Under $H_0$ (no multivariate ARCH), this statistic is
+asymptotically $\chi^2$ with $q[N(N+1)/2]^2$ degrees of freedom. In practice, for
+$N = 24$ and $q > 1$ this becomes unwieldy; it is therefore advisable to apply the
+univariate ARCH-LM series by series and combine via Fisher's method, reserving the
+multivariate version for $N$ small.
+
+%------------------------------------------------------------------
+\section{A Complete Testing Protocol}
+%------------------------------------------------------------------
+
+We summarize the recommended sequence of tests. Each test addresses a distinct
+aspect of the i.i.d.\ null hypothesis for the panel $\{z_{i,t}\}_{i=1,\ldots,24;\;t=1,\ldots,T}$.
+
+\paragraph{Step 1: Marginal distribution.}
+Compute $z_{i,t}$ via \eqref{eq:zit}. Apply the Jarque-Bera test to each series and
+combine via \eqref{eq:fisher_lb}. Reject if $\mathcal{F}_{JB} > \chi^2_{48}(1-\alpha)$.
+Also inspect Q-Q plots of the pooled $z_{i,t}$ against $\mathcal{N}(0,1)$.
+
+\paragraph{Step 2: Serial dependence in levels.}
+Apply the Ljung-Box test \eqref{eq:lb} to each $z_{i,t}$ series at lag $L$. Combine
+via Fisher \eqref{eq:fisher_lb} to obtain $\mathcal{F}_{LB}$. Reject if
+$\mathcal{F}_{LB} > \chi^2_{48}(1-\alpha)$.
+
+\paragraph{Step 3: Serial dependence in squares.}
+Repeat Step 2 with $z_{i,t}^2$ in place of $z_{i,t}$ to test for ARCH effects.
+Alternatively apply the Engle LM test and combine via $\mathcal{F}_{ARCH}$.
+
+\paragraph{Step 4: Cross-sectional independence.}
+Apply the Pesaran CD test \eqref{eq:cd}. Reject if $|CD| > z_{1-\alpha/2}$.
+Complement with the full covariance test \eqref{eq:covtest}.
+
+\paragraph{Step 5: Joint serial dependence across all series.}
+Apply the multivariate Ljung-Box statistic \eqref{eq:hosking} on the fully
+standardized residuals $\tilde{z}_t = \hat{\Gamma}(0)^{-1/2} z_t$ at lag $L$.
+Reject if $Q_M(L) > \chi^2_{N^2 L}(1-\alpha)$.
+
+\paragraph{Step 6: Mahalanobis distance analysis.}
+Plot $d_t^2$ over time and compare its empirical distribution with $\chi^2(24)$.
+Large isolated spikes indicate outliers; systematic patterns indicate model
+misspecification. Test i.i.d.-ness of $\{d_t^2\}$ via a univariate Ljung-Box on
+the scalar series.
+
+\paragraph{Interpretation.}
+\begin{itemize}
+    \item Failure at Step 1 alone: the distributional family $h$ is misspecified.
+        Switch from Gaussian to Student's $t$ or add skewness.
+    \item Failure at Steps 2--3 but not 4: there is residual time-series structure
+        in individual series. Consider adding lags to the state equation or allowing
+        time-varying $H_t$.
+    \item Failure at Step 4 but not 2--3: the covariance adjustment $M C M^\top$
+        has not fully captured cross-sectional dependence. Consider increasing $p$
+        or allowing a richer structure for $C$.
+    \item Failure at Step 5 only: there are cross-serial dependencies not captured
+        by individual tests; the factor structure may be too rigid.
+    \item Failure at Step 6 with time-clustering: the model fails during turbulent
+        periods, consistent with the COVID findings in the paper.
+\end{itemize}
+
+%------------------------------------------------------------------
+\section{Notes on Estimation Uncertainty}
+%------------------------------------------------------------------
+
+All tests above treat $\hat{\Sigma}$, $\hat{\beta}_t$, and $\hat{\nu}$ as if they were
+known. Estimation uncertainty inflates the true size of the tests, particularly for small
+$T$. Two corrections are available in practice.
+
+\paragraph{Parametric bootstrap.} Simulate $B = 999$ paths
+$\{y_t^{(b)}\}_{t=1}^T$ from the estimated model, re-estimate $\psi$ on each, compute
+the test statistic, and use the empirical quantile of the simulated statistics as the
+critical value. This is the most reliable approach but is computationally expensive.
+
+\paragraph{Degrees-of-freedom correction.} For the Ljung-Box statistic, reduce
+the degrees of freedom from $L$ to $L - p_\psi$, where $p_\psi$ is the number of
+estimated parameters governing the dynamics. For the Hosking statistic, the correction
+is $N^2 L - p_\psi$. These corrections are conservative and may not fully account for
+the complexity of the score-driven filter.
+
+%------------------------------------------------------------------
+\section{Connection to the Implied Volatility Application}
+%------------------------------------------------------------------
+
+In the empirical application of Zou, Lin, and Lucas (2025), the 24 buckets consist of
+four time-to-maturity groups (7--45, 45--90, 90--180, 180--360 days) crossed with six
+moneyness groups (DOTM put, OTM put, ATM put, ATM call, OTM call, DOTM call). The
+representative contract for each bucket is the one closest to the bucket midpoint.
+
+Under the five-factor specification
+\begin{equation}
+    \log IV_{i,t} = \beta_{1,t} + \beta_{2,t} m_{i,t} + \beta_{3,t} m_{i,t}^2
+    + \beta_{4,t} \tau_{i,t} + \beta_{5,t} m_{i,t} \tau_{i,t} + \varepsilon_{i,t},
+\end{equation}
+the factor loading matrix $M \in \mathbb{R}^{24 \times 5}$ is the design matrix evaluated
+at the 24 bucket representative contracts. The adjusted covariance is then
+$\hat{\Sigma} = \hat{H} + M\hat{C}M^\top$ with $\hat{H} = \hat{\sigma}^2_\varepsilon I_{24}$
+and $\hat{C} \in \mathbb{R}^{5 \times 5}$.
+
+Several specific failure modes are worth checking:
+
+\begin{enumerate}
+    \item \textbf{Volatility smile residuals.} Group the 24 $z_{i,t}$ series by maturity
+        bucket and check whether the cross-maturity pattern of autocorrelations is uniform.
+        Systematic differences across maturity groups signal that the slope factor
+        $\beta_{4,t}$ is not flexible enough.
+    \item \textbf{COVID period.} Restrict the Ljung-Box and Hosking tests to the COVID
+        sub-sample (2020--2022) and compare with the pre-COVID period. The Student's $t$
+        model is known to adapt slowly to level shifts; this should be reflected in
+        elevated $d_t^2$ values during March--April 2020.
+    \item \textbf{Deep out-of-the-money puts.} DOTM put buckets (small $|\Delta|$) are
+        the most illiquid and are most likely to exhibit heavy tails or
+        intermittent outliers. A series-specific KS test is recommended for these buckets.
+\end{enumerate}
+
+%------------------------------------------------------------------
+\end{document}
