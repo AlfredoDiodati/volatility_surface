@@ -1,4 +1,5 @@
 import os
+
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -6,9 +7,8 @@ import polars as pl
 
 import os
 
-os.environ['JAX_ENABLE_X64'] = 'True'
-# 2. Don't grab all the VRAM at once (helpful for 4GB cards)
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 print(f"Running on: {jax.devices()}")
 
 from models.ss import fit_collapsed, forecast as ss_forecast
@@ -20,7 +20,6 @@ from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 PARQUET_PATH = "data/SPX/otm/full.parquet"
-FILTERED_PATH = "data/SPX/otm/filtered.parquet"
 OUTPUT_DIR = "out/SPX/otm/full_performance"
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = 3
@@ -29,58 +28,16 @@ P_FULL = P
 
 TRAIN_SIZE = 500
 TEST_SIZE = 250
-Q_ALPHA = -1.6448536269514722  # scipy.stats.norm.ppf(0.05) — used for SS (Gaussian)
-ALPHA = 0.05                   # probability level — used for t-distribution models
+Q_ALPHA = -1.6448536269514722
+ALPHA = 0.05
 FSD_K_VALUES = [3, 10]
 FFSD_K_VALUES = [3, 10]
 IFSD_K_VALUES = [3, 100]
 
-# 4 maturity bins × 6 moneyness bins = 24 buckets (matches bucket_performance.py)
-N_MAT_BUCKETS = 4
-N_MON_BUCKETS = 6
-
-
 def load_and_reshape(path):
-    # Load full options data
     raw = (
         pl.read_parquet(path)
         .with_columns(pl.col("DATE").cast(pl.Utf8))
-    )
-
-    # Recover bucket assignments from filtered.parquet, which retains
-    # MATURITY_BUCKET and MONEYNESS_BUCKET from the original pre-processing.
-    # full.parquet was created from filtered.parquet without sorting or filtering,
-    # so (DATE, MONEYNESS, MATURITY) uniquely identifies each row in both files.
-    bucket_key = (
-        pl.scan_parquet(FILTERED_PATH)
-        .select(["DATE", "MONEYNESS", "MATURITY", "MATURITY_BUCKET", "MONEYNESS_BUCKET"])
-        .with_columns(pl.col("DATE").cast(pl.Utf8))
-        .unique(subset=["DATE", "MONEYNESS", "MATURITY"])
-        .collect()
-    )
-
-    # bucket_idx = (mat_bin - 1)*N_MON_BUCKETS + (mon_bin - 1)
-    # This replicates the ordering used in bucket_performance.py:
-    # mat1_mon1 → 0 (base), mat1_mon2 → 1, …, mat4_mon6 → 23
-    raw = (
-        raw
-        .with_columns(
-            (pl.col("maturity") * 255).round().cast(pl.Int32).alias("_mat_days")
-        )
-        .join(
-            bucket_key
-            .rename({"MONEYNESS": "moneyness", "MATURITY": "_mat_days"})
-            .with_columns(pl.col("_mat_days").cast(pl.Int32)),
-            on=["DATE", "moneyness", "_mat_days"],
-            how="left",
-        )
-        .with_columns(
-            (
-                (pl.col("MATURITY_BUCKET").fill_null(1) - 1) * N_MON_BUCKETS
-                + (pl.col("MONEYNESS_BUCKET").fill_null(1) - 1)
-            ).cast(pl.Int32).alias("bucket_idx")
-        )
-        .drop(["_mat_days", "MATURITY_BUCKET", "MONEYNESS_BUCKET"])
         .sort(["DATE", *FACTOR_LOADING_COLS])
         .with_columns(
             pl.int_range(pl.len()).over("DATE").cast(pl.Int32).alias("row_in_date")
@@ -90,7 +47,7 @@ def load_and_reshape(path):
     dates = raw["DATE"].unique(maintain_order=True).sort().to_list()
     T = len(dates)
     max_n = int(raw.group_by("DATE").len()["len"].max())
-    n_buckets = N_MAT_BUCKETS * N_MON_BUCKETS  # 24
+    n_buckets = int(raw["bucket_idx"].max()) + 1
 
     raw = raw.with_columns(
         pl.col("DATE").replace_strict(
@@ -388,15 +345,6 @@ def main():
 
     indices = jnp.arange(n_test, dtype=jnp.int32)
 
-    # Parameter counts from each model's _invlink output length (P=4, verified):
-    # SS:    H(1) + Q_diag(P) + B_diag(P) + omega[1:](n_b-1) + bar_beta(P) = 3P + n_b
-    # adjSD: beta_bar(P) + B(P) + A(P) + sigma2(1) + omega[1:](n_b-1) + C(P) + nu(1) = 4P + n_b + 1
-    # lmSD:  beta_bar(P) + B(P) + A(P) + d(P) + sigma2(1) + omega[1:](n_b-1) + C(P) + nu(1) = 5P + n_b + 1
-    # fSD:   beta_bar(Pb) + B(Pb) + A(Pb) + sigma2(1) + sigma_0(1) + omega[1:](n_b-1) + eta(1) + alpha(1) + C(Pf) + nu(1)
-    #        = 3*P_BASE + P_FULL + n_b + 4
-    # ffSD:  beta_bar(P) + A(P) + sigma2(1) + omega[1:](n_b-1) + eta(P) + alpha(1) + C(P) + nu(1) = 4P + n_b + 2
-    # ifSD:  beta_bar(P) + A(P) + sigma2(1) + omega[1:](n_b-1) + eta(P) + alpha(1) + a_midas(P) + b_midas(P) + C(P) + nu(1)
-    #        = 6P + n_b + 2
     n_params_ss    = 3 * P + n_buckets
     n_params_adjSD = 4 * P + n_buckets + 1
     n_params_lmSD  = 5 * P + n_buckets + 1

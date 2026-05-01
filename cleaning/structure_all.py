@@ -7,18 +7,22 @@ def main():
     src = "data/" + subfolder + "/otm/filtered.parquet"
     out = "data/" + subfolder + "/otm/"
 
+    n_mon_buckets = int(
+        pl.scan_parquet(src).select(pl.col("MONEYNESS_BUCKET").max()).collect().item()
+    )
+
     (pl.scan_parquet(src)
         .with_columns([
             pl.col("IV").log(base=math.e).alias("logIV"),
             pl.lit(1.0).alias("level"),
             pl.col("MONEYNESS").alias("moneyness"),
             (pl.col("MATURITY") / 255.0).alias("maturity"),
+            (
+                (pl.col("MATURITY_BUCKET").cast(pl.Int32) - 1) * n_mon_buckets
+                + (pl.col("MONEYNESS_BUCKET").cast(pl.Int32) - 1)
+            ).alias("bucket_idx"),
         ])
-        .with_columns([
-            (pl.col("moneyness") ** 2).alias("moneyness2"),
-            (pl.col("moneyness") * pl.col("maturity")).alias("interaction"),
-        ])
-        .select(["DATE", "logIV", "level", "moneyness", "moneyness2", "maturity", "interaction"])
+        .select(["DATE", "logIV", "level", "moneyness", "maturity", "bucket_idx"])
         .sink_parquet(out + "full.parquet")
     )
 
