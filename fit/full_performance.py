@@ -4,6 +4,13 @@ import jax.numpy as jnp
 from jax import lax
 import polars as pl
 
+import os
+
+os.environ['JAX_ENABLE_X64'] = 'True'
+# 2. Don't grab all the VRAM at once (helpful for 4GB cards)
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+print(f"Running on: {jax.devices()}")
+
 from models.ss import fit_collapsed, forecast as ss_forecast
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
 from models.f_SD import fit as fSD_fit, forecast as fSD_forecast
@@ -13,12 +20,10 @@ from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 PARQUET_PATH = "data/SPX/otm/full.parquet"
+FILTERED_PATH = "data/SPX/otm/filtered.parquet"
 OUTPUT_DIR = "out/SPX/otm/full_performance"
-# level=1.0 is a constant column in full.parquet; it cannot coexist with the
-# bucket omega intercept without creating a rank-deficient design matrix.
-# We use the four non-constant features and let omega[1] serve as the intercept.
-FACTOR_LOADING_COLS = ["moneyness", "moneyness2", "maturity", "interaction"]
-P_BASE = 4
+FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
+P_BASE = 3
 P = P_BASE + 1
 P_FULL = P
 
@@ -30,39 +35,80 @@ FSD_K_VALUES = [3, 10]
 FFSD_K_VALUES = [3, 10]
 IFSD_K_VALUES = [3, 100]
 
-# n_buckets=2: bucket 0 is the fixed reference (omega[0]=0), bucket 1 is
-# assigned to all observations so omega[1] acts as an estimated intercept.
-N_BUCKETS = 2
+# 4 maturity bins × 6 moneyness bins = 24 buckets (matches bucket_performance.py)
+N_MAT_BUCKETS = 4
+N_MON_BUCKETS = 6
 
 
 def load_and_reshape(path):
+    # Load full options data
     raw = (
         pl.read_parquet(path)
         .with_columns(pl.col("DATE").cast(pl.Utf8))
+    )
+
+    # Recover bucket assignments from filtered.parquet, which retains
+    # MATURITY_BUCKET and MONEYNESS_BUCKET from the original pre-processing.
+    # full.parquet was created from filtered.parquet without sorting or filtering,
+    # so (DATE, MONEYNESS, MATURITY) uniquely identifies each row in both files.
+    bucket_key = (
+        pl.scan_parquet(FILTERED_PATH)
+        .select(["DATE", "MONEYNESS", "MATURITY", "MATURITY_BUCKET", "MONEYNESS_BUCKET"])
+        .with_columns(pl.col("DATE").cast(pl.Utf8))
+        .unique(subset=["DATE", "MONEYNESS", "MATURITY"])
+        .collect()
+    )
+
+    # bucket_idx = (mat_bin - 1)*N_MON_BUCKETS + (mon_bin - 1)
+    # This replicates the ordering used in bucket_performance.py:
+    # mat1_mon1 → 0 (base), mat1_mon2 → 1, …, mat4_mon6 → 23
+    raw = (
+        raw
+        .with_columns(
+            (pl.col("maturity") * 255).round().cast(pl.Int32).alias("_mat_days")
+        )
+        .join(
+            bucket_key
+            .rename({"MONEYNESS": "moneyness", "MATURITY": "_mat_days"})
+            .with_columns(pl.col("_mat_days").cast(pl.Int32)),
+            on=["DATE", "moneyness", "_mat_days"],
+            how="left",
+        )
+        .with_columns(
+            (
+                (pl.col("MATURITY_BUCKET").fill_null(1) - 1) * N_MON_BUCKETS
+                + (pl.col("MONEYNESS_BUCKET").fill_null(1) - 1)
+            ).cast(pl.Int32).alias("bucket_idx")
+        )
+        .drop(["_mat_days", "MATURITY_BUCKET", "MONEYNESS_BUCKET"])
         .sort(["DATE", *FACTOR_LOADING_COLS])
         .with_columns(
             pl.int_range(pl.len()).over("DATE").cast(pl.Int32).alias("row_in_date")
         )
     )
+
     dates = raw["DATE"].unique(maintain_order=True).sort().to_list()
     T = len(dates)
     max_n = int(raw.group_by("DATE").len()["len"].max())
+    n_buckets = N_MAT_BUCKETS * N_MON_BUCKETS  # 24
+
     raw = raw.with_columns(
         pl.col("DATE").replace_strict(
             {d: i for i, d in enumerate(dates)}, return_dtype=pl.Int32
         ).alias("date_idx")
     )
+
     t_idx = jnp.array(raw["date_idx"], dtype=jnp.int32)
     n_idx = jnp.array(raw["row_in_date"], dtype=jnp.int32)
     y_vals = jnp.array(raw["logIV"])
     factor_vals = jnp.stack([jnp.array(raw[c]) for c in FACTOR_LOADING_COLS], axis=1)
-    # All observations go to bucket 1 so the model's omega[1] acts as an intercept.
-    bucket_vals = jnp.ones(len(raw), dtype=jnp.float64)
+    bucket_vals = jnp.array(raw["bucket_idx"], dtype=jnp.float64)
+
     y_cube = jnp.full((T, max_n), jnp.nan).at[t_idx, n_idx].set(y_vals)
     Z_cube = jnp.zeros((T, max_n, P_BASE + 1)).at[t_idx, n_idx].set(
         jnp.concatenate([factor_vals, bucket_vals[:, None]], axis=-1)
     )
-    return y_cube, Z_cube, N_BUCKETS, dates
+    return y_cube, Z_cube, n_buckets, dates
 
 
 def _ols_beta(y_win, Z_win):
@@ -223,21 +269,18 @@ def make_lmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
     return step
 
 
-def _omega2(n_buckets):
-    return jnp.array([0.0, 1e-2])
-
-
 def _ss_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
     Z_win = Z_jax[:TRAIN_SIZE]
     beta_ols = _ols_beta(y_win, Z_win)
     sig2 = _sigma2(y_win, Z_win, beta_ols)
+    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
         jnp.diag(jnp.full(P, 1e-3)),
         sig2 * jnp.eye(1),
         0.95 * jnp.eye(P),
         jnp.append(beta_ols, 0.0),
-        _omega2(n_buckets),
+        omega,
     )
 
 
@@ -246,12 +289,13 @@ def _adjSD_cold_carry(y_jax, Z_jax, n_buckets):
     Z_win = Z_jax[:TRAIN_SIZE]
     beta_ols = _ols_beta(y_win, Z_win)
     sig2 = _sigma2(y_win, Z_win, beta_ols)
+    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
         jnp.append(beta_ols, 0.0),
         0.95 * jnp.eye(P),
         0.05 * jnp.eye(P),
         sig2,
-        _omega2(n_buckets),
+        omega,
         jnp.full(P, 1e-3),
         jnp.array(10.0),
     )
@@ -262,16 +306,17 @@ def _fSD_cold_carry(y_jax, Z_jax, n_buckets):
     Z_win = Z_jax[:TRAIN_SIZE]
     beta_ols = _ols_beta(y_win, Z_win)
     sig2 = _sigma2(y_win, Z_win, beta_ols)
+    omega_load = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
-        beta_ols,                                   # beta_bar: (P_BASE,)
-        0.95 * jnp.eye(P_BASE),                     # B
-        0.05 * jnp.eye(P_BASE),                     # A
+        beta_ols,
+        0.95 * jnp.eye(P_BASE),
+        0.05 * jnp.eye(P_BASE),
         sig2,
-        jnp.array(0.1),                             # sigma_0
-        _omega2(n_buckets),                          # omega_load: (2,)
-        jnp.array(0.06251277029514313),             # eta
-        jnp.array(1.4255056381225586),              # alpha
-        1e-3 * jnp.eye(P_FULL),                     # C: (P_FULL, P_FULL)
+        jnp.array(0.1),
+        omega_load,
+        jnp.array(0.06251277029514313),
+        jnp.array(1.4255056381225586),
+        1e-3 * jnp.eye(P_FULL),
         jnp.array(10.0),
     )
 
@@ -281,16 +326,17 @@ def _ifSD_cold_carry(y_jax, Z_jax, n_buckets):
     Z_win = Z_jax[:TRAIN_SIZE]
     beta_ols = _ols_beta(y_win, Z_win)
     sig2 = _sigma2(y_win, Z_win, beta_ols)
+    omega_load = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
-        jnp.append(beta_ols, 0.0),                  # beta_bar: (P,)
-        0.05 * jnp.eye(P_FULL),                     # A: (P_FULL, P_FULL)
+        jnp.append(beta_ols, 0.0),
+        0.05 * jnp.eye(P_FULL),
         sig2,
-        _omega2(n_buckets),                          # omega_load: (2,)
-        jnp.full(P_FULL, 0.4),                      # eta: (P_FULL,)
-        jnp.full(P_FULL, 1.2),                      # alpha: (P_FULL,)
-        jnp.ones(P_FULL) + 0.2,                     # a_midas: (P_FULL,)
-        jnp.full(P_FULL, 5.0),                      # b_midas: (P_FULL,)
-        1e-3 * jnp.eye(P_FULL),                     # C: (P_FULL, P_FULL)
+        omega_load,
+        jnp.full(P_FULL, 0.4),
+        jnp.full(P_FULL, 1.2),
+        jnp.ones(P_FULL) + 0.2,
+        jnp.full(P_FULL, 5.0),
+        1e-3 * jnp.eye(P_FULL),
         jnp.array(10.0),
     )
 
@@ -300,14 +346,15 @@ def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
     Z_win = Z_jax[:TRAIN_SIZE]
     beta_ols = _ols_beta(y_win, Z_win)
     sig2 = _sigma2(y_win, Z_win, beta_ols)
+    omega_load = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
-        jnp.append(beta_ols, 0.0),                  # beta_bar: (P,)
-        0.05 * jnp.eye(P_FULL),                     # A: (P_FULL, P_FULL)
+        jnp.append(beta_ols, 0.0),
+        0.05 * jnp.eye(P_FULL),
         sig2,
-        _omega2(n_buckets),                          # omega_load: (2,)
-        jnp.full(P_FULL, 0.4),                      # eta: (P_FULL,)
-        jnp.full(P_FULL, 1.4255056381225586),        # alpha: (P_FULL,)
-        1e-3 * jnp.eye(P_FULL),                     # C: (P_FULL, P_FULL)
+        omega_load,
+        jnp.full(P_FULL, 0.4),
+        jnp.full(P_FULL, 1.4255056381225586),
+        1e-3 * jnp.eye(P_FULL),
         jnp.array(10.0),
     )
 
@@ -317,14 +364,15 @@ def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
     Z_win = Z_jax[:TRAIN_SIZE]
     beta_ols = _ols_beta(y_win, Z_win)
     sig2 = _sigma2(y_win, Z_win, beta_ols)
+    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
-        jnp.append(beta_ols, 0.0),                  # beta_bar: (P,)
-        0.95 * jnp.eye(P),                          # B
-        0.05 * jnp.eye(P),                          # A
-        jnp.full(P, 0.4),                           # d
+        jnp.append(beta_ols, 0.0),
+        0.95 * jnp.eye(P),
+        0.05 * jnp.eye(P),
+        jnp.full(P, 0.4),
         sig2,
-        _omega2(n_buckets),                          # omega: (2,)
-        jnp.full(P, 1e-3),                          # C
+        omega,
+        jnp.full(P, 1e-3),
         jnp.array(10.0),
     )
 
@@ -340,13 +388,15 @@ def main():
 
     indices = jnp.arange(n_test, dtype=jnp.int32)
 
-    # Parameter counts from each model's _invlink output length (verified against source).
-    # SS:    H(1) + Q_diag(P) + B_diag(P) + omega[1:](n_b-1) + bar_beta(P)
-    # adjSD: beta_bar(P) + B_diag(P) + A_diag(P) + sigma2(1) + omega[1:](n_b-1) + C_diag(P) + nu(1)
-    # lmSD:  beta_bar(P) + B(P) + A(P) + d(P) + sigma2(1) + omega[1:](n_b-1) + C(P) + nu(1)
+    # Parameter counts from each model's _invlink output length (P=4, verified):
+    # SS:    H(1) + Q_diag(P) + B_diag(P) + omega[1:](n_b-1) + bar_beta(P) = 3P + n_b
+    # adjSD: beta_bar(P) + B(P) + A(P) + sigma2(1) + omega[1:](n_b-1) + C(P) + nu(1) = 4P + n_b + 1
+    # lmSD:  beta_bar(P) + B(P) + A(P) + d(P) + sigma2(1) + omega[1:](n_b-1) + C(P) + nu(1) = 5P + n_b + 1
     # fSD:   beta_bar(Pb) + B(Pb) + A(Pb) + sigma2(1) + sigma_0(1) + omega[1:](n_b-1) + eta(1) + alpha(1) + C(Pf) + nu(1)
-    # ffSD:  beta_bar(P) + A(P) + sigma2(1) + omega[1:](n_b-1) + eta(P) + alpha(1) + C(P) + nu(1)
+    #        = 3*P_BASE + P_FULL + n_b + 4
+    # ffSD:  beta_bar(P) + A(P) + sigma2(1) + omega[1:](n_b-1) + eta(P) + alpha(1) + C(P) + nu(1) = 4P + n_b + 2
     # ifSD:  beta_bar(P) + A(P) + sigma2(1) + omega[1:](n_b-1) + eta(P) + alpha(1) + a_midas(P) + b_midas(P) + C(P) + nu(1)
+    #        = 6P + n_b + 2
     n_params_ss    = 3 * P + n_buckets
     n_params_adjSD = 4 * P + n_buckets + 1
     n_params_lmSD  = 5 * P + n_buckets + 1
@@ -392,10 +442,10 @@ def main():
     all_results.update({f"ffSD_K{K}": out for K, out in zip(FFSD_K_VALUES, ffSD_outs)})
     all_results.update({f"ifSD_K{K}": out for K, out in zip(IFSD_K_VALUES, ifSD_outs)})
 
-    y_test_all   = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
+    y_test_all    = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
     mask_test_all = ~jnp.isnan(y_test_all)
-    test_dates   = dates[TRAIN_SIZE:TRAIN_SIZE + n_test]
-    total_obs    = int(jnp.sum(mask_test_all))
+    test_dates    = dates[TRAIN_SIZE:TRAIN_SIZE + n_test]
+    total_obs     = int(jnp.sum(mask_test_all))
 
     model_names = (["ss", "adjSD", "lmSD"] + [f"fSD_K{k}" for k in FSD_K_VALUES]
                    + [f"ffSD_K{k}" for k in FFSD_K_VALUES] + [f"ifSD_K{k}" for k in IFSD_K_VALUES])
