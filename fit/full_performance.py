@@ -1,14 +1,15 @@
 import os
+import shutil
+
+if shutil.which("nvidia-smi") is not None:
+    os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
 import jax
 import jax.numpy as jnp
 from jax import lax
 import polars as pl
 
-import os
-
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 print(f"Running on: {jax.devices()}")
 
 from models.ss import fit_collapsed, forecast as ss_forecast
@@ -356,53 +357,31 @@ def main():
     n_params_map.update({f"ffSD_K{k}": n_params_ffSD for k in FFSD_K_VALUES})
     n_params_map.update({f"ifSD_K{k}": n_params_ifSD for k in IFSD_K_VALUES})
 
-    ss_step    = make_ss_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000)
-    adjSD_step = make_adjSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000)
-    fSD_steps  = [make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K) for K in FSD_K_VALUES]
-    ffSD_steps = [make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K) for K in FFSD_K_VALUES]
-    ifSD_steps = [make_ifSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K) for K in IFSD_K_VALUES]
-    lmSD_step  = make_lmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000)
-
-    ss_carry0    = _ss_cold_carry(y_jax, Z_jax, n_buckets)
-    adjSD_carry0 = _adjSD_cold_carry(y_jax, Z_jax, n_buckets)
-    fSD_carry0s  = [_fSD_cold_carry(y_jax, Z_jax, n_buckets) for _ in FSD_K_VALUES]
-    ffSD_carry0s = [_ffSD_cold_carry(y_jax, Z_jax, n_buckets) for _ in FFSD_K_VALUES]
-    ifSD_carry0s = [_ifSD_cold_carry(y_jax, Z_jax, n_buckets) for _ in IFSD_K_VALUES]
-    lmSD_carry0  = _lmSD_cold_carry(y_jax, Z_jax, n_buckets)
-
-    def run_all(carries, idx):
-        ss_carry, adjSD_carry, fSD_carries, ffSD_carries, ifSD_carries, lmSD_carry = carries
-        _, ss_out    = lax.scan(ss_step, ss_carry, idx)
-        _, adjSD_out = lax.scan(adjSD_step, adjSD_carry, idx)
-        fSD_outs  = [lax.scan(step, carry, idx)[1] for step, carry in zip(fSD_steps, fSD_carries)]
-        ffSD_outs = [lax.scan(step, carry, idx)[1] for step, carry in zip(ffSD_steps, ffSD_carries)]
-        ifSD_outs = [lax.scan(step, carry, idx)[1] for step, carry in zip(ifSD_steps, ifSD_carries)]
-        _, lmSD_out  = lax.scan(lmSD_step, lmSD_carry, idx)
-        return ss_out, adjSD_out, fSD_outs, ffSD_outs, ifSD_outs, lmSD_out
-
-    print("Compiling and running all models in a single JIT...")
-    ss_out, adjSD_out, fSD_outs, ffSD_outs, ifSD_outs, lmSD_out = jax.jit(run_all)(
-        (ss_carry0, adjSD_carry0, fSD_carry0s, ffSD_carry0s, ifSD_carry0s, lmSD_carry0), indices
-    )
-
-    all_results = {"ss": ss_out, "adjSD": adjSD_out, "lmSD": lmSD_out}
-    all_results.update({f"fSD_K{K}": out for K, out in zip(FSD_K_VALUES, fSD_outs)})
-    all_results.update({f"ffSD_K{K}": out for K, out in zip(FFSD_K_VALUES, ffSD_outs)})
-    all_results.update({f"ifSD_K{K}": out for K, out in zip(IFSD_K_VALUES, ifSD_outs)})
-
     y_test_all    = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
     mask_test_all = ~jnp.isnan(y_test_all)
     test_dates    = dates[TRAIN_SIZE:TRAIN_SIZE + n_test]
     total_obs     = int(jnp.sum(mask_test_all))
 
-    model_names = (["ss", "adjSD", "lmSD"] + [f"fSD_K{k}" for k in FSD_K_VALUES]
-                   + [f"ffSD_K{k}" for k in FFSD_K_VALUES] + [f"ifSD_K{k}" for k in IFSD_K_VALUES])
     step_frames = []
     agg_rows    = []
 
-    for name in model_names:
-        y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged = all_results[name]
-        n_params = n_params_map[name]
+    def run_and_save(name, step_fn, carry0):
+        print(f"  {name}...", flush=True)
+        _, out = jax.jit(lambda c, x: lax.scan(step_fn, c, x))(carry0, indices)
+        jax.effects_barrier()
+        y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged = out
+
+        pl.DataFrame({
+            "date": test_dates,
+            "predictions": y_hat.tolist(),
+        }).write_parquet(os.path.join(OUTPUT_DIR, f"predictions_{name}.parquet"))
+
+        n_params     = n_params_map[name]
+        total_oos_ll = float(jnp.sum(oos_ll))
+        mse = float(compute_mse(y_test_all, y_hat, mask_test_all))
+        mae = float(compute_mae(y_test_all, y_hat, mask_test_all))
+        aic = float(compute_aic(jnp.array(total_oos_ll), n_params))
+        bic = float(compute_bic(jnp.array(total_oos_ll), n_params, total_obs))
 
         step_frames.append(pl.DataFrame({
             "date": test_dates,
@@ -415,23 +394,36 @@ def main():
             "niter": niter.tolist(),
             "is_converged": converged.tolist(),
         }))
-
-        pl.DataFrame({
-            "date": test_dates,
-            "predictions": y_hat.tolist(),
-        }).write_parquet(os.path.join(OUTPUT_DIR, f"predictions_{name}.parquet"))
-
-        total_oos_ll = float(jnp.sum(oos_ll))
-        mse = float(compute_mse(y_test_all, y_hat, mask_test_all))
-        mae = float(compute_mae(y_test_all, y_hat, mask_test_all))
-        aic = float(compute_aic(jnp.array(total_oos_ll), n_params))
-        bic = float(compute_bic(jnp.array(total_oos_ll), n_params, total_obs))
         agg_rows.append({
             "model": name, "mse": mse, "mae": mae,
             "total_oos_loglik": total_oos_ll,
             "aic": aic, "bic": bic,
             "n_params": n_params, "n_test_steps": n_test, "total_oos_obs": total_obs,
         })
+        jax.clear_caches()
+
+    print("Running models sequentially (one JIT per model)...")
+    run_and_save("ss",
+                 make_ss_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, 5000),
+                 _ss_cold_carry(y_jax, Z_jax, n_buckets))
+    run_and_save("adjSD",
+                 make_adjSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000),
+                 _adjSD_cold_carry(y_jax, Z_jax, n_buckets))
+    run_and_save("lmSD",
+                 make_lmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000),
+                 _lmSD_cold_carry(y_jax, Z_jax, n_buckets))
+    for K in FSD_K_VALUES:
+        run_and_save(f"fSD_K{K}",
+                     make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K),
+                     _fSD_cold_carry(y_jax, Z_jax, n_buckets))
+    for K in FFSD_K_VALUES:
+        run_and_save(f"ffSD_K{K}",
+                     make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K),
+                     _ffSD_cold_carry(y_jax, Z_jax, n_buckets))
+    for K in IFSD_K_VALUES:
+        run_and_save(f"ifSD_K{K}",
+                     make_ifSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, 5000, K),
+                     _ifSD_cold_carry(y_jax, Z_jax, n_buckets))
 
     pl.concat(step_frames).write_parquet(os.path.join(OUTPUT_DIR, "step_results.parquet"))
 
