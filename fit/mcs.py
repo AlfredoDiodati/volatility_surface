@@ -123,12 +123,19 @@ def mcs(
     best_p_so_far = 0.0
     final_pvalue = float("nan")
 
+    chunk_size = 200
     while len(active) >= 2:
         L = L_full[:, jnp.array(active)]
-        key, subkey = jax.random.split(key)
         T_emp, _ = _T_emp(L, stat=stat, L_hac=L_hac)
-        T_star = _T_star(L, stat=stat, L_hac=L_hac, B=B, block_length=block_length, key=subkey)
-        p_hat = float((T_star > T_emp).mean())
+        exceedances = 0
+        for b_start in range(0, B, chunk_size):
+            b_chunk = min(chunk_size, B - b_start)
+            key, subkey = jax.random.split(key)
+            T_star_chunk = _T_star(L, stat=stat, L_hac=L_hac, B=b_chunk,
+                                   block_length=block_length, key=subkey)
+            exceedances += int((T_star_chunk > T_emp).sum())
+            jax.effects_barrier()
+        p_hat = exceedances / B
         best_p_so_far = max(best_p_so_far, p_hat)
 
         if p_hat > alpha:

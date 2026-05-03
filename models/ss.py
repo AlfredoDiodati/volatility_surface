@@ -11,7 +11,7 @@ def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx):
     omega_col = params["omega"][bucket_indices]
     B = params["B"]
     Z = np.concatenate([base_cols, omega_col[:, None]], axis=-1)
-    T = B @ bt
+    T = B
     return Z, T, H, identity_mat, Q, 0.0, params["ct"]
 
 def _dynamics_collapsed(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx):
@@ -21,7 +21,7 @@ def _dynamics_collapsed(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx):
     ystar_t = jax.lax.dynamic_index_in_dim(params["ystar"], idx, axis=0, keepdims=False)
     B = params["B"]
     Z = identity_mat
-    T = B @ bt
+    T = B
     H = sigma2 * Gamma_t
     d = -ystar_t
     return Z, T, H, identity_mat, Q, d, params["ct"]
@@ -212,8 +212,16 @@ def forecast(fit_result, covariates, y_test, q_alpha):
         VaR_h = P_mean + q_alpha / n_h * np.sqrt(F_sum)
         y_m = np.where(mask_h, y_h, 0.0)
         v = (y_m - Z_h @ a_pred) * mask_h
-        F_vec = np.einsum("ip,pq,iq->i", Z_h, P_pred, Z_h) + sigma2
-        oos_ll = -0.5 * (n_h * np.log(2 * np.pi) + np.sum(mask_h * np.log(F_vec)) + np.sum(mask_h * v ** 2 / F_vec))
+        Z_masked = np.where(mask_h[:, None], Z_h, 0.0)
+        h_inv = 1.0 / sigma2
+        ZtZt = np.einsum("ip,iq->pq", Z_masked, Z_masked)
+        ZtV = Z_masked.T @ v
+        M = np.eye(a_pred.shape[0]) + h_inv * P_pred @ ZtZt
+        g = P_pred @ ZtV
+        _, log_det_correction = np.linalg.slogdet(M)
+        log_det_F = n_h * np.log(sigma2) + log_det_correction
+        quad = h_inv * np.sum(v ** 2) - h_inv ** 2 * ZtV @ np.linalg.solve(M, g)
+        oos_ll = -0.5 * (n_h * np.log(2 * np.pi) + log_det_F + quad)
         return (a_pred, P_pred), (y_hat, P_mean, VaR_h, oos_ll)
 
     _, (predictions, P_means, VaR, log_liks) = jax.lax.scan(_step, (a0, P0), (Z_all, y_test))
