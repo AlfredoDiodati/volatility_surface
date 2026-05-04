@@ -72,7 +72,10 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
         mahal_F = mahal_H - G_t @ S_inv_G
 
         weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))
-        s_t = weight * np.linalg.solve(V_t, G_t)
+        S_inv_V = np.linalg.solve(S, V_t)
+        g_tilde = G_t - V_t @ S_inv_G
+        V_tilde = V_t - V_t @ S_inv_V
+        s_t = weight * np.linalg.solve(V_tilde, g_tilde)
 
         score_buf_new = np.roll(score_buf, 1, axis=0).at[0].set(s_t)
         conv = A_diag * (weights * score_buf_new).sum(axis=0)

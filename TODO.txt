@@ -1,11 +1,10 @@
 
 NEEDS TO BE DONE TO COMPLETE THE THESIS
 
-	try MIDAS specifications
-
 	Forecast:	
-		- MAIN RESULTS AS PAPER: non-bucketed data, full bucketet data (also call options) 
-		- stress-test periods, (e.g. 2020 like paper, see others)
+		- MAIN RESULTS AS PAPER:
+			bucketed data
+			stress-test periods, (e.g. 2020 like paper, see others)
 
 	Moment scaling and other evidence on slices on full data and full bucketed data
 
@@ -25,22 +24,20 @@ NEEDS TO BE DONE TO COMPLETE THE THESIS
 ADDITIONAL STUFF (order of importance \ feasibility tradeoff)
 
 	- appendix where you make clear how many options you remove 
-
+		- AIC and BIC mcs
+		- computational requirement tests (eg likelihood vs cpu usage or something similar, see thesis on risk neutral seasonalities for tables to copy)
+	
 	- Comparison of models in 1) and 2) with
-			- Fractioannly integrated counterpart
-				- fractal in score, fractal in beta
-				- each component with its own d
 			- SNM counterpart: scalar for all
-
 		-> need to add explanation in latex
+
+	- scaling with gamma from integral
 
 	- derive stationarity and ergodicity using adv econ theorems
 
 	- compare models oos performance with
 		- calvet and fisher test statistics
 		- search multifractal proper scoring rule
-		- AIC and BIC mcs
-		- computational requirement tests (eg likelihood vs cpu usage or something similar, see thesis on risk neutral seasonalities for tables to copy)
 
 	- other datasets
 		- test on other option datasets (BITCOIN, VIX, individual stocks)
@@ -70,9 +67,6 @@ ADDITIONAL STUFF (order of importance \ feasibility tradeoff)
 		fractal intercept only
 		truncated fractals
 		factor SNM for each component
-
-	spatial model
-		kernel that gives prices at t-1 adjusted by distance + score driven scalar
 
 	(hard) nonparametric expansion using GMM score and gateaux derivative
 

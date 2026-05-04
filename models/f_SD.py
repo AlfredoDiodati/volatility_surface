@@ -36,7 +36,7 @@ def _solve_weights(eta, alpha, K):
         mask = i_range < k
 
         diff = k - i_range
-        terms = c_stack * np.power(alpha, -eta * diff) * np.exp(eta * (1.0 - np.power(alpha, -diff)))
+        terms = c_stack * np.power(alpha, -eta * (k - 1)) * np.exp(eta * (1.0 - np.power(alpha, diff)))
 
         c_next = 1.0 - np.sum(np.where(mask, terms, 0.0))
         return c_stack.at[k].set(c_next), None
@@ -52,7 +52,7 @@ def _solve_weights(eta, alpha, K):
 
     c_ordered = np.flip(c_final)
     w_tilde = c_ordered * np.power(alpha, -indices * eta)
-    w = w_tilde #/ np.sum(w_tilde)
+    w = w_tilde / np.sum(w_tilde)
 
     return w, lambdas
 

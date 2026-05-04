@@ -40,8 +40,8 @@ def _solve_weights_ff(eta, alpha, K):
             diff = k - i_range
             terms = (
                 c_stack
-                * np.power(alpha_k, -eta_k * diff)
-                * np.exp(eta_k * (1.0 - np.power(alpha_k, -diff)))
+                * np.power(alpha_k, -eta_k * (k - 1))
+                * np.exp(eta_k * (1.0 - np.power(alpha_k, diff)))
             )
             c_next = 1.0 - np.sum(np.where(mask, terms, 0.0))
             return c_stack.at[k].set(c_next), None
@@ -50,7 +50,7 @@ def _solve_weights_ff(eta, alpha, K):
         c_final, _ = lax.scan(_rec_step, c_init, np.arange(1, K + 1))
         c_ordered = np.flip(c_final)
         w_tilde = c_ordered * np.power(alpha_k, -indices * eta_k)
-        w_k = w_tilde # / np.sum(w_tilde)
+        w_k = w_tilde / np.sum(w_tilde)
         return w_k, lambdas_k
 
     ws, lambdas = jax.vmap(_single)(np.stack([eta, alpha], axis=-1))

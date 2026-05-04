@@ -55,7 +55,7 @@ def _T_emp(L: jnp.ndarray, stat: str, L_hac: int) -> tuple:
         return float(t_abs.max()), {"dbar": dbar, "var_mean": var_mean, "t_mm": t_mm}
     if stat == "TMAX":
         dbar_dot, var_mean_dot, t_mdot = _t_stats_dot(L, L_hac=L_hac)
-        return float(jnp.abs(t_mdot).max()), {"dbar_dot": dbar_dot, "var_mean_dot": var_mean_dot, "t_mdot": t_mdot}
+        return float(t_mdot.max()), {"dbar_dot": dbar_dot, "var_mean_dot": var_mean_dot, "t_mdot": t_mdot}
     raise ValueError("stat must be 'TR' or 'Tmax'")
 
 def _T_star(L: jnp.ndarray, stat: str, L_hac: int, B: int, block_length: int, key: jax.Array) -> jnp.ndarray:
@@ -87,15 +87,20 @@ def _T_star(L: jnp.ndarray, stat: str, L_hac: int, B: int, block_length: int, ke
             jnp.moveaxis(d_dot_star, 1, -1).reshape(B * M, T), L=L_hac
         ).reshape(B, M)
         t_mdot_star = (dbar_dot_star - dbar_dot[None]) / jnp.sqrt(var_mean_dot_star)
-        return jnp.abs(t_mdot_star).max(axis=1)
+        return t_mdot_star.max(axis=1)
 
     raise ValueError("stat must be 'TR' or 'Tmax'")
 
-def _elimination_rule(L: jnp.ndarray) -> int:
-    mean_loss = L.mean(axis=0)
-    M = mean_loss.shape[0]
-    mean_others = (M * mean_loss.mean() - mean_loss) / (M - 1.0)
-    return int(jnp.argmax(mean_loss - mean_others))
+def _elimination_rule(L: jnp.ndarray, stat: str, L_hac: int) -> int:
+    stat = stat.upper()
+    if stat == "TMAX":
+        _, _, t_mdot = _t_stats_dot(L, L_hac=L_hac)
+        return int(jnp.argmax(t_mdot))
+    if stat == "TR":
+        _, _, t_mm = _t_stats_pairwise(_pairwise_diffs(L), L_hac=L_hac)
+        t_mm = jnp.where(jnp.isnan(t_mm), -jnp.inf, t_mm)
+        return int(jnp.argmax(t_mm.max(axis=1)))
+    raise ValueError("stat must be 'TR' or 'Tmax'")
 
 def mcs(
     losses: pl.DataFrame | jnp.ndarray,
@@ -142,7 +147,7 @@ def mcs(
             final_pvalue = p_hat
             break
 
-        worst_local = _elimination_rule(L)
+        worst_local = _elimination_rule(L, stat=stat, L_hac=L_hac)
         worst_global = active[worst_local]
         pvals[worst_global] = best_p_so_far
         elimination_order.append(worst_global)
