@@ -212,6 +212,73 @@ def fit(
     }
 
 
+def simulate(params, Z_fixed, horizon, key, beta_0=None, score_buf_size=None, score_buf_0=None):
+    B = params["B"]
+    A = params["A"]
+    d = params["d"]
+    sigma2 = params["sigma2"]
+    omega = params["omega"]
+    C = params["C"]
+    nu = params["nu"]
+    beta_bar = params["beta_bar"]
+    p = beta_bar.shape[0]
+
+    Z_fixed = np.asarray(Z_fixed, dtype=float)
+    base_fixed = Z_fixed[:, :-1]
+    bidx_fixed = Z_fixed[:, -1].astype(np.int32)
+    omega_col = omega[bidx_fixed]
+    M = np.concatenate([base_fixed, omega_col[:, None]], axis=-1)
+    N = M.shape[0]
+
+    if score_buf_size is None: score_buf_size = horizon
+    if beta_0 is None: beta_0 = beta_bar
+    if score_buf_0 is None: score_buf_0 = np.zeros((score_buf_size, p))
+
+    h_inv = 1.0 / sigma2
+    C_inv = 1.0 / C
+    V = h_inv * (M.T @ M)
+    S_base = np.diag(C_inv) + V
+    S_inv_V = np.linalg.solve(S_base, V)
+    V_tilde = V - V @ S_inv_V
+
+    A_diag = np.diag(A)
+    weights = _compute_weights(d, score_buf_size)
+    sqrt_C = np.sqrt(C)
+    sqrt_sigma = np.sqrt(sigma2)
+
+    key, k1, k2, k3 = jax.random.split(key, 4)
+    g_samp = jax.random.chisquare(k1, nu, shape=(horizon,))
+    w_samp = jax.random.normal(k2, shape=(horizon, p))
+    z_samp = jax.random.normal(k3, shape=(horizon, N))
+
+    def step(carry, inputs):
+        beta_t, score_buf = carry
+        g, w, z = inputs
+
+        scale = np.sqrt((nu - 2.0) / g)
+        eps_t = scale * (M @ (sqrt_C * w) + sqrt_sigma * z)
+        y_t = M @ beta_t + eps_t
+
+        G_t = h_inv * (M.T @ eps_t)
+        S_inv_G = np.linalg.solve(S_base, G_t)
+        mahal_H = h_inv * np.sum(eps_t ** 2)
+        mahal_F = mahal_H - G_t @ S_inv_G
+        wt = (1.0 + (N + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))
+        g_tilde = G_t - V @ S_inv_G
+        s_t = wt * np.linalg.solve(V_tilde, g_tilde)
+
+        score_buf_new = np.roll(score_buf, 1, axis=0).at[0].set(s_t)
+        conv = A_diag * (weights * score_buf_new).sum(axis=0)
+        beta_next = beta_bar + B @ (beta_t - beta_bar) + conv
+
+        return (beta_next, score_buf_new), (y_t, beta_t)
+
+    _, (y_sim, beta_sim) = lax.scan(
+        step, (beta_0, score_buf_0), (g_samp, w_samp, z_samp)
+    )
+    return y_sim, beta_sim
+
+
 def forecast(fit_result, covariates, y_test, alpha):
     p = fit_result["beta_bar"].shape[0]
     H = covariates.shape[0]
