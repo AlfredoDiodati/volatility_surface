@@ -1,5 +1,6 @@
 import json
 import os
+os.environ["JAX_PLATFORMS"] = "cpu"
 import numpy as np
 import jax.numpy as jnp
 import polars as pl
