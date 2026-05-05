@@ -3,7 +3,6 @@ NEEDS TO BE DONE TO COMPLETE THE THESIS
 
 	Forecast:	
 		- MAIN RESULTS AS PAPER:
-			bucketed data
 			stress-test periods, (e.g. 2020 like paper, see others)
 			- AIC and BIC mcs
 			- computational requirement tests (eg likelihood vs cpu usage or something similar, see thesis on risk neutral seasonalities for tables to copy)
