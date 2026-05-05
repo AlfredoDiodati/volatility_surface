@@ -8,7 +8,7 @@ from scipy.special import xlogy
 from fit.mcs import mcs
 
 PERF_DIR = "out/SPX/otm/bucket_performance"
-OUTPUT_DIR = "out/SPX/otm/mcs"
+OUTPUT_DIR = "out/SPX/otm/bucket_mcs"
 PARQUET_PATH = "data/SPX/otm/bucket.parquet"
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = 3
@@ -133,6 +133,7 @@ CRIT_LABELS = {
 MODEL_LABELS = {
     "ss": "SS",
     "adjSD": "adjSD",
+    "lmSD": "lmSD",
     "fSD_K3": r"fSD ($K{=}3$)",
     "fSD_K10": r"fSD ($K{=}10$)",
     "fSD_K25": r"fSD ($K{=}25$)",
@@ -145,6 +146,8 @@ MODEL_LABELS = {
     "ffSD_K50": r"ffSD ($K{=}50$)",
     "ffSD_K100": r"ffSD ($K{=}100$)",
     "ffSD_K300": r"ffSD ($K{=}300$)",
+    "ifSD_K3": r"ifSD ($K{=}3$)",
+    "ifSD_K100": r"ifSD ($K{=}100$)",
 }
 
 
