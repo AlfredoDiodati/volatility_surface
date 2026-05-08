@@ -81,7 +81,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         b_t, beta_tilde_t = state
         y_t, base_t, bidx_t, mask_t = inputs
 
-        sigma_t = sigma_0 + np.sum(b_t)
+        sigma_t = sigma_0 + weights @ b_t
         beta_full_t = np.concatenate([beta_tilde_t, np.array([sigma_t])])
 
         omega_col = omega_load[bidx_t]
@@ -119,10 +119,10 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         scaling_matrix = (eigvecs * (eigvals ** (-score_power))) @ eigvecs.T
         scaled_score = scaling_matrix @ nabla_t
 
-        xi_sigma = scaled_score[-1]
+        xi_sigma_unscaled = nabla_t[-1]
         xi_tilde = A @ scaled_score[:-1]
 
-        b_next = b_t + np.expm1(-lambdas) * b_t + weights * xi_sigma
+        b_next = np.exp(-lambdas) * b_t + weights * xi_sigma_unscaled
         beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
 
         return (b_next, beta_tilde_next), (ll_t, beta_full_t)

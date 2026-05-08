@@ -57,8 +57,7 @@ def _solve_weights_ff(eta, alpha, K):
     return ws.T, lambdas.T
 
 
-def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0):
-    A = params["A"]
+def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0):
     sigma2 = params["sigma2"]
     omega_load = params["omega_load"]
     eta = params["eta"]
@@ -93,8 +92,6 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         log_det_Sigma = N_t * np.log(sigma2) + 2.0 * np.sum(np.log(np.diag(L_Inner)))
 
         V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
-        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
-        fisher_t = (nu / (nu - 2.0)) * ((nu + N_t) / (nu + N_t + 2.0)) * ZtSigmaInvZ
 
         ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
         woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
@@ -112,13 +109,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         score_weight = (nu + N_t) / ((nu - 2.0) + mahal_Sigma)
         nabla_t = score_weight * ZtSigmaInv_eps
 
-        eigvals, eigvecs = np.linalg.eigh(fisher_t)
-        scaling_matrix = (eigvecs * (eigvals ** (-score_power))) @ eigvecs.T
-        scaled_score = scaling_matrix @ nabla_t
-
-        xi_t = A @ scaled_score
-
-        b_next = b_t + np.expm1(-lambdas) * b_t + xi_t[None, :]
+        b_next = b_t + np.expm1(-lambdas) * b_t + ws * nabla_t[None, :]
 
         return b_next, (ll_t, beta_t)
 
@@ -138,7 +129,6 @@ def fit(
     covariates: np.ndarray,
     initial_guess: dict,
     K: int,
-    score_power: float,
     opt_options: dict | None = None,
     maxiter: int = 5000,
 ):
@@ -163,9 +153,6 @@ def fit(
         idx = 0
         beta_bar = theta[idx:idx + p]
         idx += p
-        A_diag = theta[idx:idx + p]
-        idx += p
-        A = np.diag(A_diag)
         sigma2 = np.exp(theta[idx])
         idx += 1
         omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]])
@@ -180,7 +167,6 @@ def fit(
         nu = np.exp(theta[idx]) + 2.0
         return {
             "beta_bar": beta_bar,
-            "A": A,
             "sigma2": sigma2,
             "omega_load": omega_load,
             "eta": eta,
@@ -190,7 +176,6 @@ def fit(
         }
 
     def _invlink(params):
-        A_diag = np.diag(params["A"])
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
         unc_eta = np.log(params["eta"])
@@ -200,7 +185,6 @@ def fit(
         unc_nu = np.log(params["nu"] - 2.0)
         return np.concatenate([
             params["beta_bar"],
-            A_diag,
             np.array([unc_s2]),
             unc_omega_load,
             unc_eta,
@@ -211,7 +195,7 @@ def fit(
 
     def _criterion(theta):
         params = _link(theta)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, np.zeros((K + 1, p)))
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
         return -np.sum(lls)
 
     value_and_grad = jax.value_and_grad(_criterion)
@@ -245,18 +229,17 @@ def fit(
         _not_converged, _adam_step, state0
     )
     params_opt = _link(theta_opt)
-    betas, _, b_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, score_power, np.zeros((K + 1, p)))
+    betas, _, b_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, np.zeros((K + 1, p)))
     return params_opt | {
         "betas": betas,
         "b_T": b_T,
         "log_likelihood": -final_loss,
         "niter": niter,
         "is_converged": is_converged,
-        "score_power": score_power,
     }
 
 
-def forecast(fit_result, covariates, y_test, K, score_power, alpha):
+def forecast(fit_result, covariates, y_test, K, alpha):
     state0 = fit_result["b_T"]
 
     covariates = np.asarray(covariates, dtype=float)
@@ -268,7 +251,7 @@ def forecast(fit_result, covariates, y_test, K, score_power, alpha):
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
 
-    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, K, score_power, state0=state0)
+    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, K, state0=state0)
 
     omega_cols = fit_result["omega_load"][bucket_indices]
     Z = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
