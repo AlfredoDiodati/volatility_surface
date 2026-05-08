@@ -116,6 +116,22 @@ def cold_lmSD(y_train, Z_fixed):
         "nu":       jnp.array(10.0),
     }
 
+def warm_lmSD(y_train, Z_fixed, params_true):
+    """Warm start from the true DGP params; only beta_bar and sigma2 are data-driven."""
+    M = Z_fixed[:, :3]
+    beta3 = _ols(y_train, M)
+    resid = y_train - (M @ beta3)
+    return {
+        "beta_bar": jnp.append(beta3, 0.0),
+        "B":        params_true["B"],
+        "A":        params_true["A"],
+        "d":        params_true["d"],
+        "sigma2":   jnp.var(resid),
+        "omega":    params_true["omega"][:N_BUCKETS],
+        "C":        params_true["C"],
+        "nu":       params_true["nu"],
+    }
+
 def cold_adjSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta3 = _ols(y_train, M)
@@ -172,6 +188,9 @@ def _f_fit(data, cov, ig, K):
 _lmSD_fit = jax.jit(lambda data, cov, ig: lmSD_fit(
     data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
 
+_lmSD_oracle = jax.jit(lambda data, cov, ig: lmSD_fit(
+    data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=0))
+
 _adjSD_fit = jax.jit(lambda data, cov, ig: adjSD_fit(
     data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
 
@@ -210,9 +229,10 @@ def make_table(T, results):
                     f" & {mse:.3e} & {mae:.3e} & {ll:.1f} & {aic:.1f} & {bic:.1f} \\\\"
                 )
         for tag, label in [
-            ("lmSD",  r"\texttt{lmSD}"),
-            ("adjSD", r"\texttt{adj-SD}"),
-            ("SS",    r"\texttt{SS}"),
+            ("lmSD",        r"\texttt{lmSD}$^{\star}$"),
+            ("lmSD_oracle", r"\texttt{lmSD}$^{\dagger}$"),
+            ("adjSD",       r"\texttt{adj-SD}"),
+            ("SS",          r"\texttt{SS}"),
         ]:
             mse, mae, ll, aic, bic = results[(T, scale, tag, None)]
             s = f"${SCALE_TEX[scale]}$" if first_in_group else ""
@@ -226,7 +246,8 @@ def make_table(T, results):
         r"\end{tabular}",
         (
             rf"\caption{{One-step-ahead predictive performance on data simulated from the lmSD model,"
-            rf" $T={T}$ (first $T/2$ for training, second $T/2$ for evaluation).}}"
+            rf" $T={T}$ (first $T/2$ for training, second $T/2$ for evaluation)."
+            rf" $\star$: warm-started from true DGP parameters; $\dagger$: oracle (true params, no fitting).}}"
         ),
         rf"\label{{tab:sim_lmSD_T{T}}}",
         r"\end{table}",
@@ -274,13 +295,21 @@ def main():
                 mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
                 print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
 
-            ig_lmsd = cold_lmSD(y_train, Z_fixed)
+            ig_lmsd = warm_lmSD(y_train, Z_fixed, params_base)
             r_lmsd  = _lmSD_fit(y_train, Z_cube, ig_lmsd)
             preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
             jax.effects_barrier()
             results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD)
             mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
             print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+
+            ig_oracle = warm_lmSD(y_train, Z_fixed, params_base)
+            r_oracle  = _lmSD_oracle(y_train, Z_cube, ig_oracle)
+            preds_oracle, _, _, oos_ll_oracle = lmSD_forecast(r_oracle, Z_cube, y_test, ALPHA)
+            jax.effects_barrier()
+            results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD)
+            mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
+            print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
 
             ig_adjsd = cold_adjSD(y_train, Z_fixed)
             r_adjsd  = _adjSD_fit(y_train, Z_cube, ig_adjsd)

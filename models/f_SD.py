@@ -75,7 +75,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
     IminusB = np.eye(p_tilde) - B
     L_C = np.linalg.cholesky(C)
 
-    w_tilde_norm, lambdas = _solve_weights(eta, alpha, K)
+    weights, lambdas = _solve_weights(eta, alpha, K)
 
     def _step(state, inputs):
         b_t, beta_tilde_t = state
@@ -107,11 +107,9 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
 
         ll_t = (
-            gammaln((nu + N_t) / 2.0)
-            - gammaln(nu / 2.0)
-            - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
-            - 0.5 * log_det_Sigma
-            - 0.5 * (nu + N_t) * np.log(1.0 + mahal_Sigma / (nu - 2.0))
+            gammaln((nu + N_t) / 2.0) - gammaln(nu / 2.0)
+            - 0.5 * (N_t * np.log((nu - 2.0) * np.pi) + log_det_Sigma
+            + (nu + N_t) * np.log(1.0 + mahal_Sigma / (nu - 2.0)))
         )
 
         score_weight = (nu + N_t) / ((nu - 2.0) + mahal_Sigma)
@@ -124,7 +122,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
         xi_sigma = scaled_score[-1]
         xi_tilde = A @ scaled_score[:-1]
 
-        b_next = b_t + np.expm1(-lambdas) * b_t + w_tilde_norm * xi_sigma
+        b_next = b_t + np.expm1(-lambdas) * b_t + weights * xi_sigma
         beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
 
         return (b_next, beta_tilde_next), (ll_t, beta_full_t)
