@@ -6,6 +6,7 @@ from scipy.stats import chi2
 from scipy.special import xlogy
 
 from fit.mcs import mcs
+from fit._forecast_metrics import per_step_mse, per_step_mae, compute_aic, compute_bic
 
 PERF_DIR = "out/SPX/otm/full_performance"
 OUTPUT_DIR = "out/SPX/otm/full_mcs"
@@ -26,10 +27,6 @@ CANONICAL_ALPHA = 0.10
 CANONICAL_BLOCK = 10
 MAJORITY = 3
 
-MODEL_ORDER = [
-    "ss", "adjSD", "lmSD", "fSD_K3", "fSD_K10",
-    "ffSD_K3", "ffSD_K10", "ifSD_K3", "ifSD_K100",
-]
 
 
 def load_y_test(parquet_path, train_size):
@@ -55,13 +52,6 @@ def load_y_test(parquet_path, train_size):
     y_cube = jnp.full((T, max_n), jnp.nan).at[t_idx, n_idx].set(y_vals)
     return y_cube[train_size:], dates[train_size:]
 
-
-def per_step_mse(y_actual, y_hat, mask):
-    return (jnp.where(mask, (y_actual - y_hat) ** 2, 0.0).sum(axis=1) / mask.sum(axis=1)).tolist()
-
-
-def per_step_mae(y_actual, y_hat, mask):
-    return (jnp.where(mask, jnp.abs(y_actual - y_hat), 0.0).sum(axis=1) / mask.sum(axis=1)).tolist()
 
 
 def kupiec_test(hits, alpha):
@@ -210,23 +200,29 @@ def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alph
 
 def main():
     print("Loading full_performance results...")
-    df_step = pl.read_parquet(os.path.join(PERF_DIR, "step_results.parquet"))
-    df_agg = pl.read_csv(os.path.join(PERF_DIR, "aggregate_metrics.csv"))
+    step_files = sorted(f for f in os.listdir(PERF_DIR)
+                        if f.startswith("step_results") and f.endswith(".parquet"))
+    df_step = pl.concat([pl.read_parquet(os.path.join(PERF_DIR, f)) for f in step_files])
 
-    available = set(df_step["model"].unique().to_list())
-    model_names = [m for m in MODEL_ORDER if m in available]
+    pred_names = {f[len("predictions_"):-len(".parquet")]
+                  for f in os.listdir(PERF_DIR)
+                  if f.startswith("predictions_") and f.endswith(".parquet")}
+    available = set(df_step["model"].unique().to_list()) & pred_names
+    model_names = sorted(available)
     n_test = df_step.filter(pl.col("model") == model_names[0]).height
 
     print("Loading actuals...")
     y_test_all, test_dates = load_y_test(PARQUET_PATH, TRAIN_SIZE)
     y_test_all = y_test_all[:n_test]
     mask_all = ~jnp.isnan(y_test_all)
+    total_obs = int(jnp.sum(mask_all))
 
     realized_P = jnp.nanmean(y_test_all, axis=1)
 
     print("Building per-step loss series...")
     mse_data, mae_data, negll_data, tick_data = {}, {}, {}, {}
     var_forecasts = {}
+    agg_rows = []
 
     for name in model_names:
         df_m = df_step.filter(pl.col("model") == name).sort("date")
@@ -240,6 +236,19 @@ def main():
         var_fc = jnp.array(df_m["VaR"].to_list())[:n_test]
         var_forecasts[name] = var_fc
         tick_data[name] = tick_loss_series(realized_P, var_fc, VAR_LEVEL)
+
+        total_oos_ll = float(jnp.sum(jnp.array(df_m["oos_loglik"].to_list())[:n_test]))
+        n_params = int(df_m["n_params"][0])
+        agg_rows.append({
+            "model": name,
+            "mse": float(jnp.mean(jnp.array(mse_data[name]))),
+            "mae": float(jnp.mean(jnp.array(mae_data[name]))),
+            "total_oos_loglik": total_oos_ll,
+            "aic": float(compute_aic(jnp.array(total_oos_ll), n_params)),
+            "bic": float(compute_bic(jnp.array(total_oos_ll), n_params, total_obs)),
+        })
+
+    df_agg = pl.DataFrame(agg_rows)
 
     criteria = {
         "mse": pl.DataFrame(mse_data),

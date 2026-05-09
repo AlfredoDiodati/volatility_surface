@@ -1,5 +1,15 @@
 import jax.numpy as jnp
 
+def per_step_mse(log_iv: jnp.ndarray, log_iv_forecast: jnp.ndarray, mask: jnp.ndarray) -> list:
+    per_t = jnp.where(mask, (log_iv - log_iv_forecast) ** 2, 0.0).sum(axis=1) / mask.sum(axis=1)
+    return per_t.tolist()
+
+
+def per_step_mae(log_iv: jnp.ndarray, log_iv_forecast: jnp.ndarray, mask: jnp.ndarray) -> list:
+    per_t = jnp.where(mask, jnp.abs(log_iv - log_iv_forecast), 0.0).sum(axis=1) / mask.sum(axis=1)
+    return per_t.tolist()
+
+
 def compute_mse(log_iv: jnp.ndarray, log_iv_forecast: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
     """
     log_iv:          (T_star, N_max) observed log implied volatilities
