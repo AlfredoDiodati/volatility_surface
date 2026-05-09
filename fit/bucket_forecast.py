@@ -341,6 +341,10 @@ def main():
     def run_and_save(name, step_fn, carry0, b_is_type=None):
         if selected is not None and name not in selected:
             return
+        out_path = os.path.join(OUTPUT_DIR, f"predictions_{name}{suffix}.parquet")
+        if os.path.exists(out_path):
+            print(f"  {name}: output exists, skipping.", flush=True)
+            return
         print(f"  {name}...", flush=True)
         _, out = jax.jit(lambda c, x: lax.scan(step_fn, c, x))(carry0, indices)
         jax.effects_barrier()

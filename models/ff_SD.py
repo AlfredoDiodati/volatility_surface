@@ -92,6 +92,8 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
         log_det_Sigma = N_t * np.log(sigma2) + 2.0 * np.sum(np.log(np.diag(L_Inner)))
 
         V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
+        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
+        fisher_t = (nu / (nu - 2.0)) * ((nu + N_t) / (nu + N_t + 2.0)) * ZtSigmaInvZ
 
         ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
         woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
@@ -109,7 +111,10 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
         score_weight = (nu + N_t) / ((nu - 2.0) + mahal_Sigma)
         nabla_t = score_weight * ZtSigmaInv_eps
 
-        b_next = b_t + np.expm1(-lambdas) * b_t + ws * nabla_t[None, :]
+        eigvals, eigvecs = np.linalg.eigh(fisher_t)
+        scaled_score = (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
+
+        b_next = b_t + np.expm1(-lambdas) * b_t + ws * scaled_score[None, :]
 
         return b_next, (ll_t, beta_t)
 
