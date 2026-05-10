@@ -9,6 +9,7 @@ from fit.mcs import mcs
 from fit._forecast_metrics import per_step_mse, per_step_mae, compute_aic, compute_bic
 
 PERF_DIR = "out/SPX/otm/full_performance"
+STEP_CACHE_DIR = "out/SPX/otm/full_performance/step_cache"
 OUTPUT_DIR = "out/SPX/otm/full_mcs"
 PARQUET_PATH = "data/SPX/otm/full.parquet"
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
@@ -111,25 +112,16 @@ CRIT_LABELS = {
     "tick_loss": "Tick Loss",
 }
 
-MODEL_LABELS = {
-    "ss": "SS",
-    "adjSD": "adjSD",
-    "lmSD": "lmSD",
-    "fSD_K3": r"fSD ($K{=}3$)",
-    "fSD_K10": r"fSD ($K{=}10$)",
-    "fSD_K25": r"fSD ($K{=}25$)",
-    "fSD_K50": r"fSD ($K{=}50$)",
-    "fSD_K100": r"fSD ($K{=}100$)",
-    "fSD_K300": r"fSD ($K{=}300$)",
-    "ffSD_K3": r"ffSD ($K{=}3$)",
-    "ffSD_K10": r"ffSD ($K{=}10$)",
-    "ffSD_K25": r"ffSD ($K{=}25$)",
-    "ffSD_K50": r"ffSD ($K{=}50$)",
-    "ffSD_K100": r"ffSD ($K{=}100$)",
-    "ffSD_K300": r"ffSD ($K{=}300$)",
-    "ifSD_K3": r"ifSD ($K{=}3$)",
-    "ifSD_K100": r"ifSD ($K{=}100$)",
-}
+_STATIC_LABELS = {"ss": "SS", "adjSD": "adjSD", "lmSD": "lmSD"}
+
+def _model_label(name: str) -> str:
+    if name in _STATIC_LABELS:
+        return _STATIC_LABELS[name]
+    for family in ("ffSD", "fSD", "ifSD"):
+        if name.startswith(family + "_K"):
+            k = name[len(family) + 2:]
+            return rf"{family} ($K{{=}}{k}$)"
+    return name
 
 
 def _stars(in_mcs_at_alpha: dict) -> str:
@@ -152,7 +144,7 @@ def _make_var_latex_table(model_names, df_var) -> str:
     ]
     for name in model_names:
         r = rows_by_name[name]
-        label = MODEL_LABELS.get(name, name)
+        label = _model_label(name)
         lines.append(
             f"{label} & {r['hit_rate']:.4f} & {r['n_hits']} & "
             f"{r['pval_uc']:.4f} & {r['pval_ind']:.4f} & {r['pval_cc']:.4f}" + r" \\"
@@ -180,7 +172,7 @@ def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alph
         r"\midrule",
     ]
     for name in model_names:
-        cells = [MODEL_LABELS.get(name, name)]
+        cells = [_model_label(name)]
         for crit in crits:
             val = metric_means[crit][name]
             s = _stars(in_mcs_by_name_crit_alpha[name][crit])
@@ -200,15 +192,26 @@ def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alph
 
 def main():
     print("Loading full_performance results...")
+    os.makedirs(STEP_CACHE_DIR, exist_ok=True)
+
+    # Ingest any new step data into per-model cache (never overwrites existing entries)
     step_files = sorted(f for f in os.listdir(PERF_DIR)
                         if f.startswith("step_results") and f.endswith(".parquet"))
-    df_step = pl.concat([pl.read_parquet(os.path.join(PERF_DIR, f)) for f in step_files])
+    for sf in step_files:
+        df_new = pl.read_parquet(os.path.join(PERF_DIR, sf))
+        for name in df_new["model"].unique().to_list():
+            cache_path = os.path.join(STEP_CACHE_DIR, f"{name}.parquet")
+            if not os.path.exists(cache_path):
+                df_new.filter(pl.col("model") == name).write_parquet(cache_path)
+
+    cache_files = sorted(f for f in os.listdir(STEP_CACHE_DIR) if f.endswith(".parquet"))
+    df_step = pl.concat([pl.read_parquet(os.path.join(STEP_CACHE_DIR, f)) for f in cache_files])
 
     pred_names = {f[len("predictions_"):-len(".parquet")]
                   for f in os.listdir(PERF_DIR)
                   if f.startswith("predictions_") and f.endswith(".parquet")}
     available = set(df_step["model"].unique().to_list()) & pred_names
-    model_names = sorted(available)
+    model_names = sorted(m for m in available if not m.startswith("ifSD"))
     n_test = df_step.filter(pl.col("model") == model_names[0]).height
 
     print("Loading actuals...")

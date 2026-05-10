@@ -429,12 +429,25 @@ def main():
         print("No models ran (check --models argument).")
         return
 
-    pl.concat(step_frames).write_parquet(os.path.join(OUTPUT_DIR, f"step_results{suffix}.parquet"))
+    new_step = pl.concat(step_frames)
+    step_path = os.path.join(OUTPUT_DIR, f"step_results{suffix}.parquet")
+    if os.path.exists(step_path):
+        existing = pl.read_parquet(step_path)
+        ran_models = new_step["model"].unique()
+        existing = existing.filter(~pl.col("model").is_in(ran_models))
+        new_step = pl.concat([existing, new_step])
+    new_step.write_parquet(step_path)
 
-    df_agg = pl.DataFrame(agg_rows)
-    df_agg.write_csv(os.path.join(OUTPUT_DIR, f"aggregate_metrics{suffix}.csv"))
+    new_agg = pl.DataFrame(agg_rows)
+    agg_path = os.path.join(OUTPUT_DIR, f"aggregate_metrics{suffix}.csv")
+    if os.path.exists(agg_path):
+        existing_agg = pl.read_csv(agg_path)
+        ran_models = new_agg["model"].unique()
+        existing_agg = existing_agg.filter(~pl.col("model").is_in(ran_models))
+        new_agg = pl.concat([existing_agg, new_agg])
+    new_agg.write_csv(agg_path)
     print("\nAggregate metrics:")
-    print(df_agg)
+    print(new_agg)
     print(f"\nSaved to {OUTPUT_DIR}")
 
 

@@ -9,6 +9,7 @@ from fit.mcs import mcs
 from fit._forecast_metrics import per_step_mse, per_step_mae, compute_aic, compute_bic
 
 PERF_DIR = "out/SPX/otm/bucket_performance"
+STEP_CACHE_DIR = "out/SPX/otm/bucket_performance/step_cache"
 OUTPUT_DIR = "out/SPX/otm/bucket_mcs"
 PARQUET_PATH = "data/SPX/otm/bucket.parquet"
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
@@ -209,9 +210,20 @@ def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alph
 
 def main():
     print("Loading bucket_performance results...")
+    os.makedirs(STEP_CACHE_DIR, exist_ok=True)
+
+    # Ingest any new step data into per-model cache (never overwrites existing entries)
     step_files = sorted(f for f in os.listdir(PERF_DIR)
                         if f.startswith("step_results") and f.endswith(".parquet"))
-    df_step = pl.concat([pl.read_parquet(os.path.join(PERF_DIR, f)) for f in step_files])
+    for sf in step_files:
+        df_new = pl.read_parquet(os.path.join(PERF_DIR, sf))
+        for name in df_new["model"].unique().to_list():
+            cache_path = os.path.join(STEP_CACHE_DIR, f"{name}.parquet")
+            if not os.path.exists(cache_path):
+                df_new.filter(pl.col("model") == name).write_parquet(cache_path)
+
+    cache_files = sorted(f for f in os.listdir(STEP_CACHE_DIR) if f.endswith(".parquet"))
+    df_step = pl.concat([pl.read_parquet(os.path.join(STEP_CACHE_DIR, f)) for f in cache_files])
 
     pred_names = {f[len("predictions_"):-len(".parquet")]
                   for f in os.listdir(PERF_DIR)
