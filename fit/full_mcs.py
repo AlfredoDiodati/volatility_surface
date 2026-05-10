@@ -6,7 +6,7 @@ from scipy.stats import chi2
 from scipy.special import xlogy
 
 from fit.mcs import mcs
-from fit._forecast_metrics import per_step_mse, per_step_mae, compute_aic, compute_bic
+from fit._forecast_metrics import per_step_mse, per_step_mae, compute_aic, compute_bic, per_step_aic, per_step_bic
 
 PERF_DIR = "out/SPX/otm/full_performance"
 STEP_CACHE_DIR = "out/SPX/otm/full_performance/step_cache"
@@ -27,8 +27,6 @@ MCS_SEED = 42
 CANONICAL_ALPHA = 0.10
 CANONICAL_BLOCK = 10
 MAJORITY = 3
-
-
 
 def load_y_test(parquet_path, train_size):
     raw = (
@@ -53,8 +51,6 @@ def load_y_test(parquet_path, train_size):
     y_cube = jnp.full((T, max_n), jnp.nan).at[t_idx, n_idx].set(y_vals)
     return y_cube[train_size:], dates[train_size:]
 
-
-
 def kupiec_test(hits, alpha):
     T = len(hits)
     T1 = int(hits.sum())
@@ -65,7 +61,6 @@ def kupiec_test(hits, alpha):
         - xlogy(T0, 1 - pi_hat) - xlogy(T1, pi_hat)
     )
     return {"hit_rate": pi_hat, "LR_uc": LR_uc, "pval_uc": float(1 - chi2.cdf(LR_uc, df=1))}
-
 
 def christoffersen_test(hits, alpha):
     H = jnp.asarray(hits, dtype=int)
@@ -104,12 +99,13 @@ def tick_loss_series(realized, var_forecast, alpha):
     e = realized - var_forecast
     return (e * (alpha - (e < 0).astype(float))).tolist()
 
-
 CRIT_LABELS = {
     "mse": "MSE",
     "mae": "MAE",
     "neg_oos_loglik": r"Neg.\ Log-Lik.",
     "tick_loss": "Tick Loss",
+    "aic": "AIC",
+    "bic": "BIC",
 }
 
 _STATIC_LABELS = {"ss": "SS", "adjSD": "adjSD", "lmSD": "lmSD"}
@@ -123,7 +119,6 @@ def _model_label(name: str) -> str:
             return rf"{family} ($K{{=}}{k}$)"
     return name
 
-
 def _stars(in_mcs_at_alpha: dict) -> str:
     if in_mcs_at_alpha[0.25]:
         return r"$^{***}$"
@@ -132,7 +127,6 @@ def _stars(in_mcs_at_alpha: dict) -> str:
     if in_mcs_at_alpha[0.05]:
         return r"$^{*}$"
     return ""
-
 
 def _make_var_latex_table(model_names, df_var) -> str:
     rows_by_name = {r["model"]: r for r in df_var.iter_rows(named=True)}
@@ -158,7 +152,6 @@ def _make_var_latex_table(model_names, df_var) -> str:
         r"\end{tabular}",
     ]
     return "\n".join(lines)
-
 
 def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alpha, block) -> str:
     n_crits = len(crits)
@@ -188,7 +181,6 @@ def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alph
         r"\end{tabular}",
     ]
     return "\n".join(lines)
-
 
 def main():
     print("Loading full_performance results...")
@@ -223,7 +215,7 @@ def main():
     realized_P = jnp.nanmean(y_test_all, axis=1)
 
     print("Building per-step loss series...")
-    mse_data, mae_data, negll_data, tick_data = {}, {}, {}, {}
+    mse_data, mae_data, negll_data, tick_data, aic_data, bic_data = {}, {}, {}, {}, {}, {}
     var_forecasts = {}
     agg_rows = []
 
@@ -240,8 +232,11 @@ def main():
         var_forecasts[name] = var_fc
         tick_data[name] = tick_loss_series(realized_P, var_fc, VAR_LEVEL)
 
-        total_oos_ll = float(jnp.sum(jnp.array(df_m["oos_loglik"].to_list())[:n_test]))
         n_params = int(df_m["n_params"][0])
+        aic_data[name] = per_step_aic(negll_data[name], n_params, n_test)
+        bic_data[name] = per_step_bic(negll_data[name], n_params, total_obs, n_test)
+
+        total_oos_ll = float(jnp.sum(jnp.array(df_m["oos_loglik"].to_list())[:n_test]))
         agg_rows.append({
             "model": name,
             "mse": float(jnp.mean(jnp.array(mse_data[name]))),
@@ -258,6 +253,8 @@ def main():
         "mae": pl.DataFrame(mae_data),
         "neg_oos_loglik": pl.DataFrame(negll_data),
         "tick_loss": pl.DataFrame(tick_data),
+        "aic": pl.DataFrame(aic_data),
+        "bic": pl.DataFrame(bic_data),
     }
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
