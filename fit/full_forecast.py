@@ -166,16 +166,16 @@ def make_ffSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
         y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
         Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
 
-        ig = {"beta_bar": carry[0], "sigma2": carry[1],
-              "omega_load": carry[2], "eta": carry[3], "alpha": carry[4],
-              "C": carry[5], "nu": carry[6]}
+        ig = {"beta_bar": carry[0], "A": carry[1], "sigma2": carry[2],
+              "omega_load": carry[3], "eta": carry[4], "alpha": carry[5],
+              "C": carry[6], "nu": carry[7]}
         r = ffSD_fit(y_win, Z_win, ig, K=K,
                      opt_options={"learning_rate": 1e-3, "tol": 1e-4},
                      maxiter=maxiter)
 
         preds, P_mean, VaR, oos_ll = ffSD_forecast(r, Z_test, y_test, K, alpha)
 
-        new_carry = (r["beta_bar"], r["sigma2"], r["omega_load"],
+        new_carry = (r["beta_bar"], r["A"], r["sigma2"], r["omega_load"],
                      r["eta"], r["alpha"], r["C"], r["nu"])
         return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"], r["b_T"])
 
@@ -245,7 +245,7 @@ def _fSD_cold_carry(y_jax, Z_jax, n_buckets):
     return (
         beta_ols,
         0.95 * jnp.eye(P_BASE),
-        0.05 * jnp.eye(P_BASE),
+        0.05 * jnp.eye(P_FULL),
         sig2,
         jnp.array(0.1),
         omega_load,
@@ -264,6 +264,7 @@ def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
     omega_load = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
         jnp.append(beta_ols, 0.0),
+        0.05 * jnp.eye(P_FULL),
         sig2,
         omega_load,
         jnp.full(P_FULL, 0.4),
@@ -319,7 +320,7 @@ def main():
     n_params_adjSD = 4 * P + n_buckets + 1
     n_params_lmSD  = 5 * P + n_buckets + 1
     n_params_fSD   = 3 * P_BASE + P_FULL + n_buckets + 4
-    n_params_ffSD  = 4 * P + n_buckets + 2
+    n_params_ffSD  = 4 * P + n_buckets + 1
     n_params_map = {"ss": n_params_ss, "adjSD": n_params_adjSD, "lmSD": n_params_lmSD}
     n_params_map.update({f"fSD_K{k}": n_params_fSD for k in FSD_K_VALUES})
     n_params_map.update({f"ffSD_K{k}": n_params_ffSD for k in FFSD_K_VALUES})

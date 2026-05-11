@@ -58,6 +58,7 @@ def _solve_weights_ff(eta, alpha, K):
 
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0):
+    A = params["A"]
     sigma2 = params["sigma2"]
     omega_load = params["omega_load"]
     eta = params["eta"]
@@ -112,7 +113,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
         nabla_t = score_weight * ZtSigmaInv_eps
 
         eigvals, eigvecs = np.linalg.eigh(fisher_t)
-        scaled_score = (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
+        scaled_score = A @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
 
         b_next = b_t + np.expm1(-lambdas) * b_t + ws * scaled_score[None, :]
 
@@ -158,6 +159,9 @@ def fit(
         idx = 0
         beta_bar = theta[idx:idx + p]
         idx += p
+        A_diag = theta[idx:idx + p]
+        idx += p
+        A = np.diag(A_diag)
         sigma2 = np.exp(theta[idx])
         idx += 1
         omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]])
@@ -172,6 +176,7 @@ def fit(
         nu = np.exp(theta[idx]) + 2.0
         return {
             "beta_bar": beta_bar,
+            "A": A,
             "sigma2": sigma2,
             "omega_load": omega_load,
             "eta": eta,
@@ -181,6 +186,7 @@ def fit(
         }
 
     def _invlink(params):
+        A_diag = np.diag(params["A"])
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
         unc_eta = np.log(params["eta"])
@@ -190,6 +196,7 @@ def fit(
         unc_nu = np.log(params["nu"] - 2.0)
         return np.concatenate([
             params["beta_bar"],
+            A_diag,
             np.array([unc_s2]),
             unc_omega_load,
             unc_eta,

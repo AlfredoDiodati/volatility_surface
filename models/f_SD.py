@@ -117,12 +117,12 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
 
         eigvals, eigvecs = np.linalg.eigh(fisher_t)
         scaling_matrix = (eigvecs * (eigvals ** (-score_power))) @ eigvecs.T
-        scaled_score = scaling_matrix @ nabla_t
+        scaled_score = A @ scaling_matrix @ nabla_t
 
-        xi_sigma_unscaled = nabla_t[-1]
-        xi_tilde = A @ scaled_score[:-1]
+        xi_sigma = scaled_score[-1]
+        xi_tilde = scaled_score[:-1]
 
-        b_next = np.exp(-lambdas) * b_t + weights * xi_sigma_unscaled
+        b_next = np.exp(-lambdas) * b_t + weights * xi_sigma
         beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
 
         return (b_next, beta_tilde_next), (ll_t, beta_full_t)
@@ -173,8 +173,8 @@ def fit(
         B_diag = np.tanh(theta[idx:idx + p_tilde])
         idx += p_tilde
         B = np.diag(B_diag)
-        A_diag = theta[idx:idx + p_tilde]
-        idx += p_tilde
+        A_diag = theta[idx:idx + p_full]
+        idx += p_full
         A = np.diag(A_diag)
         sigma2 = np.exp(theta[idx])
         idx += 1
