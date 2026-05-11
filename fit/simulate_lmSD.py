@@ -16,6 +16,7 @@ from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
 from models.ss    import fit_collapsed as ss_fit, forecast as ss_forecast
 from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast
 from models.f_SD  import fit as f_SD_fit,  forecast as f_SD_forecast
+from models.MSMSD import fit as msmsd_fit, forecast as msmsd_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 print(f"Running on: {jax.devices()}")
@@ -39,11 +40,12 @@ _P_FF = 4
 _P_TILDE = 3
 _P_FULL = 4
 
-NP_FF   = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
-NP_F    = _P_TILDE + _P_TILDE + _P_FULL + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
+NP_FF    = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
+NP_F     = _P_TILDE + _P_TILDE + _P_FULL + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
 NP_LMSD  = 5 * _P_FF + N_BUCKETS + 1   # beta_bar, B, A, d, C, sigma2, omega[1:], nu
 NP_ADJSD = 4 * _P_FF + N_BUCKETS + 1   # beta_bar, B, A, C, sigma2, omega[1:], nu
 NP_SS    = 3 * _P_FF + N_BUCKETS       # H, Q, B, omega[1:], bar_beta
+NP_MSMSD = 3 * _P_TILDE + _P_FULL + (N_BUCKETS - 1) + 6  # beta_bar, B, A, sigma2, sigma_0, omega[1:], C, nu, m0, gamma_K, b
 
 def load_params(path):
     with open(path) as f: raw = json.load(f)
@@ -132,6 +134,24 @@ def warm_lmSD(y_train, Z_fixed, params_true):
         "nu":       params_true["nu"],
     }
 
+def cold_msmSD(y_train, Z_fixed):
+    M = Z_fixed[:, :3]
+    beta_bar = _ols(y_train, M)
+    resid = y_train - (M @ beta_bar)
+    return {
+        "beta_bar":   beta_bar,
+        "B":          jnp.diag(jnp.full(_P_TILDE, 0.95)),
+        "A":          jnp.diag(jnp.full(_P_TILDE, 0.05)),
+        "sigma2":     jnp.var(resid),
+        "sigma_0":    jnp.array(0.1),
+        "omega_load": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
+        "C":          jnp.diag(jnp.full(_P_FULL, 1e-3)),
+        "nu":         jnp.array(10.0),
+        "m0":         jnp.array(1.5),
+        "gamma_K":    jnp.array(0.5),
+        "b":          jnp.array(2.0),
+    }
+
 def cold_adjSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta3 = _ols(y_train, M)
@@ -185,6 +205,11 @@ def _f_fit(data, cov, ig, K):
     return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                     opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
 
+@functools.partial(jax.jit, static_argnames=("K",))
+def _msmsd_fit(data, cov, ig, K):
+    return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
+                     opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
+
 _lmSD_fit = jax.jit(lambda data, cov, ig: lmSD_fit(
     data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
 
@@ -220,7 +245,11 @@ def make_table(T, results):
         if si > 0: lines.append(r"\midrule")
         first_in_group = True
         for K in K_VALUES:
-            for tag, label in [("ffSD", r"\texttt{ff-SD}"), ("fSD", r"\texttt{f-SD}")]:
+            for tag, label in [
+                ("ffSD",  r"\texttt{ff-SD}"),
+                ("fSD",   r"\texttt{f-SD}"),
+                ("msmSD", r"\texttt{msm-SD}"),
+            ]:
                 mse, mae, ll, aic, bic = results[(T, scale, tag, K)]
                 s = f"${SCALE_TEX[scale]}$" if first_in_group else ""
                 first_in_group = False
@@ -254,6 +283,28 @@ def make_table(T, results):
     ]
     return "\n".join(lines)
 
+RESULTS_PATH = os.path.join(OUTPUT_DIR, "results.json")
+
+def _results_key(T, scale, tag, K):
+    return json.dumps([T, scale, tag, K], sort_keys=True)
+
+def load_results():
+    if not os.path.exists(RESULTS_PATH):
+        return {}
+    with open(RESULTS_PATH) as f:
+        raw = json.load(f)
+    results = {}
+    for key_str, metrics in raw.items():
+        T, scale, tag, K = json.loads(key_str)
+        results[(T, scale, tag, K)] = tuple(metrics)
+    return results
+
+def save_results(results):
+    serializable = {_results_key(T, scale, tag, K): list(v)
+                    for (T, scale, tag, K), v in results.items()}
+    with open(RESULTS_PATH, "w") as f:
+        json.dump(serializable, f, indent=2)
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     params_base = load_params(PARAMS_PATH)
@@ -261,13 +312,27 @@ def main():
     sigma2_base = params_base["sigma2"]
 
     key = jax.random.PRNGKey(42)
-    results = {}
+    results = load_results()
 
     for T in HORIZONS:
         T_half = T // 2
         Z_cube = jnp.broadcast_to(Z_fixed[None], (T_half, Z_fixed.shape[0], Z_fixed.shape[1]))
 
         for scale in SIGMA2_SCALES:
+            # Determine which models still need fitting for this (T, scale) combo
+            needs_ff    = [K for K in K_VALUES if (T, scale, "ffSD",  K) not in results]
+            needs_f     = [K for K in K_VALUES if (T, scale, "fSD",   K) not in results]
+            needs_msmsd = [K for K in K_VALUES if (T, scale, "msmSD", K) not in results]
+            needs_lmsd    = (T, scale, "lmSD",        None) not in results
+            needs_oracle  = (T, scale, "lmSD_oracle", None) not in results
+            needs_adjsd   = (T, scale, "adjSD",       None) not in results
+            needs_ss      = (T, scale, "SS",           None) not in results
+
+            if not (needs_ff or needs_f or needs_msmsd or needs_lmsd or
+                    needs_oracle or needs_adjsd or needs_ss):
+                print(f"T={T:5d}  scale={scale:.1f}  all models cached, skipping simulation.", flush=True)
+                continue
+
             params = params_base | {"sigma2": sigma2_base * scale}
             key, subkey = jax.random.split(key)
             y_sim, _ = _sim_jit(params, Z_fixed, horizon=T, key=subkey, score_buf_size=T)
@@ -279,54 +344,92 @@ def main():
             print(f"T={T:5d}  scale={scale:.1f}  simulated, fitting...", flush=True)
 
             for K in K_VALUES:
-                ig_ff = cold_ffSD(y_train, Z_fixed)
-                r_ff  = _ff_fit(y_train, Z_cube, ig_ff, K)
-                preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, ALPHA)
+                if K in needs_ff:
+                    ig_ff = cold_ffSD(y_train, Z_fixed)
+                    r_ff  = _ff_fit(y_train, Z_cube, ig_ff, K)
+                    preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, ALPHA)
+                    jax.effects_barrier()
+                    results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF)
+                    mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
+                    print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                else:
+                    mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
+                    print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
+
+                if K in needs_f:
+                    ig_f = cold_fSD(y_train, Z_fixed)
+                    r_f  = _f_fit(y_train, Z_cube, ig_f, K)
+                    preds_f, _, _, oos_ll_f = f_SD_forecast(r_f, Z_cube, y_test, K, SCORE_POWER, ALPHA)
+                    jax.effects_barrier()
+                    results[(T, scale, "fSD", K)] = _metrics(y_test, preds_f, oos_ll_f, NP_F)
+                    mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
+                    print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                else:
+                    mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
+                    print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
+
+                if K in needs_msmsd:
+                    ig_msmsd = cold_msmSD(y_train, Z_fixed)
+                    r_msmsd  = _msmsd_fit(y_train, Z_cube, ig_msmsd, K)
+                    preds_msmsd, _, _, oos_ll_msmsd = msmsd_forecast(r_msmsd, Z_cube, y_test, K, SCORE_POWER, ALPHA)
+                    jax.effects_barrier()
+                    results[(T, scale, "msmSD", K)] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD)
+                    mse, mae, ll, *_ = results[(T, scale, "msmSD", K)]
+                    print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                else:
+                    mse, mae, ll, *_ = results[(T, scale, "msmSD", K)]
+                    print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
+
+            if needs_lmsd:
+                ig_lmsd = warm_lmSD(y_train, Z_fixed, params_base)
+                r_lmsd  = _lmSD_fit(y_train, Z_cube, ig_lmsd)
+                preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF)
-                mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
-                print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD)
+                mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
+                print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+            else:
+                mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
+                print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
-                ig_f = cold_fSD(y_train, Z_fixed)
-                r_f  = _f_fit(y_train, Z_cube, ig_f, K)
-                preds_f, _, _, oos_ll_f = f_SD_forecast(r_f, Z_cube, y_test, K, SCORE_POWER, ALPHA)
+            if needs_oracle:
+                ig_oracle = warm_lmSD(y_train, Z_fixed, params_base)
+                r_oracle  = _lmSD_oracle(y_train, Z_cube, ig_oracle)
+                preds_oracle, _, _, oos_ll_oracle = lmSD_forecast(r_oracle, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "fSD", K)] = _metrics(y_test, preds_f, oos_ll_f, NP_F)
-                mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
-                print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD)
+                mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
+                print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+            else:
+                mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
+                print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
-            ig_lmsd = warm_lmSD(y_train, Z_fixed, params_base)
-            r_lmsd  = _lmSD_fit(y_train, Z_cube, ig_lmsd)
-            preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
-            jax.effects_barrier()
-            results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD)
-            mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
-            print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+            if needs_adjsd:
+                ig_adjsd = cold_adjSD(y_train, Z_fixed)
+                r_adjsd  = _adjSD_fit(y_train, Z_cube, ig_adjsd)
+                preds_adjsd, _, _, oos_ll_adjsd = adjSD_forecast(r_adjsd, Z_cube, y_test, ALPHA)
+                jax.effects_barrier()
+                results[(T, scale, "adjSD", None)] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD)
+                mse, mae, ll, *_ = results[(T, scale, "adjSD", None)]
+                print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+            else:
+                mse, mae, ll, *_ = results[(T, scale, "adjSD", None)]
+                print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
-            ig_oracle = warm_lmSD(y_train, Z_fixed, params_base)
-            r_oracle  = _lmSD_oracle(y_train, Z_cube, ig_oracle)
-            preds_oracle, _, _, oos_ll_oracle = lmSD_forecast(r_oracle, Z_cube, y_test, ALPHA)
-            jax.effects_barrier()
-            results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD)
-            mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
-            print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+            if needs_ss:
+                ig_ss   = cold_ss(y_train, Z_fixed)
+                init_ss = cold_ss_init(y_train, Z_fixed)
+                r_ss    = _ss_fit(y_train, Z_cube, ig_ss, init_ss)
+                preds_ss, _, _, oos_ll_ss = ss_forecast(r_ss, Z_cube, y_test, ALPHA)
+                jax.effects_barrier()
+                results[(T, scale, "SS", None)] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS)
+                mse, mae, ll, *_ = results[(T, scale, "SS", None)]
+                print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+            else:
+                mse, mae, ll, *_ = results[(T, scale, "SS", None)]
+                print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
-            ig_adjsd = cold_adjSD(y_train, Z_fixed)
-            r_adjsd  = _adjSD_fit(y_train, Z_cube, ig_adjsd)
-            preds_adjsd, _, _, oos_ll_adjsd = adjSD_forecast(r_adjsd, Z_cube, y_test, ALPHA)
-            jax.effects_barrier()
-            results[(T, scale, "adjSD", None)] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD)
-            mse, mae, ll, *_ = results[(T, scale, "adjSD", None)]
-            print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
-
-            ig_ss   = cold_ss(y_train, Z_fixed)
-            init_ss = cold_ss_init(y_train, Z_fixed)
-            r_ss    = _ss_fit(y_train, Z_cube, ig_ss, init_ss)
-            preds_ss, _, _, oos_ll_ss = ss_forecast(r_ss, Z_cube, y_test, ALPHA)
-            jax.effects_barrier()
-            results[(T, scale, "SS", None)] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS)
-            mse, mae, ll, *_ = results[(T, scale, "SS", None)]
-            print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+            save_results(results)
 
     tex = "\n\n".join(make_table(T, results) for T in HORIZONS)
     out_path = os.path.join(OUTPUT_DIR, "tables.tex")
