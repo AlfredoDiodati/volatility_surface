@@ -25,13 +25,13 @@ OUTPUT_DIR  = "out/SPX/mc/simulate_lmSD"
 SCORE_POWER = 1.0
 ALPHA = 0.05
 MAXITER = 2000
-K_VALUES = [3, 10]
+K_VALUES = [1, 2, 3, 5, 10]
 N_BUCKETS = 4
 
 MONEYNESS = jnp.array([0.9, 0.98, 1.05, 1.15, 1.3, 1.5])
 MATURITY  = jnp.array([10, 50, 100, 180]) / 255.0
 
-HORIZONS = [400, 2000, 7000]
+HORIZONS = [400, 2000]
 SIGMA2_SCALES = [1.0, 10.0, 0.1]
 SCALE_TEX = {1.0: r"\sigma^2", 10.0: r"10\,\sigma^2", 0.1: r"\sigma^2/10"}
 
@@ -40,7 +40,7 @@ _P_TILDE = 3
 _P_FULL = 4
 
 NP_FF   = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
-NP_F    = _P_TILDE + _P_TILDE + _P_TILDE + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
+NP_F    = _P_TILDE + _P_TILDE + _P_FULL + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
 NP_LMSD  = 5 * _P_FF + N_BUCKETS + 1   # beta_bar, B, A, d, C, sigma2, omega[1:], nu
 NP_ADJSD = 4 * _P_FF + N_BUCKETS + 1   # beta_bar, B, A, C, sigma2, omega[1:], nu
 NP_SS    = 3 * _P_FF + N_BUCKETS       # H, Q, B, omega[1:], bar_beta
@@ -91,7 +91,7 @@ def cold_fSD(y_train, Z_fixed):
     return {
         "beta_bar":   beta_bar,
         "B":          jnp.diag(jnp.full(_P_TILDE, 0.95)),
-        "A":          jnp.diag(jnp.full(_P_TILDE, 0.1)),
+        "A":          jnp.diag(jnp.full(_P_FULL, 0.1)),
         "sigma2":     jnp.var(resid),
         "sigma_0":    jnp.array(0.0),
         "omega_load": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
@@ -177,7 +177,7 @@ _sim_jit = jax.jit(simulate, static_argnames=("horizon", "score_buf_size"))
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _ff_fit(data, cov, ig, K):
-    return ff_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
+    return ff_SD_fit(data, cov, ig, K=K,
                      opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
 
 @functools.partial(jax.jit, static_argnames=("K",))
@@ -281,7 +281,7 @@ def main():
             for K in K_VALUES:
                 ig_ff = cold_ffSD(y_train, Z_fixed)
                 r_ff  = _ff_fit(y_train, Z_cube, ig_ff, K)
-                preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, SCORE_POWER, ALPHA)
+                preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, ALPHA)
                 jax.effects_barrier()
                 results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF)
                 mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
