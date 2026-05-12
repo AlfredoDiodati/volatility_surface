@@ -265,7 +265,15 @@ def _metrics(y_test, preds, oos_ll, n_params):
     n_obs = int(y_test.size)
     aic = float(compute_aic(jnp.array(tot_ll), n_params))
     bic = float(compute_bic(jnp.array(tot_ll), n_params, n_obs))
-    return mse, mae, tot_ll, aic, bic
+    mse_seq = ((y_test - preds) ** 2).mean(axis=1).tolist()
+    mae_seq = jnp.abs(y_test - preds).mean(axis=1).tolist()
+    ll_arr = jnp.array(oos_ll)
+    ll_seq = (ll_arr.sum(axis=1) if ll_arr.ndim > 1 else ll_arr).tolist()
+    return mse, mae, tot_ll, aic, bic, mse_seq, mae_seq, ll_seq
+
+
+def _is_cached(results, key):
+    return key in results and len(results[key]) >= 8
 
 
 def make_table(T, results):
@@ -274,7 +282,7 @@ def make_table(T, results):
     all_mse, all_mae = [], []
     all_keys = (
         [(t, k) for t in ("ffSD", "fSD", "msmSD") for k in K_VALUES]
-        + [(t, None) for t in ("msmSD_warm", "msmSD_oracle", "lmSD", "adjSD", "SS")]
+        + [(t, None) for t in ("msmSD_warm", "lmSD", "adjSD", "SS")]
     )
     for scale in SIGMA2_SCALES:
         for tag, K in all_keys:
@@ -313,12 +321,43 @@ def make_table(T, results):
         else:
             return f"{v:.3f}"
 
+    def _bench_seqs(scale):
+        key = (T, scale, "lmSD", None)
+        if key not in results or len(results[key]) < 8:
+            return None, None, None
+        r = results[key]
+        return r[5], r[6], r[7]
+
+    def _dm_stars(seq_m, seq_b, higher_better=False):
+        if seq_m is None or seq_b is None:
+            return ""
+        n = min(len(seq_m), len(seq_b))
+        if n < 2:
+            return ""
+        if higher_better:
+            d = [seq_b[i] - seq_m[i] for i in range(n)]
+        else:
+            d = [seq_m[i] - seq_b[i] for i in range(n)]
+        mean_d = sum(d) / n
+        var_d = sum((x - mean_d) ** 2 for x in d) / (n - 1)
+        if var_d <= 0:
+            return ""
+        stat = abs(mean_d) / (var_d ** 0.5 / n ** 0.5)
+        if stat > 2.576:
+            return "***"
+        elif stat > 1.96:
+            return "**"
+        elif stat > 1.645:
+            return "*"
+        return ""
+
     def _get(scale, tag, K):
         key = (T, scale, tag, K)
         if key not in results:
             return None
-        mse, mae, ll, aic, _ = results[key]
-        return mse * mse_mult, mae * mae_mult, ll
+        r = results[key]
+        seqs = (r[5], r[6], r[7]) if len(r) >= 8 else (None, None, None)
+        return r[0] * mse_mult, r[1] * mae_mult, r[2], seqs
 
     N_MET = 3
 
@@ -351,15 +390,22 @@ def make_table(T, results):
     lines.append(rf"& & {metric_hdr} \\")
     lines.append(r"\midrule")
 
-    def _row(model_cell, K_cell, tag, K):
+    def _row(model_cell, K_cell, tag, K, is_bench=False):
         cells = [model_cell, K_cell]
         for scale in SIGMA2_SCALES:
-            row = _get(scale, tag, K)
-            if row is None:
+            got = _get(scale, tag, K)
+            if got is None:
                 cells += ["--", "--", "--"]
             else:
-                mse_v, mae_v, ll_v = row
-                cells += [_fmt(mse_v), _fmt(mae_v), f"{ll_v:.1f}"]
+                mse_v, mae_v, ll_v, seqs = got
+                if is_bench:
+                    s_mse, s_mae, s_ll = "", "", ""
+                else:
+                    b_mse, b_mae, b_ll = _bench_seqs(scale)
+                    s_mse = _dm_stars(seqs[0], b_mse)
+                    s_mae = _dm_stars(seqs[1], b_mae)
+                    s_ll = _dm_stars(seqs[2], b_ll, higher_better=True)
+                cells += [_fmt(mse_v) + s_mse, _fmt(mae_v) + s_mae, f"{ll_v:.1f}" + s_ll]
         return "    " + " & ".join(cells) + r" \\"
 
     K_groups = [("ff-SD", "ffSD"), ("f-SD", "fSD"), ("msm-SD", "msmSD")]
@@ -371,18 +417,17 @@ def make_table(T, results):
             model_cell = (
                 rf"\multirow{{{n}}}{{*}}{{{model_name}}}" if ri == 0 else ""
             )
-            lines.append(_row(model_cell, f"$K\\!={K}$", tag, K))
+            lines.append(_row(model_cell, str(K), tag, K))
 
     lines.append(r"\midrule")
     fixed = [
-        (r"msm-SD$^{\star}$", "msmSD_warm", None),
-        (r"msm-SD$^{\dagger}$", "msmSD_oracle", None),
-        ("lmSD", "lmSD", None),
-        ("adj-SD", "adjSD", None),
-        ("SS", "SS", None),
+        (r"msm-SD$^{\star}$", "msmSD_warm", None, False),
+        ("lmSD", "lmSD", None, True),
+        ("adj-SD", "adjSD", None, False),
+        ("SS", "SS", None, False),
     ]
-    for model_name, tag, K in fixed:
-        lines.append(_row(model_name, "", tag, K))
+    for model_name, tag, K, is_bench in fixed:
+        lines.append(_row(model_name, "", tag, K, is_bench=is_bench))
 
     lines += [
         r"\bottomrule",
@@ -391,8 +436,9 @@ def make_table(T, results):
             rf"\caption{{One-step-ahead predictive performance on data simulated"
             rf" from the msm-SD model ($K={K_DGP}$), $T={T}$"
             rf" (first $T/2$ for training, second $T/2$ for evaluation)."
-            rf" $\star$: warm-started from true DGP parameters;"
-            rf" $\dagger$: oracle (true DGP parameters, no fitting).}}"
+            rf" $\star$: warm-started from true DGP parameters."
+            rf" Stars denote significance of Diebold-Mariano test against lmSD:"
+            rf" $^{{*}}$10\%, $^{{**}}$5\%, $^{{***}}$1\%.}}"
         ),
         rf"\label{{tab:sim_msmSD_T{T}}}",
         r"\end{table}",
@@ -441,14 +487,14 @@ def main():
         Z_cube_full = jnp.broadcast_to(Z_fixed[None], (T, Z_fixed.shape[0], Z_fixed.shape[1]))
 
         for scale in SIGMA2_SCALES:
-            needs_ff = [K for K in K_VALUES if (T, scale, "ffSD", K) not in results]
-            needs_f = [K for K in K_VALUES if (T, scale, "fSD", K) not in results]
-            needs_msmsd = [K for K in K_VALUES if (T, scale, "msmSD", K) not in results]
-            needs_warm = (T, scale, "msmSD_warm", None) not in results
-            needs_oracle = (T, scale, "msmSD_oracle", None) not in results
-            needs_lmsd = (T, scale, "lmSD", None) not in results
-            needs_adjsd = (T, scale, "adjSD", None) not in results
-            needs_ss = (T, scale, "SS", None) not in results
+            needs_ff = [K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K))]
+            needs_f = [K for K in K_VALUES if not _is_cached(results, (T, scale, "fSD", K))]
+            needs_msmsd = [K for K in K_VALUES if not _is_cached(results, (T, scale, "msmSD", K))]
+            needs_warm = not _is_cached(results, (T, scale, "msmSD_warm", None))
+            needs_oracle = not _is_cached(results, (T, scale, "msmSD_oracle", None))
+            needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None))
+            needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None))
+            needs_ss = not _is_cached(results, (T, scale, "SS", None))
 
             if not (needs_ff or needs_f or needs_msmsd or needs_warm or
                     needs_oracle or needs_lmsd or needs_adjsd or needs_ss):
