@@ -248,13 +248,31 @@ def main():
 
     df_agg = pl.DataFrame(agg_rows)
 
+    def _has_nan(series: list) -> bool:
+        return bool(jnp.any(jnp.isnan(jnp.array(series, dtype=float))).item())
+
+    valid_model_names = [
+        name for name in model_names
+        if not any(_has_nan(s) for s in [
+            mse_data[name], mae_data[name], negll_data[name],
+            tick_data[name], aic_data[name], bic_data[name],
+        ])
+    ]
+    skipped_models = set(model_names) - set(valid_model_names)
+    if skipped_models:
+        print(f"  Skipping models with NaN loss series: {sorted(skipped_models)}")
+
+    all_loss_data = {
+        "mse": mse_data,
+        "mae": mae_data,
+        "neg_oos_loglik": negll_data,
+        "tick_loss": tick_data,
+        "aic": aic_data,
+        "bic": bic_data,
+    }
     criteria = {
-        "mse": pl.DataFrame(mse_data),
-        "mae": pl.DataFrame(mae_data),
-        "neg_oos_loglik": pl.DataFrame(negll_data),
-        "tick_loss": pl.DataFrame(tick_data),
-        "aic": pl.DataFrame(aic_data),
-        "bic": pl.DataFrame(bic_data),
+        crit: pl.DataFrame({n: all_loss_data[crit][n] for n in valid_model_names})
+        for crit in all_loss_data
     }
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -286,14 +304,14 @@ def main():
         return
 
     metric_means = {
-        crit: df_losses.mean().to_dicts()[0]
-        for crit, df_losses in criteria.items()
+        crit: pl.DataFrame({n: all_loss_data[crit][n] for n in model_names}).mean().to_dicts()[0]
+        for crit in all_loss_data
     }
 
     print(f"\nRunning MCS grid (alphas={MCS_ALPHAS}, blocks={MCS_BLOCKS}, B={MCS_B})...")
     all_rows = []
     in_mcs_grid = {
-        block: {name: {crit: {a: False for a in MCS_ALPHAS} for crit in criteria} for name in model_names}
+        block: {name: {crit: {a: False for a in MCS_ALPHAS} for crit in all_loss_data} for name in model_names}
         for block in MCS_BLOCKS
     }
 
@@ -305,8 +323,12 @@ def main():
                           key=jax.random.PRNGKey(MCS_SEED))
                 elim_set = res["elimination_order"]
                 for name in model_names:
-                    in_mcs = name in res["mcs_models"]
-                    pval = float(res["pvalues"][name])
+                    if name in skipped_models:
+                        in_mcs, pval, elim_step = False, float("nan"), None
+                    else:
+                        in_mcs = name in res["mcs_models"]
+                        pval = float(res["pvalues"][name])
+                        elim_step = elim_set.index(name) + 1 if name in elim_set else None
                     in_mcs_grid[block][name][crit][alpha] = in_mcs
                     all_rows.append({
                         "model": name,
@@ -315,7 +337,7 @@ def main():
                         "block": block,
                         "in_mcs": in_mcs,
                         "pvalue": pval,
-                        "elimination_step": elim_set.index(name) + 1 if name in elim_set else None,
+                        "elimination_step": elim_step,
                     })
 
     pl.DataFrame(all_rows).write_csv(os.path.join(OUTPUT_DIR, "mcs_grid.csv"))
@@ -323,7 +345,7 @@ def main():
     for crit, df_losses in criteria.items():
         df_losses.write_csv(os.path.join(OUTPUT_DIR, f"losses_{crit}.csv"))
 
-    crits = list(criteria.keys())
+    crits = list(all_loss_data.keys())
     all_tables = []
     for block in MCS_BLOCKS:
         table = _make_latex_table(
