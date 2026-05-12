@@ -10,19 +10,19 @@ import json
 import jax
 import jax.numpy as jnp
 
-from models.lmSD  import simulate
-from models.lmSD  import fit as lmSD_fit,  forecast as lmSD_forecast
+from models.lmSD import simulate
+from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
-from models.ss    import fit_collapsed as ss_fit, forecast as ss_forecast
+from models.ss import fit_collapsed as ss_fit, forecast as ss_forecast
 from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast
-from models.f_SD  import fit as f_SD_fit,  forecast as f_SD_forecast
+from models.f_SD import fit as f_SD_fit, forecast as f_SD_forecast
 from models.MSMSD import fit as msmsd_fit, forecast as msmsd_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 print(f"Running on: {jax.devices()}")
 
 PARAMS_PATH = "out/SPX/otm/params_lmSD.json"
-OUTPUT_DIR  = "out/SPX/mc/simulate_lmSD"
+OUTPUT_DIR = "out/SPX/mc/simulate_lmSD"
 SCORE_POWER = 1.0
 ALPHA = 0.05
 MAXITER = 2000
@@ -30,7 +30,7 @@ K_VALUES = [1, 2, 3, 5, 10]
 N_BUCKETS = 4
 
 MONEYNESS = jnp.array([0.9, 0.98, 1.05, 1.15, 1.3, 1.5])
-MATURITY  = jnp.array([10, 50, 100, 180]) / 255.0
+MATURITY = jnp.array([10, 50, 100, 180]) / 255.0
 
 HORIZONS = [400, 2000]
 SIGMA2_SCALES = [1.0, 10.0, 0.1]
@@ -40,15 +40,17 @@ _P_FF = 4
 _P_TILDE = 3
 _P_FULL = 4
 
-NP_FF    = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
-NP_F     = _P_TILDE + _P_TILDE + _P_FULL + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
-NP_LMSD  = 5 * _P_FF + N_BUCKETS + 1   # beta_bar, B, A, d, C, sigma2, omega[1:], nu
-NP_ADJSD = 4 * _P_FF + N_BUCKETS + 1   # beta_bar, B, A, C, sigma2, omega[1:], nu
-NP_SS    = 3 * _P_FF + N_BUCKETS       # H, Q, B, omega[1:], bar_beta
-NP_MSMSD = 3 * _P_TILDE + _P_FULL + (N_BUCKETS - 1) + 6  # beta_bar, B, A, sigma2, sigma_0, omega[1:], C, nu, m0, gamma_K, b
+NP_FF = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
+NP_F = _P_TILDE + _P_TILDE + _P_FULL + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
+NP_LMSD = 5 * _P_FF + N_BUCKETS + 1
+NP_ADJSD = 4 * _P_FF + N_BUCKETS + 1
+NP_SS = 3 * _P_FF + N_BUCKETS
+NP_MSMSD = 3 * _P_TILDE + _P_FULL + (N_BUCKETS - 1) + 6
+
 
 def load_params(path):
-    with open(path) as f: raw = json.load(f)
+    with open(path) as f:
+        raw = json.load(f)
     return {
         "beta_bar": jnp.array(raw["beta_bar"]),
         "B": jnp.array(raw["B"]),
@@ -60,16 +62,19 @@ def load_params(path):
         "nu": jnp.array(raw["nu"]),
     }
 
+
 def make_Z_fixed():
     mon_g, mat_g = jnp.meshgrid(MONEYNESS, MATURITY, indexing="ij")
     _, midx_g = jnp.meshgrid(jnp.arange(len(MONEYNESS)), jnp.arange(len(MATURITY)), indexing="ij")
     N = mon_g.size
     return jnp.stack([jnp.ones(N), mon_g.ravel(), mat_g.ravel(), midx_g.ravel().astype(float)], axis=1)
 
+
 def _ols(y_train, M):
     T, N = y_train.shape
     X = jnp.broadcast_to(M[None], (T, N, M.shape[1])).reshape(-1, M.shape[1])
     return jnp.linalg.lstsq(X, y_train.reshape(-1), rcond=None)[0]
+
 
 def cold_ffSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
@@ -86,22 +91,24 @@ def cold_ffSD(y_train, Z_fixed):
         "nu": jnp.array(10.0),
     }
 
+
 def cold_fSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta_bar = _ols(y_train, M)
     resid = y_train - (M @ beta_bar)
     return {
-        "beta_bar":   beta_bar,
-        "B":          jnp.diag(jnp.full(_P_TILDE, 0.95)),
-        "A":          jnp.diag(jnp.full(_P_FULL, 0.1)),
-        "sigma2":     jnp.var(resid),
-        "sigma_0":    jnp.array(0.0),
+        "beta_bar": beta_bar,
+        "B": jnp.diag(jnp.full(_P_TILDE, 0.95)),
+        "A": jnp.diag(jnp.full(_P_FULL, 0.1)),
+        "sigma2": jnp.var(resid),
+        "sigma_0": jnp.array(0.0),
         "omega_load": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
-        "eta":        jnp.array(0.06),
-        "alpha":      jnp.array(1.5),
-        "C":          jnp.diag(jnp.full(_P_FULL, 1e-3)),
-        "nu":         jnp.array(10.0),
+        "eta": jnp.array(0.06),
+        "alpha": jnp.array(1.5),
+        "C": jnp.diag(jnp.full(_P_FULL, 1e-3)),
+        "nu": jnp.array(10.0),
     }
+
 
 def cold_lmSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
@@ -109,14 +116,15 @@ def cold_lmSD(y_train, Z_fixed):
     resid = y_train - (M @ beta3)
     return {
         "beta_bar": jnp.append(beta3, 0.0),
-        "B":        jnp.diag(jnp.full(_P_FF, 0.95)),
-        "A":        jnp.diag(jnp.full(_P_FF, 0.05)),
-        "d":        jnp.full(_P_FF, 0.3),
-        "sigma2":   jnp.var(resid),
-        "omega":    jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
-        "C":        jnp.full(_P_FF, 1e-3),
-        "nu":       jnp.array(10.0),
+        "B": jnp.diag(jnp.full(_P_FF, 0.95)),
+        "A": jnp.diag(jnp.full(_P_FF, 0.05)),
+        "d": jnp.full(_P_FF, 0.3),
+        "sigma2": jnp.var(resid),
+        "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
+        "C": jnp.full(_P_FF, 1e-3),
+        "nu": jnp.array(10.0),
     }
+
 
 def warm_lmSD(y_train, Z_fixed, params_true):
     """Warm start from the true DGP params; only beta_bar and sigma2 are data-driven."""
@@ -125,32 +133,34 @@ def warm_lmSD(y_train, Z_fixed, params_true):
     resid = y_train - (M @ beta3)
     return {
         "beta_bar": jnp.append(beta3, 0.0),
-        "B":        params_true["B"],
-        "A":        params_true["A"],
-        "d":        params_true["d"],
-        "sigma2":   jnp.var(resid),
-        "omega":    params_true["omega"][:N_BUCKETS],
-        "C":        params_true["C"],
-        "nu":       params_true["nu"],
+        "B": params_true["B"],
+        "A": params_true["A"],
+        "d": params_true["d"],
+        "sigma2": jnp.var(resid),
+        "omega": params_true["omega"][:N_BUCKETS],
+        "C": params_true["C"],
+        "nu": params_true["nu"],
     }
+
 
 def cold_msmSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta_bar = _ols(y_train, M)
     resid = y_train - (M @ beta_bar)
     return {
-        "beta_bar":   beta_bar,
-        "B":          jnp.diag(jnp.full(_P_TILDE, 0.95)),
-        "A":          jnp.diag(jnp.full(_P_TILDE, 0.05)),
-        "sigma2":     jnp.var(resid),
-        "sigma_0":    jnp.array(0.1),
+        "beta_bar": beta_bar,
+        "B": jnp.diag(jnp.full(_P_TILDE, 0.95)),
+        "A": jnp.diag(jnp.full(_P_TILDE, 0.05)),
+        "sigma2": jnp.var(resid),
+        "sigma_0": jnp.array(0.1),
         "omega_load": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
-        "C":          jnp.diag(jnp.full(_P_FULL, 1e-3)),
-        "nu":         jnp.array(10.0),
-        "m0":         jnp.array(1.5),
-        "gamma_K":    jnp.array(0.5),
-        "b":          jnp.array(2.0),
+        "C": jnp.diag(jnp.full(_P_FULL, 1e-3)),
+        "nu": jnp.array(10.0),
+        "m0": jnp.array(1.5),
+        "gamma_K": jnp.array(0.5),
+        "b": jnp.array(2.0),
     }
+
 
 def cold_adjSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
@@ -158,57 +168,64 @@ def cold_adjSD(y_train, Z_fixed):
     resid = y_train - (M @ beta3)
     return {
         "beta_bar": jnp.append(beta3, 0.0),
-        "B":        jnp.diag(jnp.full(_P_FF, 0.95)),
-        "A":        jnp.diag(jnp.full(_P_FF, 0.05)),
-        "sigma2":   jnp.var(resid),
-        "omega":    jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
-        "C":        jnp.full(_P_FF, 1e-3),
-        "nu":       jnp.array(10.0),
+        "B": jnp.diag(jnp.full(_P_FF, 0.95)),
+        "A": jnp.diag(jnp.full(_P_FF, 0.05)),
+        "sigma2": jnp.var(resid),
+        "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
+        "C": jnp.full(_P_FF, 1e-3),
+        "nu": jnp.array(10.0),
     }
+
 
 def cold_ss(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta3 = _ols(y_train, M)
     resid = y_train - (M @ beta3)
     return {
-        "Q_param":  jnp.diag(jnp.full(_P_FF, 1e-3)),
-        "H_param":  jnp.var(resid) * jnp.eye(1),
-        "B":        jnp.diag(jnp.full(_P_FF, 0.95)),
+        "Q_param": jnp.diag(jnp.full(_P_FF, 1e-3)),
+        "H_param": jnp.var(resid) * jnp.eye(1),
+        "B": jnp.diag(jnp.full(_P_FF, 0.95)),
         "bar_beta": jnp.append(beta3, 0.0),
-        "omega":    jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
+        "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
     }
+
 
 def cold_ss_init(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta3 = _ols(y_train, M)
     resid = y_train - (M @ beta3)
     sigma2 = jnp.var(resid)
-    a1   = jnp.append(beta3, 0.0)
-    P1   = 10.0 * jnp.eye(_P_FF)
-    Z0   = jnp.zeros((_P_FF, _P_FF))
-    T0   = 0.95 * jnp.eye(_P_FF)
-    H0   = sigma2 * jnp.eye(_P_FF)
-    R0   = jnp.eye(_P_FF)
-    Q0   = jnp.diag(jnp.full(_P_FF, 1e-3))
+    a1 = jnp.append(beta3, 0.0)
+    P1 = 10.0 * jnp.eye(_P_FF)
+    Z0 = jnp.zeros((_P_FF, _P_FF))
+    T0 = 0.95 * jnp.eye(_P_FF)
+    H0 = sigma2 * jnp.eye(_P_FF)
+    R0 = jnp.eye(_P_FF)
+    Q0 = jnp.diag(jnp.full(_P_FF, 1e-3))
     idx0 = jnp.asarray(0, dtype=jnp.int32)
     return (a1, P1, Z0, T0, H0, R0, Q0, idx0)
 
+
 _sim_jit = jax.jit(simulate, static_argnames=("horizon", "score_buf_size"))
+
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _ff_fit(data, cov, ig, K):
     return ff_SD_fit(data, cov, ig, K=K,
                      opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
 
+
 @functools.partial(jax.jit, static_argnames=("K",))
 def _f_fit(data, cov, ig, K):
     return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                     opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
 
+
 @functools.partial(jax.jit, static_argnames=("K",))
 def _msmsd_fit(data, cov, ig, K):
     return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                      opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
+
 
 _lmSD_fit = jax.jit(lambda data, cov, ig: lmSD_fit(
     data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
@@ -222,6 +239,7 @@ _adjSD_fit = jax.jit(lambda data, cov, ig: adjSD_fit(
 _ss_fit = jax.jit(lambda data, cov, ig, init: ss_fit(
     data, cov, ig, init, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
 
+
 def _metrics(y_test, preds, oos_ll, n_params):
     mask = jnp.ones(y_test.shape, dtype=bool)
     mse = float(compute_mse(y_test, preds, mask))
@@ -232,61 +250,144 @@ def _metrics(y_test, preds, oos_ll, n_params):
     bic = float(compute_bic(jnp.array(tot_ll), n_params, n_obs))
     return mse, mae, tot_ll, aic, bic
 
+
 def make_table(T, results):
+    import math
+
+    all_mse, all_mae = [], []
+    all_keys = (
+        [(t, k) for t in ("ffSD", "fSD", "msmSD") for k in K_VALUES]
+        + [(t, None) for t in ("lmSD", "lmSD_oracle", "adjSD", "SS")]
+    )
+    for scale in SIGMA2_SCALES:
+        for tag, K in all_keys:
+            key = (T, scale, tag, K)
+            if key in results:
+                mse, mae, *_ = results[key]
+                all_mse.append(mse)
+                all_mae.append(mae)
+
+    def _exp3(vals):
+        """Nearest multiple-of-3 exponent so that scaled values are roughly O(1)."""
+        if not vals:
+            return 0
+        mag = sum(abs(v) for v in vals) / len(vals)
+        if mag == 0:
+            return 0
+        return 3 * round(math.floor(math.log10(mag)) / 3)
+
+    mse_exp = _exp3(all_mse)
+    mae_exp = _exp3(all_mae)
+    mse_mult = 10.0 ** (-mse_exp)
+    mae_mult = 10.0 ** (-mae_exp)
+
+    def _col_hdr(name, exp):
+        return name if exp == 0 else rf"{name} ($\times 10^{{{exp}}}$)"
+
+    def _fmt(v):
+        """Format a scaled value without scientific notation."""
+        if v is None:
+            return "--"
+        av = abs(v)
+        if av >= 10:
+            return f"{v:.1f}"
+        elif av >= 1:
+            return f"{v:.2f}"
+        else:
+            return f"{v:.3f}"
+
+    def _get(scale, tag, K):
+        key = (T, scale, tag, K)
+        if key not in results:
+            return None
+        mse, mae, ll, aic, _ = results[key]
+        return mse * mse_mult, mae * mae_mult, ll
+
+    N_MET = 3
+
+    def _cmidrule(i):
+        lo = 3 + i * N_MET
+        return rf"\cmidrule(lr){{{lo}-{lo + N_MET - 1}}}"
+
+    mse_hdr = _col_hdr("MSE", mse_exp)
+    mae_hdr = _col_hdr("MAE", mae_exp)
+    col_spec = "ll" + "rrr" * len(SIGMA2_SCALES)
+
     lines = [
         r"\begin{table}[ht]",
         r"\centering",
-        r"\begin{tabular}{llrrrrr}",
+        r"\small",
+        rf"\begin{{tabular}}{{{col_spec}}}",
         r"\toprule",
-        r"$\sigma^2$ & Model & MSE & MAE & OOS LL & AIC & BIC \\",
-        r"\midrule",
     ]
-    for si, scale in enumerate(SIGMA2_SCALES):
-        if si > 0: lines.append(r"\midrule")
-        first_in_group = True
-        for K in K_VALUES:
-            for tag, label in [
-                ("ffSD",  r"\texttt{ff-SD}"),
-                ("fSD",   r"\texttt{f-SD}"),
-                ("msmSD", r"\texttt{msm-SD}"),
-            ]:
-                mse, mae, ll, aic, bic = results[(T, scale, tag, K)]
-                s = f"${SCALE_TEX[scale]}$" if first_in_group else ""
-                first_in_group = False
-                lines.append(
-                    f"    {s} & {label} $K\\!=\\!{K}$"
-                    f" & {mse:.3e} & {mae:.3e} & {ll:.1f} & {aic:.1f} & {bic:.1f} \\\\"
-                )
-        for tag, label in [
-            ("lmSD",        r"\texttt{lmSD}$^{\star}$"),
-            ("lmSD_oracle", r"\texttt{lmSD}$^{\dagger}$"),
-            ("adjSD",       r"\texttt{adj-SD}"),
-            ("SS",          r"\texttt{SS}"),
-        ]:
-            mse, mae, ll, aic, bic = results[(T, scale, tag, None)]
-            s = f"${SCALE_TEX[scale]}$" if first_in_group else ""
-            first_in_group = False
-            lines.append(
-                f"    {s} & {label}"
-                f" & {mse:.3e} & {mae:.3e} & {ll:.1f} & {aic:.1f} & {bic:.1f} \\\\"
+
+    grp_hdrs = " & ".join(
+        rf"\multicolumn{{{N_MET}}}{{c}}{{${SCALE_TEX[s]}$}}"
+        for s in SIGMA2_SCALES
+    )
+    lines.append(rf"Model & $K$ & {grp_hdrs} \\")
+    lines.append(" ".join(_cmidrule(i) for i in range(len(SIGMA2_SCALES))))
+
+    metric_hdr = " & ".join(
+        f"{mse_hdr} & {mae_hdr} & loglik" for _ in SIGMA2_SCALES
+    )
+    lines.append(rf"& & {metric_hdr} \\")
+    lines.append(r"\midrule")
+
+    def _row(model_cell, K_cell, tag, K):
+        cells = [model_cell, K_cell]
+        for scale in SIGMA2_SCALES:
+            row = _get(scale, tag, K)
+            if row is None:
+                cells += ["--", "--", "--"]
+            else:
+                mse_v, mae_v, ll_v = row
+                cells += [_fmt(mse_v), _fmt(mae_v), f"{ll_v:.1f}"]
+        return "    " + " & ".join(cells) + r" \\"
+
+    K_groups = [("ff-SD", "ffSD"), ("f-SD", "fSD"), ("msm-SD", "msmSD")]
+    for gi, (model_name, tag) in enumerate(K_groups):
+        if gi > 0:
+            lines.append(r"\addlinespace[3pt]")
+        n = len(K_VALUES)
+        for ri, K in enumerate(K_VALUES):
+            model_cell = (
+                rf"\multirow{{{n}}}{{*}}{{{model_name}}}" if ri == 0 else ""
             )
+            lines.append(_row(model_cell, f"$K\\!={K}$", tag, K))
+
+    lines.append(r"\midrule")
+    fixed = [
+        (r"lmSD$^{\star}$", "lmSD", None),
+        (r"lmSD$^{\dagger}$", "lmSD_oracle", None),
+        ("adj-SD", "adjSD", None),
+        ("SS", "SS", None),
+    ]
+    for model_name, tag, K in fixed:
+        lines.append(_row(model_name, "", tag, K))
+
     lines += [
         r"\bottomrule",
         r"\end{tabular}",
         (
-            rf"\caption{{One-step-ahead predictive performance on data simulated from the lmSD model,"
-            rf" $T={T}$ (first $T/2$ for training, second $T/2$ for evaluation)."
-            rf" $\star$: warm-started from true DGP parameters; $\dagger$: oracle (true params, no fitting).}}"
+            rf"\caption{{One-step-ahead predictive performance on data simulated"
+            rf" from the lmSD model, $T={T}$"
+            rf" (first $T/2$ for training, second $T/2$ for evaluation)."
+            rf" $\star$: warm-started from true DGP parameters;"
+            rf" $\dagger$: oracle (true DGP parameters, no fitting).}}"
         ),
         rf"\label{{tab:sim_lmSD_T{T}}}",
         r"\end{table}",
     ]
     return "\n".join(lines)
 
+
 RESULTS_PATH = os.path.join(OUTPUT_DIR, "results.json")
+
 
 def _results_key(T, scale, tag, K):
     return json.dumps([T, scale, tag, K], sort_keys=True)
+
 
 def load_results():
     if not os.path.exists(RESULTS_PATH):
@@ -299,16 +400,18 @@ def load_results():
         results[(T, scale, tag, K)] = tuple(metrics)
     return results
 
+
 def save_results(results):
     serializable = {_results_key(T, scale, tag, K): list(v)
                     for (T, scale, tag, K), v in results.items()}
     with open(RESULTS_PATH, "w") as f:
         json.dump(serializable, f, indent=2)
 
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     params_base = load_params(PARAMS_PATH)
-    Z_fixed     = make_Z_fixed()
+    Z_fixed = make_Z_fixed()
     sigma2_base = params_base["sigma2"]
 
     key = jax.random.PRNGKey(42)
@@ -319,14 +422,13 @@ def main():
         Z_cube = jnp.broadcast_to(Z_fixed[None], (T_half, Z_fixed.shape[0], Z_fixed.shape[1]))
 
         for scale in SIGMA2_SCALES:
-            # Determine which models still need fitting for this (T, scale) combo
-            needs_ff    = [K for K in K_VALUES if (T, scale, "ffSD",  K) not in results]
-            needs_f     = [K for K in K_VALUES if (T, scale, "fSD",   K) not in results]
+            needs_ff = [K for K in K_VALUES if (T, scale, "ffSD", K) not in results]
+            needs_f = [K for K in K_VALUES if (T, scale, "fSD", K) not in results]
             needs_msmsd = [K for K in K_VALUES if (T, scale, "msmSD", K) not in results]
-            needs_lmsd    = (T, scale, "lmSD",        None) not in results
-            needs_oracle  = (T, scale, "lmSD_oracle", None) not in results
-            needs_adjsd   = (T, scale, "adjSD",       None) not in results
-            needs_ss      = (T, scale, "SS",           None) not in results
+            needs_lmsd = (T, scale, "lmSD", None) not in results
+            needs_oracle = (T, scale, "lmSD_oracle", None) not in results
+            needs_adjsd = (T, scale, "adjSD", None) not in results
+            needs_ss = (T, scale, "SS", None) not in results
 
             if not (needs_ff or needs_f or needs_msmsd or needs_lmsd or
                     needs_oracle or needs_adjsd or needs_ss):
@@ -339,14 +441,14 @@ def main():
             jax.effects_barrier()
 
             y_train = y_sim[:T_half]
-            y_test  = y_sim[T_half:]
+            y_test = y_sim[T_half:]
 
             print(f"T={T:5d}  scale={scale:.1f}  simulated, fitting...", flush=True)
 
             for K in K_VALUES:
                 if K in needs_ff:
                     ig_ff = cold_ffSD(y_train, Z_fixed)
-                    r_ff  = _ff_fit(y_train, Z_cube, ig_ff, K)
+                    r_ff = _ff_fit(y_train, Z_cube, ig_ff, K)
                     preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, ALPHA)
                     jax.effects_barrier()
                     results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF)
@@ -358,7 +460,7 @@ def main():
 
                 if K in needs_f:
                     ig_f = cold_fSD(y_train, Z_fixed)
-                    r_f  = _f_fit(y_train, Z_cube, ig_f, K)
+                    r_f = _f_fit(y_train, Z_cube, ig_f, K)
                     preds_f, _, _, oos_ll_f = f_SD_forecast(r_f, Z_cube, y_test, K, SCORE_POWER, ALPHA)
                     jax.effects_barrier()
                     results[(T, scale, "fSD", K)] = _metrics(y_test, preds_f, oos_ll_f, NP_F)
@@ -370,7 +472,7 @@ def main():
 
                 if K in needs_msmsd:
                     ig_msmsd = cold_msmSD(y_train, Z_fixed)
-                    r_msmsd  = _msmsd_fit(y_train, Z_cube, ig_msmsd, K)
+                    r_msmsd = _msmsd_fit(y_train, Z_cube, ig_msmsd, K)
                     preds_msmsd, _, _, oos_ll_msmsd = msmsd_forecast(r_msmsd, Z_cube, y_test, K, SCORE_POWER, ALPHA)
                     jax.effects_barrier()
                     results[(T, scale, "msmSD", K)] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD)
@@ -382,7 +484,7 @@ def main():
 
             if needs_lmsd:
                 ig_lmsd = warm_lmSD(y_train, Z_fixed, params_base)
-                r_lmsd  = _lmSD_fit(y_train, Z_cube, ig_lmsd)
+                r_lmsd = _lmSD_fit(y_train, Z_cube, ig_lmsd)
                 preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
                 results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD)
@@ -394,7 +496,7 @@ def main():
 
             if needs_oracle:
                 ig_oracle = warm_lmSD(y_train, Z_fixed, params_base)
-                r_oracle  = _lmSD_oracle(y_train, Z_cube, ig_oracle)
+                r_oracle = _lmSD_oracle(y_train, Z_cube, ig_oracle)
                 preds_oracle, _, _, oos_ll_oracle = lmSD_forecast(r_oracle, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
                 results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD)
@@ -406,7 +508,7 @@ def main():
 
             if needs_adjsd:
                 ig_adjsd = cold_adjSD(y_train, Z_fixed)
-                r_adjsd  = _adjSD_fit(y_train, Z_cube, ig_adjsd)
+                r_adjsd = _adjSD_fit(y_train, Z_cube, ig_adjsd)
                 preds_adjsd, _, _, oos_ll_adjsd = adjSD_forecast(r_adjsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
                 results[(T, scale, "adjSD", None)] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD)
@@ -417,9 +519,9 @@ def main():
                 print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
             if needs_ss:
-                ig_ss   = cold_ss(y_train, Z_fixed)
+                ig_ss = cold_ss(y_train, Z_fixed)
                 init_ss = cold_ss_init(y_train, Z_fixed)
-                r_ss    = _ss_fit(y_train, Z_cube, ig_ss, init_ss)
+                r_ss = _ss_fit(y_train, Z_cube, ig_ss, init_ss)
                 preds_ss, _, _, oos_ll_ss = ss_forecast(r_ss, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
                 results[(T, scale, "SS", None)] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS)
@@ -437,4 +539,6 @@ def main():
         f.write(tex)
     print(f"\nLaTeX tables saved to {out_path}")
 
-if __name__ == "__main__": main()
+
+if __name__ == "__main__":
+    main()
