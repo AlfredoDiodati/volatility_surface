@@ -33,7 +33,7 @@ N_BUCKETS = 4
 MONEYNESS = jnp.array([0.9, 0.98, 1.05, 1.15, 1.3, 1.5])
 MATURITY = jnp.array([10, 50, 100, 180]) / 255.0
 
-HORIZONS = [400, 2000]
+HORIZONS = [400]
 SIGMA2_SCALES = [1.0, 10.0, 0.1]
 SCALE_TEX = {1.0: r"\sigma^2", 10.0: r"10\,\sigma^2", 0.1: r"\sigma^2/10"}
 
