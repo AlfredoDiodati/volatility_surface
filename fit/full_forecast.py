@@ -18,6 +18,7 @@ from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
 from models.f_SD import fit as fSD_fit, forecast as fSD_forecast
 from models.ff_SD import fit as ffSD_fit, forecast as ffSD_forecast
 from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
+from models.MSMSD import fit as msmSD_fit, forecast as msmSD_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 PARQUET_PATH = "data/SPX/otm/full.parquet"
@@ -32,8 +33,9 @@ TEST_SIZE = 10_000
 MAXITER = 2000
 Q_ALPHA = -1.6448536269514722
 ALPHA = 0.05
-FSD_K_VALUES = [1, 2, 3, 5, 10]
-FFSD_K_VALUES = FSD_K_VALUES
+FSD_K_VALUES   = [1, 2, 3, 5, 10]
+FFSD_K_VALUES  = FSD_K_VALUES
+MSMSD_K_VALUES = FSD_K_VALUES
 
 def load_and_reshape(path):
     raw = (
@@ -204,6 +206,50 @@ def make_lmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
     return step
 
 
+def make_msmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
+    def step(carry, i):
+        y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
+        Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
+        y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
+        Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
+
+        ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "sigma2": carry[3],
+              "sigma_0": carry[4], "omega_load": carry[5], "C": carry[6], "nu": carry[7],
+              "m0": carry[8], "gamma_K": carry[9], "b": carry[10]}
+        r = msmSD_fit(y_win, Z_win, ig, K=K, score_power=1.0,
+                      opt_options={"learning_rate": 1e-3, "tol": 1e-4},
+                      maxiter=maxiter)
+
+        preds, P_mean, VaR, oos_ll = msmSD_forecast(r, Z_test, y_test, K, 1.0, alpha)
+
+        new_carry = (r["beta_bar"], r["B"], r["A"], r["sigma2"], r["sigma_0"],
+                     r["omega_load"], r["C"], r["nu"], r["m0"], r["gamma_K"], r["b"])
+        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
+
+    return step
+
+
+def _msmSD_cold_carry(y_jax, Z_jax, n_buckets):
+    y_win = y_jax[:TRAIN_SIZE]
+    Z_win = Z_jax[:TRAIN_SIZE]
+    beta_ols = _ols_beta(y_win, Z_win)
+    sig2 = _sigma2(y_win, Z_win, beta_ols)
+    omega_load = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
+    return (
+        beta_ols,
+        0.95 * jnp.eye(P_BASE),
+        0.05 * jnp.eye(P_BASE),
+        sig2,
+        jnp.array(0.1),
+        omega_load,
+        1e-3 * jnp.eye(P_FULL),
+        jnp.array(10.0),
+        jnp.array(1.5),
+        jnp.array(0.5),
+        jnp.array(2.0),
+    )
+
+
 def _ss_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
     Z_win = Z_jax[:TRAIN_SIZE]
@@ -321,9 +367,11 @@ def main():
     n_params_lmSD  = 5 * P + n_buckets + 1
     n_params_fSD   = 3 * P_BASE + P_FULL + n_buckets + 4
     n_params_ffSD  = 4 * P + n_buckets + 1
+    n_params_msmSD = n_params_fSD  # equal count: beta_bar,B,A,sigma2,sigma_0,omega[1:],C,nu,m0,gamma_K,b
     n_params_map = {"ss": n_params_ss, "adjSD": n_params_adjSD, "lmSD": n_params_lmSD}
     n_params_map.update({f"fSD_K{k}": n_params_fSD for k in FSD_K_VALUES})
     n_params_map.update({f"ffSD_K{k}": n_params_ffSD for k in FFSD_K_VALUES})
+    n_params_map.update({f"msmSD_K{k}": n_params_msmSD for k in MSMSD_K_VALUES})
 
     y_test_all    = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
     mask_test_all = ~jnp.isnan(y_test_all)
@@ -419,6 +467,10 @@ def main():
                      make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
                      _ffSD_cold_carry(y_jax, Z_jax, n_buckets),
                      b_is_type="ffSD")
+    for K in MSMSD_K_VALUES:
+        run_and_save(f"msmSD_K{K}",
+                     make_msmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
+                     _msmSD_cold_carry(y_jax, Z_jax, n_buckets))
 
     if not step_frames:
         print("No models ran (check --models argument).")
