@@ -26,7 +26,6 @@ def _t_unit_var_ppf(alpha, nu):
     q_std = np.where(alpha <= 0.5, x_star, -x_star)
     return q_std * np.sqrt((nu - 2.0) / nu)
 
-
 def _solve_weights_ff(eta, alpha, K):
     def _single(ea):
         eta_k = ea[0]
@@ -55,7 +54,6 @@ def _solve_weights_ff(eta, alpha, K):
 
     ws, lambdas = jax.vmap(_single)(np.stack([eta, alpha], axis=-1))
     return ws.T, lambdas.T
-
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0):
     A = params["A"]
@@ -128,7 +126,6 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
     beta_T = beta_bar + np.sum(ws * b_T, axis=0)
     betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
     return betas, lls, b_T
-
 
 def fit(
     data: np.ndarray,
@@ -249,7 +246,6 @@ def fit(
         "niter": niter,
         "is_converged": is_converged,
     }
-
 
 def forecast(fit_result, covariates, y_test, K, alpha):
     state0 = fit_result["b_T"]

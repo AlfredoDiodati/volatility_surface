@@ -28,8 +28,6 @@ CANONICAL_ALPHA = 0.10
 CANONICAL_BLOCK = 10
 MAJORITY = 3
 
-
-
 def load_y_test(parquet_path, train_size):
     raw = (
         pl.read_parquet(parquet_path)
@@ -62,8 +60,6 @@ def load_y_test(parquet_path, train_size):
     y_cube = jnp.full((T, max_n), jnp.nan).at[t_idx, n_idx].set(y_vals)
     return y_cube[train_size:], dates[train_size:]
 
-
-
 def kupiec_test(hits, alpha):
     T = len(hits)
     T1 = int(hits.sum())
@@ -74,7 +70,6 @@ def kupiec_test(hits, alpha):
         - xlogy(T0, 1 - pi_hat) - xlogy(T1, pi_hat)
     )
     return {"hit_rate": pi_hat, "LR_uc": LR_uc, "pval_uc": float(1 - chi2.cdf(LR_uc, df=1))}
-
 
 def christoffersen_test(hits, alpha):
     H = jnp.asarray(hits, dtype=int)
@@ -108,11 +103,9 @@ def christoffersen_test(hits, alpha):
         "LR_cc": LR_cc, "pval_cc": float(1 - chi2.cdf(LR_cc, df=2)),
     }
 
-
 def tick_loss_series(realized, var_forecast, alpha):
     e = realized - var_forecast
     return (e * (alpha - (e < 0).astype(float))).tolist()
-
 
 CRIT_LABELS = {
     "mse": "MSE",
@@ -141,7 +134,6 @@ MODEL_LABELS = {
     "ifSD_K100": r"ifSD ($K{=}100$)",
 }
 
-
 def _stars(in_mcs_at_alpha: dict) -> str:
     if in_mcs_at_alpha[0.25]:
         return r"$^{***}$"
@@ -150,7 +142,6 @@ def _stars(in_mcs_at_alpha: dict) -> str:
     if in_mcs_at_alpha[0.05]:
         return r"$^{*}$"
     return ""
-
 
 def _make_var_latex_table(model_names, df_var) -> str:
     rows_by_name = {r["model"]: r for r in df_var.iter_rows(named=True)}
@@ -176,7 +167,6 @@ def _make_var_latex_table(model_names, df_var) -> str:
         r"\end{tabular}",
     ]
     return "\n".join(lines)
-
 
 def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alpha, block) -> str:
     n_crits = len(crits)
@@ -206,7 +196,6 @@ def _make_latex_table(model_names, crits, metric_means, in_mcs_by_name_crit_alph
         r"\end{tabular}",
     ]
     return "\n".join(lines)
-
 
 def main():
     print("Loading bucket_performance results...")
@@ -375,7 +364,6 @@ def main():
         print(f"  {crit:20s}: {winners}")
 
     print(f"\nSaved to {OUTPUT_DIR}")
-
 
 if __name__ == "__main__":
     main()

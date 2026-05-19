@@ -16,12 +16,10 @@ P_FULL  = P_TILDE + 1
 
 K_VALUES = [3, 10, 100]
 
-ETA   = 0.2
+ETA = 0.2
 alpha = 1.2
 
-
-def output_path(k):
-    return os.path.join(OUTPUT_DIR, f"K{k}", "params.json")
+def output_path(k): return os.path.join(OUTPUT_DIR, f"K{k}", "params.json")
 
 
 def load_and_reshape(path):
@@ -39,7 +37,7 @@ def load_and_reshape(path):
     ).sort(["DATE", *FACTOR_LOADING_COLS])
 
     dates = raw["DATE"].unique(maintain_order=True).sort().to_list()
-    T     = len(dates)
+    T = len(dates)
     max_n = int(raw.group_by("DATE").len()["len"].max())
 
     y_cube = np.full((T, max_n), np.nan, dtype=np.float64)
@@ -57,61 +55,54 @@ def load_and_reshape(path):
 
 def pooled_ols_beta(y_cube, Z_cube):
     T, max_n, _ = Z_cube.shape
-    X    = Z_cube[:, :, :P_BASE].reshape(T * max_n, P_BASE)
-    y    = y_cube.reshape(T * max_n)
+    X = Z_cube[:, :, :P_BASE].reshape(T * max_n, P_BASE)
+    y = y_cube.reshape(T * max_n)
     mask = ~np.isnan(y)
     beta_ols, *_ = np.linalg.lstsq(X[mask], y[mask], rcond=None)
     return beta_ols
 
-
 def residual_variance(y_cube, Z_cube, beta):
-    X    = Z_cube[:, :, :P_BASE].reshape(-1, P_BASE)
-    y    = y_cube.reshape(-1)
+    X = Z_cube[:, :, :P_BASE].reshape(-1, P_BASE)
+    y = y_cube.reshape(-1)
     mask = ~np.isnan(y)
     return float(np.var(y[mask] - X[mask] @ beta))
-
 
 def build_initial_guess(beta_ols, sigma2, n_buckets):
     omega_load = np.zeros(n_buckets)
     omega_load[1:] = 1e-2
     return {
-        "beta_bar":   jnp.array(beta_ols),
-        "B":          jnp.array(0.95 * np.eye(P_TILDE, dtype=np.float64)),
-        "A":          jnp.array(0.05 * np.eye(P_TILDE, dtype=np.float64)),
-        "sigma2":     jnp.array(sigma2),
-        "sigma_0":    jnp.array(0.1),
+        "beta_bar": jnp.array(beta_ols),
+        "B":jnp.array(0.95 * np.eye(P_TILDE, dtype=np.float64)),
+        "A":jnp.array(0.05 * np.eye(P_TILDE, dtype=np.float64)),
+        "sigma2": jnp.array(sigma2),
+        "sigma_0": jnp.array(0.1),
         "omega_load": jnp.array(omega_load),
-        "eta":        jnp.array(ETA),
-        "alpha":      jnp.array(alpha),
-        "C":          jnp.array(1e-3 * np.eye(P_FULL, dtype=np.float64)),
-        "nu":         jnp.array(10.0),
+        "eta": jnp.array(ETA),
+        "alpha": jnp.array(alpha),
+        "C": jnp.array(1e-3 * np.eye(P_FULL, dtype=np.float64)),
+        "nu": jnp.array(10.0),
     }
-
 
 def warm_start_guess(prev_params):
     return {
-        "beta_bar":   jnp.array(np.array(prev_params["beta_bar"])),
-        "B":          jnp.array(np.array(prev_params["B"])),
-        "A":          jnp.array(np.array(prev_params["A"])),
-        "sigma2":     jnp.array(float(np.array(prev_params["sigma2"]).ravel()[0])),
-        "sigma_0":    jnp.array(float(np.array(prev_params["sigma_0"]).ravel()[0])),
+        "beta_bar": jnp.array(np.array(prev_params["beta_bar"])),
+        "B": jnp.array(np.array(prev_params["B"])),
+        "A": jnp.array(np.array(prev_params["A"])),
+        "sigma2": jnp.array(float(np.array(prev_params["sigma2"]).ravel()[0])),
+        "sigma_0":jnp.array(float(np.array(prev_params["sigma_0"]).ravel()[0])),
         "omega_load": jnp.array(np.array(prev_params["omega_load"])),
-        "eta":        jnp.array(float(np.array(prev_params["eta"]).ravel()[0])),
-        "alpha":      jnp.array(float(np.array(prev_params["alpha"]).ravel()[0])),
-        "C":          jnp.array(np.array(prev_params["C"])),
-        "nu":         jnp.array(float(np.array(prev_params["nu"]).ravel()[0])),
+        "eta": jnp.array(float(np.array(prev_params["eta"]).ravel()[0])),
+        "alpha": jnp.array(float(np.array(prev_params["alpha"]).ravel()[0])),
+        "C": jnp.array(np.array(prev_params["C"])),
+        "nu": jnp.array(float(np.array(prev_params["nu"]).ravel()[0])),
     }
-
 
 def serialize_params(fit_output):
     serializable = {}
     for key, value in fit_output.items():
-        if hasattr(value, "tolist"):
-            serializable[key] = value.tolist()
-        elif hasattr(value, "item"):
-            serializable[key] = value.item()
-        else:
-            serializable[key] = value
+        if hasattr(value, "tolist"): serializable[key] = value.tolist()
+        elif hasattr(value, "item"): serializable[key] = value.item()
+        else: serializable[key] = value
     return serializable
 
 
@@ -178,7 +169,6 @@ def main():
         prev_params = fit_output
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()

@@ -34,7 +34,6 @@ def _collapsed_correction(constr_params, _extra_ll_data):
         - 0.5 / sigma2 * constr_params["sum_resid_sq"]
     )
 
-
 def _build_Zt_all(base_covariates, bucket_indices, omega):
     def one_t(base_t, bidx_t):
         omega_col = omega[bidx_t]
@@ -227,7 +226,6 @@ def forecast(fit_result, covariates, y_test, q_alpha):
     _, (predictions, P_means, VaR, log_liks) = jax.lax.scan(_step, (a0, P0), (Z_all, y_test))
 
     return predictions, P_means, VaR, log_liks
-
 
 def simulation(fit_output, nsim, npaths, key: jax.Array):
     return _simulation(fit_output, nsim, _dynamics, npaths, key)

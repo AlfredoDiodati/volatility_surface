@@ -70,7 +70,6 @@ def load_and_reshape(path):
     )
     return y_cube, Z_cube, n_buckets, dates
 
-
 def _ols_beta(y_win, Z_win):
     X = Z_win[:, :, :P_BASE].reshape(-1, P_BASE)
     y = y_win.reshape(-1)
@@ -79,14 +78,12 @@ def _ols_beta(y_win, Z_win):
     y_m = jnp.where(mask, y, 0.0)
     return jnp.linalg.solve(X_m.T @ X_m, X_m.T @ y_m)
 
-
 def _sigma2(y_win, Z_win, beta):
     X = Z_win[:, :, :P_BASE].reshape(-1, P_BASE)
     y = y_win.reshape(-1)
     mask = ~jnp.isnan(y)
     resid = jnp.where(mask, y - X @ beta, 0.0)
     return jnp.sum(resid ** 2) / jnp.sum(mask)
-
 
 def make_ss_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter):
     def step(carry, i):
@@ -116,7 +113,6 @@ def make_ss_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter
 
     return step
 
-
 def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter):
     def step(carry, i):
         y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
@@ -136,7 +132,6 @@ def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxite
         return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
 
     return step
-
 
 def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
     def step(carry, i):
@@ -160,7 +155,6 @@ def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter,
 
     return step
 
-
 def make_ffSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
     def step(carry, i):
         y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
@@ -183,7 +177,6 @@ def make_ffSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
 
     return step
 
-
 def make_lmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter):
     def step(carry, i):
         y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
@@ -204,7 +197,6 @@ def make_lmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
         return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
 
     return step
-
 
 def make_msmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
     def step(carry, i):
@@ -228,7 +220,6 @@ def make_msmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxite
 
     return step
 
-
 def _msmSD_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
     Z_win = Z_jax[:TRAIN_SIZE]
@@ -249,7 +240,6 @@ def _msmSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.array(2.0),
     )
 
-
 def _ss_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
     Z_win = Z_jax[:TRAIN_SIZE]
@@ -263,7 +253,6 @@ def _ss_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.append(beta_ols, 0.0),
         omega,
     )
-
 
 def _adjSD_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
@@ -280,7 +269,6 @@ def _adjSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.full(P, 1e-3),
         jnp.array(10.0),
     )
-
 
 def _fSD_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
@@ -301,7 +289,6 @@ def _fSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.array(10.0),
     )
 
-
 def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
     Z_win = Z_jax[:TRAIN_SIZE]
@@ -319,7 +306,6 @@ def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.array(10.0),
     )
 
-
 def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
     Z_win = Z_jax[:TRAIN_SIZE]
@@ -336,7 +322,6 @@ def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.full(P, 1e-3),
         jnp.array(10.0),
     )
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -362,24 +347,24 @@ def main():
 
     indices = jnp.arange(n_test, dtype=jnp.int32)
 
-    n_params_ss    = 3 * P + n_buckets
+    n_params_ss = 3 * P + n_buckets
     n_params_adjSD = 4 * P + n_buckets + 1
-    n_params_lmSD  = 5 * P + n_buckets + 1
-    n_params_fSD   = 3 * P_BASE + P_FULL + n_buckets + 4
-    n_params_ffSD  = 4 * P + n_buckets + 1
+    n_params_lmSD = 5 * P + n_buckets + 1
+    n_params_fSD = 3 * P_BASE + P_FULL + n_buckets + 4
+    n_params_ffSD = 4 * P + n_buckets + 1
     n_params_msmSD = n_params_fSD  # equal count: beta_bar,B,A,sigma2,sigma_0,omega[1:],C,nu,m0,gamma_K,b
     n_params_map = {"ss": n_params_ss, "adjSD": n_params_adjSD, "lmSD": n_params_lmSD}
     n_params_map.update({f"fSD_K{k}": n_params_fSD for k in FSD_K_VALUES})
     n_params_map.update({f"ffSD_K{k}": n_params_ffSD for k in FFSD_K_VALUES})
     n_params_map.update({f"msmSD_K{k}": n_params_msmSD for k in MSMSD_K_VALUES})
 
-    y_test_all    = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
+    y_test_all = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
     mask_test_all = ~jnp.isnan(y_test_all)
-    test_dates    = dates[TRAIN_SIZE:TRAIN_SIZE + n_test]
-    total_obs     = int(jnp.sum(mask_test_all))
+    test_dates = dates[TRAIN_SIZE:TRAIN_SIZE + n_test]
+    total_obs = int(jnp.sum(mask_test_all))
 
     step_frames = []
-    agg_rows    = []
+    agg_rows = []
 
     def run_and_save(name, step_fn, carry0, b_is_type=None):
         if selected is not None and name not in selected:
@@ -395,8 +380,7 @@ def main():
             y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged, b_T, beta_tilde_T = out
         elif b_is_type == "ffSD":
             y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged, b_T = out
-        else:
-            y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged = out
+        else: y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged = out
 
         pl.DataFrame({
             "date": test_dates,
@@ -449,28 +433,28 @@ def main():
 
     print("Running models (one JIT per model)...")
     run_and_save("ss",
-                 make_ss_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, MAXITER),
-                 _ss_cold_carry(y_jax, Z_jax, n_buckets))
+        make_ss_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, MAXITER),
+        _ss_cold_carry(y_jax, Z_jax, n_buckets))
     run_and_save("adjSD",
-                 make_adjSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER),
-                 _adjSD_cold_carry(y_jax, Z_jax, n_buckets))
+        make_adjSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER),
+        _adjSD_cold_carry(y_jax, Z_jax, n_buckets))
     run_and_save("lmSD",
-                 make_lmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER),
-                 _lmSD_cold_carry(y_jax, Z_jax, n_buckets))
+        make_lmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER),
+        _lmSD_cold_carry(y_jax, Z_jax, n_buckets))
     for K in FSD_K_VALUES:
         run_and_save(f"fSD_K{K}",
-                     make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
-                     _fSD_cold_carry(y_jax, Z_jax, n_buckets),
-                     b_is_type="fSD")
+        make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
+        _fSD_cold_carry(y_jax, Z_jax, n_buckets),
+        b_is_type="fSD")
     for K in FFSD_K_VALUES:
         run_and_save(f"ffSD_K{K}",
-                     make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
-                     _ffSD_cold_carry(y_jax, Z_jax, n_buckets),
-                     b_is_type="ffSD")
+        make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
+        _ffSD_cold_carry(y_jax, Z_jax, n_buckets),
+        b_is_type="ffSD")
     for K in MSMSD_K_VALUES:
         run_and_save(f"msmSD_K{K}",
-                     make_msmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
-                     _msmSD_cold_carry(y_jax, Z_jax, n_buckets))
+        make_msmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
+        _msmSD_cold_carry(y_jax, Z_jax, n_buckets))
 
     if not step_frames:
         print("No models ran (check --models argument).")
@@ -496,7 +480,6 @@ def main():
     print("\nAggregate metrics:")
     print(new_agg)
     print(f"\nSaved to {OUTPUT_DIR}")
-
 
 if __name__ == "__main__":
     main()

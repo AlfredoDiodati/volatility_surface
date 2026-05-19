@@ -15,13 +15,12 @@ P_FULL = P_BASE + 1
 
 K_VALUES = [3, 10, 80]
 
-ETA_INIT   = 0.4
+ETA_INIT = 0.4
 ALPHA_INIT = 1.2
 
 
 def output_path(k):
     return os.path.join(OUTPUT_DIR, f"K{k}", "params.json")
-
 
 def load_and_reshape(path):
     raw = (
@@ -53,15 +52,13 @@ def load_and_reshape(path):
 
     return y_cube, Z_cube, n_buckets, bucket_cols, dates
 
-
 def pooled_ols_beta(y_cube, Z_cube):
     T, max_n, _ = Z_cube.shape
-    X    = Z_cube[:, :, :P_BASE].reshape(T * max_n, P_BASE)
-    y    = y_cube.reshape(T * max_n)
+    X = Z_cube[:, :, :P_BASE].reshape(T * max_n, P_BASE)
+    y = y_cube.reshape(T * max_n)
     mask = ~np.isnan(y)
     beta_ols, *_ = np.linalg.lstsq(X[mask], y[mask], rcond=None)
     return beta_ols
-
 
 def residual_variance(y_cube, Z_cube, beta):
     X    = Z_cube[:, :, :P_BASE].reshape(-1, P_BASE)
@@ -69,64 +66,53 @@ def residual_variance(y_cube, Z_cube, beta):
     mask = ~np.isnan(y)
     return float(np.var(y[mask] - X[mask] @ beta))
 
-
 def build_initial_guess(beta_ols, sigma2, n_buckets):
     omega_load = np.zeros(n_buckets)
     omega_load[1:] = 1e-2
     return {
-        "beta_bar":   jnp.array(np.append(beta_ols, 0.0)),
-        "A":          jnp.array(0.05 * np.eye(P_FULL, dtype=np.float64)),
-        "sigma2":     jnp.array(sigma2),
+        "beta_bar":jnp.array(np.append(beta_ols, 0.0)),
+        "A":jnp.array(0.05 * np.eye(P_FULL, dtype=np.float64)),
+        "sigma2":jnp.array(sigma2),
         "omega_load": jnp.array(omega_load),
-        "eta":        jnp.full(P_FULL, ETA_INIT),
-        "alpha":      jnp.array([ALPHA_INIT]),
-        "C":          jnp.array(1e-3 * np.eye(P_FULL, dtype=np.float64)),
-        "nu":         jnp.array(10.0),
+        "eta": jnp.full(P_FULL, ETA_INIT),
+        "alpha":jnp.array([ALPHA_INIT]),
+        "C":jnp.array(1e-3 * np.eye(P_FULL, dtype=np.float64)),
+        "nu":jnp.array(10.0),
     }
-
 
 def warm_start_guess(prev_params):
     return {
-        "beta_bar":   jnp.array(np.array(prev_params["beta_bar"])),
-        "A":          jnp.array(np.array(prev_params["A"])),
-        "sigma2":     jnp.array(float(np.array(prev_params["sigma2"]).ravel()[0])),
+        "beta_bar":jnp.array(np.array(prev_params["beta_bar"])),
+        "A":jnp.array(np.array(prev_params["A"])),
+        "sigma2":jnp.array(float(np.array(prev_params["sigma2"]).ravel()[0])),
         "omega_load": jnp.array(np.array(prev_params["omega_load"])),
-        "eta":        jnp.array(np.array(prev_params["eta"])),
-        "alpha":      jnp.array([float(np.array(prev_params["alpha"]).ravel()[0])]),
-        "C":          jnp.array(np.array(prev_params["C"])),
-        "nu":         jnp.array(float(np.array(prev_params["nu"]).ravel()[0])),
+        "eta": jnp.array(np.array(prev_params["eta"])),
+        "alpha": jnp.array([float(np.array(prev_params["alpha"]).ravel()[0])]),
+        "C": jnp.array(np.array(prev_params["C"])),
+        "nu": jnp.array(float(np.array(prev_params["nu"]).ravel()[0])),
     }
-
 
 def serialize_params(fit_output):
     serializable = {}
     for key, value in fit_output.items():
-        if hasattr(value, "tolist"):
-            serializable[key] = value.tolist()
-        elif hasattr(value, "item"):
-            serializable[key] = value.item()
-        else:
-            serializable[key] = value
+        if hasattr(value, "tolist"): serializable[key] = value.tolist()
+        elif hasattr(value, "item"): serializable[key] = value.item()
+        else: serializable[key] = value
     return serializable
-
 
 def load_params(path):
     with open(path) as f:
         raw = json.load(f)
     return {k: np.array(v) if isinstance(v, list) else v for k, v in raw.items()}
 
-
 def main():
     print("Loading data...")
     y_cube, Z_cube, n_buckets, bucket_cols, dates = load_and_reshape(PARQUET_PATH)
     T, max_n = y_cube.shape
     print(f"  T={T}, max_n={max_n}, n_buckets={n_buckets}")
-
     beta_ols = pooled_ols_beta(y_cube, Z_cube)
     sigma2   = residual_variance(y_cube, Z_cube, beta_ols)
-
     prev_params = None
-
     for k in K_VALUES:
         opath = output_path(k)
 
@@ -178,6 +164,4 @@ def main():
 
     print("\nDone.")
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

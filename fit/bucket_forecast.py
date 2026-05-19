@@ -278,7 +278,6 @@ def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.array(10.0),
     )
 
-
 def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
     Z_win = Z_jax[:TRAIN_SIZE]
@@ -295,7 +294,6 @@ def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.full(P, 1e-3),
         jnp.array(10.0),
     )
-
 
 def main():
     parser = argparse.ArgumentParser()

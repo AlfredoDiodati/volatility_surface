@@ -11,8 +11,7 @@ OUTPUT_PATH  = "out/SPX/otm/params_adjSD.json"
 
 FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = len(FACTOR_LOADING_COLS)
-P      = P_BASE + 1
-
+P = P_BASE + 1
 
 def load_and_reshape(path):
     raw = (
@@ -29,7 +28,7 @@ def load_and_reshape(path):
     ).sort(["DATE", *FACTOR_LOADING_COLS])
 
     dates = raw["DATE"].unique(maintain_order=True).sort().to_list()
-    T     = len(dates)
+    T = len(dates)
     max_n = int(raw.group_by("DATE").len()["len"].max())
 
     y_cube = np.full((T, max_n), np.nan, dtype=np.float64)
@@ -38,42 +37,38 @@ def load_and_reshape(path):
     for t, date in enumerate(dates):
         slice_t = raw.filter(pl.col("DATE") == date).sort(FACTOR_LOADING_COLS)
         n_t = len(slice_t)
-        y_cube[t, :n_t]          = slice_t["logIV"].to_numpy()
+        y_cube[t, :n_t] = slice_t["logIV"].to_numpy()
         Z_cube[t, :n_t, :P_BASE] = slice_t[FACTOR_LOADING_COLS].to_numpy()
-        Z_cube[t, :n_t, P_BASE]  = slice_t["bucket_idx"].to_numpy().astype(float)
+        Z_cube[t, :n_t, P_BASE] = slice_t["bucket_idx"].to_numpy().astype(float)
 
     return y_cube, Z_cube, n_buckets, bucket_cols, dates
 
-
 def pooled_ols_beta(y_cube, Z_cube):
     T, max_n, _ = Z_cube.shape
-    X    = Z_cube[:, :, :P_BASE].reshape(T * max_n, P_BASE)
-    y    = y_cube.reshape(T * max_n)
+    X = Z_cube[:, :, :P_BASE].reshape(T * max_n, P_BASE)
+    y = y_cube.reshape(T * max_n)
     mask = ~np.isnan(y)
     beta_ols, *_ = np.linalg.lstsq(X[mask], y[mask], rcond=None)
     return beta_ols
 
-
 def residual_variance(y_cube, Z_cube, beta):
-    X    = Z_cube[:, :, :P_BASE].reshape(-1, P_BASE)
-    y    = y_cube.reshape(-1)
+    X = Z_cube[:, :, :P_BASE].reshape(-1, P_BASE)
+    y = y_cube.reshape(-1)
     mask = ~np.isnan(y)
     return float(np.var(y[mask] - X[mask] @ beta))
-
 
 def build_initial_guess(beta_ols, sigma2, n_buckets):
     omega = np.zeros(n_buckets)
     omega[1:] = 1e-2
     return {
         "beta_bar": jnp.array(np.append(beta_ols, 0.0)),
-        "B":        jnp.array(0.95 * np.eye(P, dtype=np.float64)),
-        "A":        jnp.array(0.05 * np.eye(P, dtype=np.float64)),
-        "sigma2":   jnp.array(sigma2),
-        "omega":    jnp.array(omega),
-        "C":        jnp.array(1e-3 * np.ones(P, dtype=np.float64)),
-        "nu":       jnp.array(10.0),
+        "B": jnp.array(0.95 * np.eye(P, dtype=np.float64)),
+        "A": jnp.array(0.05 * np.eye(P, dtype=np.float64)),
+        "sigma2": jnp.array(sigma2),
+        "omega": jnp.array(omega),
+        "C": jnp.array(1e-3 * np.ones(P, dtype=np.float64)),
+        "nu": jnp.array(10.0),
     }
-
 
 def serialize_params(fit_output):
     serializable = {}
@@ -82,10 +77,8 @@ def serialize_params(fit_output):
             serializable[key] = value.tolist()
         elif hasattr(value, "item"):
             serializable[key] = value.item()
-        else:
-            serializable[key] = value
+        else: serializable[key] = value
     return serializable
-
 
 def main():
     print("Loading data...")
@@ -98,7 +91,7 @@ def main():
         with open(OUTPUT_PATH) as f:
             raw_params = json.load(f)
         fit_output = {k: np.array(v) if isinstance(v, list) else v
-                      for k, v in raw_params.items()}
+            for k, v in raw_params.items()}
     else:
         print("No params found, fitting model...")
         beta_ols = pooled_ols_beta(y_cube, Z_cube)
@@ -119,12 +112,9 @@ def main():
         print(f"  Saved to {OUTPUT_PATH}")
 
     sigma2 = float(np.array(fit_output["sigma2"]).ravel()[0])
-    nu     = float(np.array(fit_output["nu"]).ravel()[0])
-    print(f"  nu={nu:.2f}, sigma2={sigma2:.4f}")
-    print(f"  log_lik={float(np.array(fit_output['log_likelihood']).ravel()[0]):.2f}")
-
+    nu = float(np.array(fit_output["nu"]).ravel()[0])
+    print(f" nu={nu:.2f}, sigma2={sigma2:.4f}")
+    print(f" ={float(np.array(fit_output['log_likelihood']).ravel()[0]):.2f}")
     print("Done.")
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

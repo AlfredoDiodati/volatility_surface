@@ -3,7 +3,6 @@ import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
 
-
 def _t_unit_var_ppf(alpha, nu):
     a = nu / 2.0
     p = np.where(alpha <= 0.5, alpha, 1.0 - alpha)
@@ -25,7 +24,6 @@ def _t_unit_var_ppf(alpha, nu):
     q_std = np.where(alpha <= 0.5, x_star, -x_star)
     return q_std * np.sqrt((nu - 2.0) / nu)
 
-
 def _compute_weights(d, T):
     def _step(w_prev, tau):
         w_next = w_prev * (tau - 1.0 - d) / tau
@@ -34,7 +32,6 @@ def _compute_weights(d, T):
     taus = np.arange(1, T, dtype=float)
     _, w_rest = lax.scan(_step, np.ones_like(d), taus)
     return np.concatenate([np.ones((1, d.shape[0])), w_rest], axis=0)
-
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
     B = params["B"]
@@ -94,7 +91,6 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
         _step, (beta0, score_buf0), (y_masked, base_covariates, bucket_indices, mask_f)
     )
     return betas, log_liks, beta_Ts[-1], final_carry[1]
-
 
 def fit(
     data: np.ndarray,
@@ -211,7 +207,6 @@ def fit(
         "is_converged": is_converged,
     }
 
-
 def simulate(params, Z_fixed, horizon, key, beta_0=None, score_buf_size=None, score_buf_0=None):
     B = params["B"]
     A = params["A"]
@@ -277,7 +272,6 @@ def simulate(params, Z_fixed, horizon, key, beta_0=None, score_buf_size=None, sc
         step, (beta_0, score_buf_0), (g_samp, w_samp, z_samp)
     )
     return y_sim, beta_sim
-
 
 def forecast(fit_result, covariates, y_test, alpha):
     p = fit_result["beta_bar"].shape[0]

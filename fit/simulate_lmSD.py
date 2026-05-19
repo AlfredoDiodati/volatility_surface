@@ -69,12 +69,10 @@ def make_Z_fixed():
     N = mon_g.size
     return jnp.stack([jnp.ones(N), mon_g.ravel(), mat_g.ravel(), midx_g.ravel().astype(float)], axis=1)
 
-
 def _ols(y_train, M):
     T, N = y_train.shape
     X = jnp.broadcast_to(M[None], (T, N, M.shape[1])).reshape(-1, M.shape[1])
     return jnp.linalg.lstsq(X, y_train.reshape(-1), rcond=None)[0]
-
 
 def cold_ffSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
@@ -90,7 +88,6 @@ def cold_ffSD(y_train, Z_fixed):
         "C": jnp.diag(jnp.full(_P_FF, 1e-3)),
         "nu": jnp.array(10.0),
     }
-
 
 def cold_fSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
@@ -109,7 +106,6 @@ def cold_fSD(y_train, Z_fixed):
         "nu": jnp.array(10.0),
     }
 
-
 def cold_lmSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta3 = _ols(y_train, M)
@@ -124,7 +120,6 @@ def cold_lmSD(y_train, Z_fixed):
         "C": jnp.full(_P_FF, 1e-3),
         "nu": jnp.array(10.0),
     }
-
 
 def warm_lmSD(y_train, Z_fixed, params_true):
     """Warm start from the true DGP params; only beta_bar and sigma2 are data-driven."""
@@ -141,7 +136,6 @@ def warm_lmSD(y_train, Z_fixed, params_true):
         "C": params_true["C"],
         "nu": params_true["nu"],
     }
-
 
 def cold_msmSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
@@ -161,7 +155,6 @@ def cold_msmSD(y_train, Z_fixed):
         "b": jnp.array(2.0),
     }
 
-
 def cold_adjSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta3 = _ols(y_train, M)
@@ -176,7 +169,6 @@ def cold_adjSD(y_train, Z_fixed):
         "nu": jnp.array(10.0),
     }
 
-
 def cold_ss(y_train, Z_fixed):
     M = Z_fixed[:, :3]
     beta3 = _ols(y_train, M)
@@ -188,7 +180,6 @@ def cold_ss(y_train, Z_fixed):
         "bar_beta": jnp.append(beta3, 0.0),
         "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
     }
-
 
 def cold_ss_init(y_train, Z_fixed):
     M = Z_fixed[:, :3]
@@ -205,27 +196,22 @@ def cold_ss_init(y_train, Z_fixed):
     idx0 = jnp.asarray(0, dtype=jnp.int32)
     return (a1, P1, Z0, T0, H0, R0, Q0, idx0)
 
-
 _sim_jit = jax.jit(simulate, static_argnames=("horizon", "score_buf_size"))
-
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _ff_fit(data, cov, ig, K):
     return ff_SD_fit(data, cov, ig, K=K,
                      opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
 
-
 @functools.partial(jax.jit, static_argnames=("K",))
 def _f_fit(data, cov, ig, K):
     return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                     opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
 
-
 @functools.partial(jax.jit, static_argnames=("K",))
 def _msmsd_fit(data, cov, ig, K):
     return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                      opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
-
 
 _lmSD_fit = jax.jit(lambda data, cov, ig: lmSD_fit(
     data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
@@ -238,7 +224,6 @@ _adjSD_fit = jax.jit(lambda data, cov, ig: adjSD_fit(
 
 _ss_fit = jax.jit(lambda data, cov, ig, init: ss_fit(
     data, cov, ig, init, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
-
 
 def _metrics(y_test, preds, oos_ll, n_params):
     mask = jnp.ones(y_test.shape, dtype=bool)
@@ -254,10 +239,8 @@ def _metrics(y_test, preds, oos_ll, n_params):
     ll_seq = (ll_arr.sum(axis=1) if ll_arr.ndim > 1 else ll_arr).tolist()
     return mse, mae, tot_ll, aic, bic, mse_seq, mae_seq, ll_seq
 
-
 def _is_cached(results, key):
     return key in results and len(results[key]) >= 8
-
 
 def make_table(T, results):
     import math
@@ -277,11 +260,9 @@ def make_table(T, results):
 
     def _exp3(vals):
         """Nearest multiple-of-3 exponent so that scaled values are roughly O(1)."""
-        if not vals:
-            return 0
+        if not vals: return 0
         mag = sum(abs(v) for v in vals) / len(vals)
-        if mag == 0:
-            return 0
+        if mag == 0: return 0
         return 3 * round(math.floor(math.log10(mag)) / 3)
 
     mse_exp = _exp3(all_mse)
@@ -289,55 +270,40 @@ def make_table(T, results):
     mse_mult = 10.0 ** (-mse_exp)
     mae_mult = 10.0 ** (-mae_exp)
 
-    def _col_hdr(name, exp):
-        return name if exp == 0 else rf"{name} ($\times 10^{{{exp}}}$)"
+    def _col_hdr(name, exp): return name if exp == 0 else rf"{name} ($\times 10^{{{exp}}}$)"
 
     def _fmt(v):
         """Format a scaled value without scientific notation."""
-        if v is None:
-            return "--"
+        if v is None: return "--"
         av = abs(v)
-        if av >= 10:
-            return f"{v:.1f}"
-        elif av >= 1:
-            return f"{v:.2f}"
-        else:
-            return f"{v:.3f}"
+        if av >= 10: return f"{v:.1f}"
+        elif av >= 1: return f"{v:.2f}"
+        else: return f"{v:.3f}"
 
     def _bench_seqs(scale):
         key = (T, scale, "lmSD", None)
-        if key not in results or len(results[key]) < 8:
-            return None, None, None
+        if key not in results or len(results[key]) < 8: return None, None, None
         r = results[key]
         return r[5], r[6], r[7]
 
     def _dm_stars(seq_m, seq_b, higher_better=False):
-        if seq_m is None or seq_b is None:
-            return ""
+        if seq_m is None or seq_b is None: return ""
         n = min(len(seq_m), len(seq_b))
-        if n < 2:
-            return ""
-        if higher_better:
-            d = [seq_b[i] - seq_m[i] for i in range(n)]
-        else:
-            d = [seq_m[i] - seq_b[i] for i in range(n)]
+        if n < 2: return ""
+        if higher_better: d = [seq_b[i] - seq_m[i] for i in range(n)]
+        else: d = [seq_m[i] - seq_b[i] for i in range(n)]
         mean_d = sum(d) / n
         var_d = sum((x - mean_d) ** 2 for x in d) / (n - 1)
-        if var_d <= 0:
-            return ""
+        if var_d <= 0: return ""
         stat = abs(mean_d) / (var_d ** 0.5 / n ** 0.5)
-        if stat > 2.576:
-            return "***"
-        elif stat > 1.96:
-            return "**"
-        elif stat > 1.645:
-            return "*"
+        if stat > 2.576: return "***"
+        elif stat > 1.96: return "**"
+        elif stat > 1.645: return "*"
         return ""
 
     def _get(scale, tag, K):
         key = (T, scale, tag, K)
-        if key not in results:
-            return None
+        if key not in results:return None
         r = results[key]
         seqs = (r[5], r[6], r[7]) if len(r) >= 8 else (None, None, None)
         return r[0] * mse_mult, r[1] * mae_mult, r[2], seqs
@@ -377,8 +343,7 @@ def make_table(T, results):
         cells = [model_cell, K_cell]
         for scale in SIGMA2_SCALES:
             got = _get(scale, tag, K)
-            if got is None:
-                cells += ["--", "--", "--"]
+            if got is None: cells += ["--", "--", "--"]
             else:
                 mse_v, mae_v, ll_v, seqs = got
                 if is_bench:
@@ -393,8 +358,7 @@ def make_table(T, results):
 
     K_groups = [("ff-SD", "ffSD"), ("f-SD", "fSD"), ("msm-SD", "msmSD")]
     for gi, (model_name, tag) in enumerate(K_groups):
-        if gi > 0:
-            lines.append(r"\addlinespace[3pt]")
+        if gi > 0: lines.append(r"\addlinespace[3pt]")
         n = len(K_VALUES)
         for ri, K in enumerate(K_VALUES):
             model_cell = (
@@ -426,33 +390,25 @@ def make_table(T, results):
         r"\end{table}",
     ]
     return "\n".join(lines)
-
-
 RESULTS_PATH = os.path.join(OUTPUT_DIR, "results.json")
-
 
 def _results_key(T, scale, tag, K):
     return json.dumps([T, scale, tag, K], sort_keys=True)
 
-
 def load_results():
-    if not os.path.exists(RESULTS_PATH):
-        return {}
-    with open(RESULTS_PATH) as f:
-        raw = json.load(f)
+    if not os.path.exists(RESULTS_PATH): return {}
+    with open(RESULTS_PATH) as f: raw = json.load(f)
     results = {}
     for key_str, metrics in raw.items():
         T, scale, tag, K = json.loads(key_str)
         results[(T, scale, tag, K)] = tuple(metrics)
     return results
 
-
 def save_results(results):
     serializable = {_results_key(T, scale, tag, K): list(v)
-                    for (T, scale, tag, K), v in results.items()}
+        for (T, scale, tag, K), v in results.items()}
     with open(RESULTS_PATH, "w") as f:
         json.dump(serializable, f, indent=2)
-
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -585,6 +541,4 @@ def main():
         f.write(tex)
     print(f"\nLaTeX tables saved to {out_path}")
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

@@ -94,7 +94,6 @@ def christoffersen_test(hits, alpha):
         "LR_cc": LR_cc, "pval_cc": float(1 - chi2.cdf(LR_cc, df=2)),
     }
 
-
 def tick_loss_series(realized, var_forecast, alpha):
     e = realized - var_forecast
     return (e * (alpha - (e < 0).astype(float))).tolist()
@@ -120,12 +119,9 @@ def _model_label(name: str) -> str:
     return name
 
 def _stars(in_mcs_at_alpha: dict) -> str:
-    if in_mcs_at_alpha[0.25]:
-        return r"$^{***}$"
-    if in_mcs_at_alpha[0.10]:
-        return r"$^{**}$"
-    if in_mcs_at_alpha[0.05]:
-        return r"$^{*}$"
+    if in_mcs_at_alpha[0.25]: return r"$^{***}$"
+    if in_mcs_at_alpha[0.10]: return r"$^{**}$"
+    if in_mcs_at_alpha[0.05]: return r"$^{*}$"
     return ""
 
 def _make_var_latex_table(model_names, df_var) -> str:
@@ -200,8 +196,8 @@ def main():
     df_step = pl.concat([pl.read_parquet(os.path.join(STEP_CACHE_DIR, f)) for f in cache_files])
 
     pred_names = {f[len("predictions_"):-len(".parquet")]
-                  for f in os.listdir(PERF_DIR)
-                  if f.startswith("predictions_") and f.endswith(".parquet")}
+        for f in os.listdir(PERF_DIR)
+        if f.startswith("predictions_") and f.endswith(".parquet")}
     available = set(df_step["model"].unique().to_list()) & pred_names
     model_names = sorted(m for m in available if not m.startswith("ifSD"))
     n_test = df_step.filter(pl.col("model") == model_names[0]).height
@@ -376,7 +372,6 @@ def main():
         print(f"  {crit:20s}: {winners}")
 
     print(f"\nSaved to {OUTPUT_DIR}")
-
 
 if __name__ == "__main__":
     main()

@@ -43,7 +43,6 @@ def _build_log_transition_tensor(gamma_k):
 
     return jax.vmap(_make_log_pi)(gamma_k)
 
-
 def _transition_step_log(log_P, idx0_all, idx1_all, bits_matrix, log_pi_flat):
     def _k_step(log_pi, k_data):
         log_pi_k, idx0_k, idx1_k, bits_k = k_data
@@ -53,7 +52,6 @@ def _transition_step_log(log_P, idx0_all, idx1_all, bits_matrix, log_pi_flat):
 
     log_pi_out, _ = lax.scan(_k_step, log_pi_flat, (log_P, idx0_all, idx1_all, bits_matrix))
     return log_pi_out
-
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_power, state0):
     B = params["B"]
@@ -159,7 +157,6 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
     beta_T = np.concatenate([beta_tilde_T, np.array([sigma_T])])
     betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
     return betas, log_liks, (log_pi_T, beta_tilde_T)
-
 
 def fit(
     data,
@@ -275,7 +272,6 @@ def fit(
         "K": K,
     }
 
-
 def forecast(fit_result, covariates, y_test, K, score_power, alpha):
     covariates = np.asarray(covariates, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
@@ -303,7 +299,6 @@ def forecast(fit_result, covariates, y_test, K, score_power, alpha):
     VaR = P + _t_unit_var_ppf(alpha, fit_result["nu"]) / n_obs_h * np.sqrt(F_sum)
 
     return predictions, P, VaR, log_liks
-
 
 def simulate(params, covariates, key, K, score_power, mask=None, state0=None):
     covariates = np.asarray(covariates, dtype=float)
