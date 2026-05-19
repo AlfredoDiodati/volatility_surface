@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as np
-from models._kalman import _filter_light_univariate, _simulation, _fit
+from models._kalman import _filter_light_univariate, _fit
 
 def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx):
     Q = params["Q_param"]
@@ -42,13 +42,13 @@ def _build_Zt_all(base_covariates, bucket_indices, omega):
 
 def fit(
     data: np.ndarray,
-    covariates: np.ndarray,
+    M: np.ndarray,
     initial_guess: dict,
     initialization: tuple,
     opt_options: dict | None = None,
 ):
     data = np.asarray(data, dtype=float)
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     p = initial_guess["Q_param"].shape[0]
     pH = initial_guess["H_param"].shape[0]
     n_buckets = initial_guess["omega"].shape[0]
@@ -74,29 +74,29 @@ def fit(
         return np.concatenate([uncH, uncQ, uncB, constrained_params["omega"][1:], constrained_params["bar_beta"]])
 
     return _fit(
-        data, initial_guess, covariates, initialization,
+        data, initial_guess, M, initialization,
         _dynamics, _link, _invlink, opt_options or {},
         _filter_fn=_filter_light_univariate,
     )
 
 def fit_collapsed(
     data: np.ndarray,
-    covariates: np.ndarray,
+    M: np.ndarray,
     initial_guess: dict,
     initialization: tuple,
     opt_options: dict | None = None,
     maxiter: int = 5000,
 ):
     data = np.asarray(data, dtype=float)
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     p = initial_guess["Q_param"].shape[0]
     n_buckets = initial_guess["omega"].shape[0]
     T_obs, max_n = data.shape
     y_mask = ~np.isnan(data)
     y_masked = np.where(y_mask, data, 0.0)
     Z_mask = y_mask[:, :, None]
-    base_covariates = covariates[:, :, :-1]
-    bucket_cube = covariates[:, :, -1].astype(np.int32)
+    base_covariates = M[:, :, :-1]
+    bucket_cube = M[:, :, -1].astype(np.int32)
     total_obs = np.sum(y_mask)
     n_half_total = (total_obs - T_obs * p) / 2.0
     dummy_data = np.zeros((T_obs, p), dtype=float)
@@ -181,7 +181,7 @@ def fit_collapsed(
         "is_converged": result["is_converged"],
     }
 
-def forecast(fit_result, covariates, y_test, q_alpha):
+def forecast(fit_result, M, y_test, q_alpha):
     a0 = fit_result["att"][-1]
     P0 = fit_result["Ptt"][-1]
     B = fit_result["B"]
@@ -190,10 +190,10 @@ def forecast(fit_result, covariates, y_test, q_alpha):
     sigma2 = fit_result["H_param"][0, 0]
     omega = fit_result["omega"]
 
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
 
     Z_all = _build_Zt_all(base_covariates, bucket_indices, omega)
 
@@ -227,5 +227,36 @@ def forecast(fit_result, covariates, y_test, q_alpha):
 
     return predictions, P_means, VaR, log_liks
 
-def simulation(fit_output, nsim, npaths, key: jax.Array):
-    return _simulation(fit_output, nsim, _dynamics, npaths, key)
+def simulation(fit_result, M, n, key: jax.Array):
+    B = fit_result["B"]
+    Q = fit_result["Q_param"]
+    ct = fit_result["ct"]
+    sigma2 = fit_result["H_param"][0, 0]
+    omega = fit_result["omega"]
+    a0 = fit_result["att"][-1]
+
+    M = np.asarray(M, dtype=float)
+    T, N_obs, _ = M.shape
+    base = M[:, :, :-1]
+    bidx = M[:, :, -1].astype(np.int32)
+    design = np.concatenate([base, omega[bidx][:, :, None]], axis=-1)
+
+    sqrt_sigma = np.sqrt(sigma2)
+    p_state = B.shape[0]
+    keys = jax.random.split(key, n)
+
+    def _one_path(k):
+        k1, k2 = jax.random.split(k, 2)
+        eta_draws = jax.random.multivariate_normal(k1, np.zeros(p_state), Q, shape=(T,))
+        eps_draws = jax.random.normal(k2, shape=(T, N_obs)) * sqrt_sigma
+
+        def step(a_t, inputs):
+            design_t, eta_t, eps_t = inputs
+            y_t = design_t @ a_t + eps_t
+            a_next = B @ a_t + ct + eta_t
+            return a_next, y_t
+
+        _, y_path = jax.lax.scan(step, a0, (design, eta_draws, eps_draws))
+        return y_path
+
+    return jax.vmap(_one_path)(keys)

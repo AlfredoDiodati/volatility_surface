@@ -129,14 +129,14 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
 
 def fit(
     data: np.ndarray,
-    covariates: np.ndarray,
+    M: np.ndarray,
     initial_guess: dict,
     K: int,
     opt_options: dict | None = None,
     maxiter: int = 5000,
 ):
     data = np.asarray(data, dtype=float)
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     p = initial_guess["beta_bar"].shape[0]
     n_buckets = initial_guess["omega_load"].shape[0]
     maxiter = int(maxiter)
@@ -149,8 +149,8 @@ def fit(
     mask_bool = ~np.isnan(data)
     y_masked = np.where(mask_bool, data, 0.0)
     mask_f = mask_bool.astype(float)
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
 
     def _link(theta):
         idx = 0
@@ -247,14 +247,14 @@ def fit(
         "is_converged": is_converged,
     }
 
-def forecast(fit_result, covariates, y_test, K, alpha):
+def forecast(fit_result, M, y_test, K, alpha):
     state0 = fit_result["b_T"]
 
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
-    H = covariates.shape[0]
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    H = M.shape[0]
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
     mask_bool = ~np.isnan(y_test)
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
@@ -273,3 +273,73 @@ def forecast(fit_result, covariates, y_test, K, alpha):
     VaR = P + q / n_obs_h * np.sqrt(F_sum)
 
     return predictions, P, VaR, log_liks
+
+def simulate_panel(params, M, n, key, K, b_0=None):
+    A = params["A"]
+    sigma2 = params["sigma2"]
+    omega_load = params["omega_load"]
+    eta = params["eta"]
+    alpha = params["alpha"]
+    C = params["C"]
+    nu = params["nu"]
+    beta_bar = params["beta_bar"]
+    p = beta_bar.shape[0]
+
+    M = np.asarray(M, dtype=float)
+    T, N_obs, _ = M.shape
+    base = M[:, :, :-1]
+    bidx = M[:, :, -1].astype(np.int32)
+    design = np.concatenate([base, omega_load[bidx][:, :, None]], axis=-1)
+
+    if b_0 is None: b_0 = np.zeros((K + 1, p))
+
+    h_inv = 1.0 / sigma2
+    sqrt_sigma = np.sqrt(sigma2)
+    L_C = np.linalg.cholesky(C)
+    ws, lambdas = _solve_weights_ff(eta, alpha, K)
+    exp_neg_lambdas = np.exp(-lambdas)
+
+    keys = jax.random.split(key, n)
+
+    def _one_path(k):
+        k1, k2, k3 = jax.random.split(k, 3)
+        g_samp = jax.random.chisquare(k1, nu, shape=(T,))
+        w_samp = jax.random.normal(k2, shape=(T, p))
+        z_samp = jax.random.normal(k3, shape=(T, N_obs))
+
+        def step(b_t, inputs):
+            g, w, z, design_t = inputs
+
+            beta_t = beta_bar + np.sum(ws * b_t, axis=0)
+
+            scale = np.sqrt((nu - 2.0) / g)
+            eps_t = scale * (design_t @ L_C @ w + sqrt_sigma * z)
+            y_t = design_t @ beta_t + eps_t
+
+            ZtHinvZ = h_inv * (design_t.T @ design_t)
+            WLC = ZtHinvZ @ L_C
+            Inner_mat = np.eye(p) + L_C.T @ WLC
+            L_Inner = np.linalg.cholesky(Inner_mat)
+
+            V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
+            ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
+            fisher_t = (nu / (nu - 2.0)) * ((nu + N_obs) / (nu + N_obs + 2.0)) * ZtSigmaInvZ
+
+            ZtHinv_eps = h_inv * (design_t.T @ eps_t)
+            woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
+            mahal_Sigma = h_inv * (eps_t @ eps_t) - (woodbury_eps @ woodbury_eps)
+            ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
+
+            score_weight = (nu + N_obs) / ((nu - 2.0) + mahal_Sigma)
+            nabla_t = score_weight * ZtSigmaInv_eps
+
+            eigvals, eigvecs = np.linalg.eigh(fisher_t)
+            scaled_score = A @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
+
+            b_next = exp_neg_lambdas * b_t + ws * scaled_score[None, :]
+            return b_next, (y_t, beta_t)
+
+        _, (y_path, beta_path) = lax.scan(step, b_0, (g_samp, w_samp, z_samp, design))
+        return y_path, beta_path
+
+    return jax.vmap(_one_path)(keys)

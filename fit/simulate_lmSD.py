@@ -21,12 +21,14 @@ from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute
 
 print(f"Running on: {jax.devices()}")
 
+
 PARAMS_PATH = "out/SPX/otm/params_lmSD.json"
 OUTPUT_DIR = "out/SPX/mc/simulate_lmSD"
 SCORE_POWER = 1.0
 ALPHA = 0.05
 MAXITER = 2000
-K_VALUES = [1, 2, 3, 5, 10]
+K_VALUES = [1, 2, 3, 5, 10, 20, 30, 50]
+K_VALUES_MSMSD = [1, 2, 3, 5, 10, 20, 30, 50]
 N_BUCKETS = 4
 
 MONEYNESS = jnp.array([0.9, 0.98, 1.05, 1.15, 1.3, 1.5])
@@ -119,6 +121,18 @@ def cold_lmSD(y_train, Z_fixed):
         "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
         "C": jnp.full(_P_FF, 1e-3),
         "nu": jnp.array(10.0),
+    }
+
+def true_lmSD(params_true):
+    return {
+        "beta_bar": params_true["beta_bar"],
+        "B": params_true["B"],
+        "A": params_true["A"],
+        "d": params_true["d"],
+        "sigma2": params_true["sigma2"],
+        "omega": params_true["omega"][:N_BUCKETS],
+        "C": params_true["C"],
+        "nu": params_true["nu"],
     }
 
 def warm_lmSD(y_train, Z_fixed, params_true):
@@ -247,7 +261,8 @@ def make_table(T, results):
 
     all_mse, all_mae = [], []
     all_keys = (
-        [(t, k) for t in ("ffSD", "fSD", "msmSD") for k in K_VALUES]
+        [(t, k) for t in ("ffSD", "fSD") for k in K_VALUES]
+        + [("msmSD", k) for k in K_VALUES_MSMSD]
         + [(t, None) for t in ("lmSD", "adjSD", "SS")]
     )
     for scale in SIGMA2_SCALES:
@@ -356,11 +371,11 @@ def make_table(T, results):
                 cells += [_fmt(mse_v) + s_mse, _fmt(mae_v) + s_mae, f"{ll_v:.1f}" + s_ll]
         return "    " + " & ".join(cells) + r" \\"
 
-    K_groups = [("ff-SD", "ffSD"), ("f-SD", "fSD"), ("msm-SD", "msmSD")]
-    for gi, (model_name, tag) in enumerate(K_groups):
+    K_groups = [("ff-SD", "ffSD", K_VALUES), ("f-SD", "fSD", K_VALUES), ("msm-SD", "msmSD", K_VALUES_MSMSD)]
+    for gi, (model_name, tag, k_list) in enumerate(K_groups):
         if gi > 0: lines.append(r"\addlinespace[3pt]")
-        n = len(K_VALUES)
-        for ri, K in enumerate(K_VALUES):
+        n = len(k_list)
+        for ri, K in enumerate(k_list):
             model_cell = (
                 rf"\multirow{{{n}}}{{*}}{{{model_name}}}" if ri == 0 else ""
             )
@@ -426,7 +441,7 @@ def main():
         for scale in SIGMA2_SCALES:
             needs_ff = [K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K))]
             needs_f = [K for K in K_VALUES if not _is_cached(results, (T, scale, "fSD", K))]
-            needs_msmsd = [K for K in K_VALUES if not _is_cached(results, (T, scale, "msmSD", K))]
+            needs_msmsd = [K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K))]
             needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None))
             needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None))
             needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None))
@@ -472,6 +487,7 @@ def main():
                     mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
                     print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
+            for K in K_VALUES_MSMSD:
                 if K in needs_msmsd:
                     ig_msmsd = cold_msmSD(y_train, Z_fixed)
                     r_msmsd = _msmsd_fit(y_train, Z_cube, ig_msmsd, K)
@@ -497,7 +513,7 @@ def main():
                 print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
             if needs_oracle:
-                ig_oracle = warm_lmSD(y_train, Z_fixed, params_base)
+                ig_oracle = true_lmSD(params)
                 r_oracle = _lmSD_oracle(y_train, Z_cube, ig_oracle)
                 preds_oracle, _, _, oos_ll_oracle = lmSD_forecast(r_oracle, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()

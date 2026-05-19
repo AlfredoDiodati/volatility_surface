@@ -94,13 +94,13 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
 
 def fit(
     data: np.ndarray,
-    covariates: np.ndarray,
+    M: np.ndarray,
     initial_guess: dict,
     opt_options: dict | None = None,
     maxiter: int = 5000,
 ):
     data = np.asarray(data, dtype=float)
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     p = initial_guess["beta_bar"].shape[0]
     n_buckets = initial_guess["omega"].shape[0]
     T = data.shape[0]
@@ -114,8 +114,8 @@ def fit(
     mask_bool = ~np.isnan(data)
     y_masked = np.where(mask_bool, data, 0.0)
     mask_f = mask_bool.astype(float)
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
 
     def _link(theta):
         idx = 0
@@ -207,7 +207,7 @@ def fit(
         "is_converged": is_converged,
     }
 
-def simulate(params, Z_fixed, horizon, key, beta_0=None, score_buf_size=None, score_buf_0=None):
+def simulate(params, M, horizon, key, beta_0=None, score_buf_size=None, score_buf_0=None):
     B = params["B"]
     A = params["A"]
     d = params["d"]
@@ -218,12 +218,12 @@ def simulate(params, Z_fixed, horizon, key, beta_0=None, score_buf_size=None, sc
     beta_bar = params["beta_bar"]
     p = beta_bar.shape[0]
 
-    Z_fixed = np.asarray(Z_fixed, dtype=float)
-    base_fixed = Z_fixed[:, :-1]
-    bidx_fixed = Z_fixed[:, -1].astype(np.int32)
+    M = np.asarray(M, dtype=float)
+    base_fixed = M[:, :-1]
+    bidx_fixed = M[:, -1].astype(np.int32)
     omega_col = omega[bidx_fixed]
-    M = np.concatenate([base_fixed, omega_col[:, None]], axis=-1)
-    N = M.shape[0]
+    design = np.concatenate([base_fixed, omega_col[:, None]], axis=-1)
+    N = design.shape[0]
 
     if score_buf_size is None: score_buf_size = horizon
     if beta_0 is None: beta_0 = beta_bar
@@ -231,7 +231,7 @@ def simulate(params, Z_fixed, horizon, key, beta_0=None, score_buf_size=None, sc
 
     h_inv = 1.0 / sigma2
     C_inv = 1.0 / C
-    V = h_inv * (M.T @ M)
+    V = h_inv * (design.T @ design)
     S_base = np.diag(C_inv) + V
     S_inv_V = np.linalg.solve(S_base, V)
     V_tilde = V - V @ S_inv_V
@@ -251,10 +251,10 @@ def simulate(params, Z_fixed, horizon, key, beta_0=None, score_buf_size=None, sc
         g, w, z = inputs
 
         scale = np.sqrt((nu - 2.0) / g)
-        eps_t = scale * (M @ (sqrt_C * w) + sqrt_sigma * z)
-        y_t = M @ beta_t + eps_t
+        eps_t = scale * (design @ (sqrt_C * w) + sqrt_sigma * z)
+        y_t = design @ beta_t + eps_t
 
-        G_t = h_inv * (M.T @ eps_t)
+        G_t = h_inv * (design.T @ eps_t)
         S_inv_G = np.linalg.solve(S_base, G_t)
         mahal_H = h_inv * np.sum(eps_t ** 2)
         mahal_F = mahal_H - G_t @ S_inv_G
@@ -273,20 +273,92 @@ def simulate(params, Z_fixed, horizon, key, beta_0=None, score_buf_size=None, sc
     )
     return y_sim, beta_sim
 
-def forecast(fit_result, covariates, y_test, alpha):
+def simulate_panel(params, M, n, key, beta_0=None, score_buf_size=None, score_buf_0=None):
+    B = params["B"]
+    A = params["A"]
+    d = params["d"]
+    sigma2 = params["sigma2"]
+    omega = params["omega"]
+    C = params["C"]
+    nu = params["nu"]
+    beta_bar = params["beta_bar"]
+    p = beta_bar.shape[0]
+
+    M = np.asarray(M, dtype=float)
+    T, N_obs, _ = M.shape
+
+    base = M[:, :, :-1]
+    bidx = M[:, :, -1].astype(np.int32)
+    omega_cols = omega[bidx]
+    design = np.concatenate([base, omega_cols[:, :, None]], axis=-1)
+
+    if score_buf_size is None: score_buf_size = T
+    if beta_0 is None: beta_0 = beta_bar
+    if score_buf_0 is None: score_buf_0 = np.zeros((score_buf_size, p))
+
+    h_inv = 1.0 / sigma2
+    C_inv = 1.0 / C
+    A_diag = np.diag(A)
+    weights = _compute_weights(d, score_buf_size)
+    sqrt_C = np.sqrt(C)
+    sqrt_sigma = np.sqrt(sigma2)
+
+    keys = jax.random.split(key, n)
+
+    def _one_path(k):
+        k1, k2, k3 = jax.random.split(k, 3)
+        g_samp = jax.random.chisquare(k1, nu, shape=(T,))
+        w_samp = jax.random.normal(k2, shape=(T, p))
+        z_samp = jax.random.normal(k3, shape=(T, N_obs))
+
+        def step(carry, inputs):
+            beta_t, score_buf = carry
+            g, w, z, design_t = inputs
+
+            V_t = h_inv * (design_t.T @ design_t)
+            S_t = np.diag(C_inv) + V_t
+            S_inv_V_t = np.linalg.solve(S_t, V_t)
+            V_tilde_t = V_t - V_t @ S_inv_V_t
+
+            scale = np.sqrt((nu - 2.0) / g)
+            eps_t = scale * (design_t @ (sqrt_C * w) + sqrt_sigma * z)
+            y_t = design_t @ beta_t + eps_t
+
+            G_t = h_inv * (design_t.T @ eps_t)
+            S_inv_G = np.linalg.solve(S_t, G_t)
+            mahal_H = h_inv * np.sum(eps_t ** 2)
+            mahal_F = mahal_H - G_t @ S_inv_G
+            wt = (1.0 + (N_obs + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))
+            g_tilde = G_t - V_t @ S_inv_G
+            s_t = wt * np.linalg.solve(V_tilde_t, g_tilde)
+
+            score_buf_new = np.roll(score_buf, 1, axis=0).at[0].set(s_t)
+            conv = A_diag * (weights * score_buf_new).sum(axis=0)
+            beta_next = beta_bar + B @ (beta_t - beta_bar) + conv
+
+            return (beta_next, score_buf_new), (y_t, beta_t)
+
+        _, (y_path, beta_path) = lax.scan(
+            step, (beta_0, score_buf_0), (g_samp, w_samp, z_samp, design)
+        )
+        return y_path, beta_path
+
+    return jax.vmap(_one_path)(keys)
+
+def forecast(fit_result, M, y_test, alpha):
     p = fit_result["beta_bar"].shape[0]
-    H = covariates.shape[0]
+    H = M.shape[0]
     score_buf_init = np.concatenate([
         fit_result["score_buf_T"],
         np.zeros((H, p)),
     ], axis=0)
     state0 = (fit_result["beta_T"], score_buf_init)
 
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
-    H = covariates.shape[0]
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    H = M.shape[0]
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
     mask_bool = ~np.isnan(y_test)
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)

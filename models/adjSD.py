@@ -75,13 +75,13 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
 
 def fit(
     data: np.ndarray,
-    covariates: np.ndarray,
+    M: np.ndarray,
     initial_guess: dict,
     opt_options: dict | None = None,
     maxiter: int = 5000,
 ):
     data = np.asarray(data, dtype=float)
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     p = initial_guess["beta_bar"].shape[0]
     n_buckets = initial_guess["omega"].shape[0]
     maxiter = int(maxiter)
@@ -94,8 +94,8 @@ def fit(
     mask_bool = ~np.isnan(data)
     y_masked = np.where(mask_bool, data, 0.0)
     mask_f = mask_bool.astype(float)
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
 
     def _link(theta):
         idx = 0
@@ -176,14 +176,14 @@ def fit(
     }
 
 
-def forecast(fit_result, covariates, y_test, alpha):
+def forecast(fit_result, M, y_test, alpha):
     state0 = fit_result["beta_T"]
 
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
-    H = covariates.shape[0]
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    H = M.shape[0]
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
     mask_bool = ~np.isnan(y_test)
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
@@ -202,3 +202,62 @@ def forecast(fit_result, covariates, y_test, alpha):
     VaR = P + q / n_obs_h * np.sqrt(F_sum)
 
     return predictions, P, VaR, log_liks
+
+def simulate_panel(params, M, n, key, beta_0=None):
+    B = params["B"]
+    A = params["A"]
+    sigma2 = params["sigma2"]
+    omega = params["omega"]
+    C = params["C"]
+    nu = params["nu"]
+    beta_bar = params["beta_bar"]
+    p = beta_bar.shape[0]
+
+    M = np.asarray(M, dtype=float)
+    T, N_obs, _ = M.shape
+    base = M[:, :, :-1]
+    bidx = M[:, :, -1].astype(np.int32)
+    design = np.concatenate([base, omega[bidx][:, :, None]], axis=-1)
+
+    if beta_0 is None: beta_0 = beta_bar
+
+    h_inv = 1.0 / sigma2
+    C_inv = 1.0 / C
+    sqrt_C = np.sqrt(C)
+    sqrt_sigma = np.sqrt(sigma2)
+
+    keys = jax.random.split(key, n)
+
+    def _one_path(k):
+        k1, k2, k3 = jax.random.split(k, 3)
+        g_samp = jax.random.chisquare(k1, nu, shape=(T,))
+        w_samp = jax.random.normal(k2, shape=(T, p))
+        z_samp = jax.random.normal(k3, shape=(T, N_obs))
+
+        def step(beta_t, inputs):
+            g, w, z, design_t = inputs
+
+            V_t = h_inv * (design_t.T @ design_t)
+            S_t = np.diag(C_inv) + V_t
+            S_inv_V_t = np.linalg.solve(S_t, V_t)
+            V_tilde_t = V_t - V_t @ S_inv_V_t
+
+            scale = np.sqrt((nu - 2.0) / g)
+            eps_t = scale * (design_t @ (sqrt_C * w) + sqrt_sigma * z)
+            y_t = design_t @ beta_t + eps_t
+
+            G_t = h_inv * (design_t.T @ eps_t)
+            S_inv_G = np.linalg.solve(S_t, G_t)
+            mahal_H = h_inv * np.sum(eps_t ** 2)
+            mahal_F = mahal_H - G_t @ S_inv_G
+            wt = (1.0 + (N_obs + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))
+            g_tilde = G_t - V_t @ S_inv_G
+            s_t = wt * np.linalg.solve(V_tilde_t, g_tilde)
+
+            beta_next = beta_bar + B @ (beta_t - beta_bar) + A @ s_t
+            return beta_next, (y_t, beta_t)
+
+        _, (y_path, beta_path) = lax.scan(step, beta_0, (g_samp, w_samp, z_samp, design))
+        return y_path, beta_path
+
+    return jax.vmap(_one_path)(keys)
