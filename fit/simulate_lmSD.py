@@ -484,9 +484,9 @@ def main():
                     r_ff = _ff_fit(y_train, Z_cube, ig_ff, K, LR["ffSD"])
                     preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF) + (LR["ffSD"],)
+                    results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF) + (LR["ffSD"], int(r_ff["niter"]), bool(r_ff["is_converged"]))
                     mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
-                    print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                    print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ff['niter'])}  conv={bool(r_ff['is_converged'])}", flush=True)
                     save_results(results)
                 else:
                     mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
@@ -497,9 +497,9 @@ def main():
                     r_f = _f_fit(y_train, Z_cube, ig_f, K, LR["fSD"])
                     preds_f, _, _, oos_ll_f = f_SD_forecast(r_f, Z_cube, y_test, K, SCORE_POWER, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "fSD", K)] = _metrics(y_test, preds_f, oos_ll_f, NP_F) + (LR["fSD"],)
+                    results[(T, scale, "fSD", K)] = _metrics(y_test, preds_f, oos_ll_f, NP_F) + (LR["fSD"], int(r_f["niter"]), bool(r_f["is_converged"]))
                     mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
-                    print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                    print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_f['niter'])}  conv={bool(r_f['is_converged'])}", flush=True)
                     save_results(results)
                 else:
                     mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
@@ -511,9 +511,9 @@ def main():
                     r_msmsd = _msmsd_fit(y_train, Z_cube, ig_msmsd, K, LR["msmSD"])
                     preds_msmsd, _, _, oos_ll_msmsd = msmsd_forecast(r_msmsd, Z_cube, y_test, K, SCORE_POWER, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "msmSD", K)] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD) + (LR["msmSD"],)
+                    results[(T, scale, "msmSD", K)] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD) + (LR["msmSD"], int(r_msmsd["niter"]), bool(r_msmsd["is_converged"]))
                     mse, mae, ll, *_ = results[(T, scale, "msmSD", K)]
-                    print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                    print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_msmsd['niter'])}  conv={bool(r_msmsd['is_converged'])}", flush=True)
                     save_results(results)
                 else:
                     mse, mae, ll, *_ = results[(T, scale, "msmSD", K)]
@@ -524,9 +524,9 @@ def main():
                 r_lmsd = _lmSD_fit(y_train, Z_cube, ig_lmsd, LR["lmSD"])
                 preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD) + (LR["lmSD"],)
+                results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD) + (LR["lmSD"], int(r_lmsd["niter"]), bool(r_lmsd["is_converged"]))
                 mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
-                print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_lmsd['niter'])}  conv={bool(r_lmsd['is_converged'])}", flush=True)
                 save_results(results)
             else:
                 mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
@@ -537,9 +537,9 @@ def main():
                 r_oracle = _lmSD_oracle(y_train, Z_cube, ig_oracle, LR["lmSD"])
                 preds_oracle, _, _, oos_ll_oracle = lmSD_forecast(r_oracle, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD) + (LR["lmSD"],)
+                results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD) + (LR["lmSD"], int(r_oracle["niter"]), bool(r_oracle["is_converged"]))
                 mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
-                print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_oracle['niter'])}  conv={bool(r_oracle['is_converged'])}", flush=True)
                 save_results(results)
             else:
                 mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
@@ -550,9 +550,9 @@ def main():
                 r_adjsd = _adjSD_fit(y_train, Z_cube, ig_adjsd, LR["adjSD"])
                 preds_adjsd, _, _, oos_ll_adjsd = adjSD_forecast(r_adjsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "adjSD", None)] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD) + (LR["adjSD"],)
+                results[(T, scale, "adjSD", None)] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD) + (LR["adjSD"], int(r_adjsd["niter"]), bool(r_adjsd["is_converged"]))
                 mse, mae, ll, *_ = results[(T, scale, "adjSD", None)]
-                print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_adjsd['niter'])}  conv={bool(r_adjsd['is_converged'])}", flush=True)
                 save_results(results)
             else:
                 mse, mae, ll, *_ = results[(T, scale, "adjSD", None)]
@@ -564,9 +564,9 @@ def main():
                 r_ss = _ss_fit(y_train, Z_cube, ig_ss, init_ss, LR["SS"])
                 preds_ss, _, _, oos_ll_ss = ss_forecast(r_ss, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "SS", None)] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS) + (LR["SS"],)
+                results[(T, scale, "SS", None)] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS) + (LR["SS"], int(r_ss["niter"]), bool(r_ss["is_converged"]))
                 mse, mae, ll, *_ = results[(T, scale, "SS", None)]
-                print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ss['niter'])}  conv={bool(r_ss['is_converged'])}", flush=True)
                 save_results(results)
             else:
                 mse, mae, ll, *_ = results[(T, scale, "SS", None)]
