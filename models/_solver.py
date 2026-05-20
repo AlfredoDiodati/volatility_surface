@@ -11,11 +11,14 @@ def adam(criterion, theta0, opt_options=None, maxiter=5000):
     eps = opt_options.get("eps", 1e-8)
     maxiter = int(maxiter)
 
-    theta0 = jnp.asarray(theta0, dtype=jnp.float32)
+    theta0 = jnp.asarray(theta0)
+    if not jnp.issubdtype(theta0.dtype, jnp.floating):
+        theta0 = theta0.astype(jnp.float64)
+    float_info = jnp.finfo(theta0.dtype)
     value_and_grad = jax.value_and_grad(criterion)
 
     def _step(state):
-        theta, m, v, b1t, b2t, i, prev_loss, best_theta, best_loss, converged = state
+        theta, m, v, b1t, b2t, i, loss_finite, best_theta, best_loss, converged = state
         loss, g = value_and_grad(theta)
 
         m_new = b1 * m + (1.0 - b1) * g
@@ -32,24 +35,24 @@ def adam(criterion, theta0, opt_options=None, maxiter=5000):
 
         best_theta_new = jnp.where(loss < best_loss, theta, best_theta)
         best_loss_new = jnp.minimum(loss, best_loss)
-        converged_new = jnp.linalg.norm(g) < tol
+        converged_new = jnp.linalg.norm(g) / jnp.sqrt(g.size) < tol
 
-        return (theta_new, m_new, v_new, b1t_new, b2t_new, i1, loss, best_theta_new, best_loss_new, converged_new)
+        return (theta_new, m_new, v_new, b1t_new, b2t_new, i1, jnp.isfinite(loss), best_theta_new, best_loss_new, converged_new)
 
     def _not_converged(state):
-        _, _, _, _, _, i, loss, _, _, converged = state
-        return (i < maxiter) & ~converged & jnp.isfinite(loss)
+        _, _, _, _, _, i, loss_finite, _, _, converged = state
+        return (i < maxiter) & ~converged & loss_finite
 
     state0 = (
         theta0,
         jnp.zeros_like(theta0),
         jnp.zeros_like(theta0),
-        jnp.asarray(b1),
-        jnp.asarray(b2),
+        jnp.asarray(1.0, dtype=theta0.dtype),
+        jnp.asarray(1.0, dtype=theta0.dtype),
         jnp.asarray(0, dtype=jnp.int32),
-        jnp.asarray(jnp.finfo(jnp.float32).max),
+        jnp.asarray(True),
         theta0,
-        jnp.asarray(jnp.finfo(jnp.float32).max),
+        jnp.asarray(float_info.max, dtype=theta0.dtype),
         jnp.asarray(False),
     )
 
