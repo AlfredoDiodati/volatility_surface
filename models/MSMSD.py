@@ -160,7 +160,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
 
 def fit(
     data,
-    covariates,
+    M,
     initial_guess: dict,
     K: int,
     score_power: float,
@@ -168,7 +168,7 @@ def fit(
     maxiter: int = 5000,
 ):
     data = np.asarray(data, dtype=float)
-    covariates = np.asarray(covariates, dtype=float)
+    M = np.asarray(M, dtype=float)
     p_tilde = initial_guess["beta_bar"].shape[0]
     p_full = p_tilde + 1
     n_buckets = initial_guess["omega_load"].shape[0]
@@ -183,8 +183,8 @@ def fit(
     mask_bool = ~np.isnan(data)
     y_masked = np.where(mask_bool, data, 0.0)
     mask_f = mask_bool.astype(float)
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
     log_pi_init = np.full(2 ** K, -K * np.log(2.0))
 
     def _link(theta):
@@ -272,12 +272,12 @@ def fit(
         "K": K,
     }
 
-def forecast(fit_result, covariates, y_test, K, score_power, alpha):
-    covariates = np.asarray(covariates, dtype=float)
+def forecast(fit_result, M, y_test, K, score_power, alpha):
+    M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
-    H = covariates.shape[0]
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
+    H = M.shape[0]
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
     mask_bool = ~np.isnan(y_test)
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
@@ -300,13 +300,7 @@ def forecast(fit_result, covariates, y_test, K, score_power, alpha):
 
     return predictions, P, VaR, log_liks
 
-def simulate(params, covariates, key, K, score_power, mask=None, state0=None):
-    covariates = np.asarray(covariates, dtype=float)
-    T, N_max = covariates.shape[:2]
-    base_covariates = covariates[:, :, :-1]
-    bucket_indices = covariates[:, :, -1].astype(np.int32)
-    mask_f = np.ones((T, N_max)) if mask is None else np.asarray(mask, dtype=float)
-
+def simulate_panel(params, M, n, key, K, m_k_0=None, beta_tilde_0=None):
     B = params["B"]
     A = params["A"]
     sigma2 = params["sigma2"]
@@ -317,64 +311,69 @@ def simulate(params, covariates, key, K, score_power, mask=None, state0=None):
     beta_bar = params["beta_bar"]
     m0 = params["m0"]
     gamma_k = params["gamma_k"]
-
+    score_power = params["score_power"]
     p_tilde = beta_bar.shape[0]
     p_full = p_tilde + 1
+
+    M = np.asarray(M, dtype=float)
+    T, N_obs, _ = M.shape
+    base = M[:, :, :-1]
+    bidx = M[:, :, -1].astype(np.int32)
+    design = np.concatenate([base, omega_load[bidx][:, :, None]], axis=-1)
+
+    if m_k_0 is None: m_k_0 = np.full(K, m0)
+    if beta_tilde_0 is None: beta_tilde_0 = beta_bar
+
     h_inv = 1.0 / sigma2
+    sqrt_sigma = np.sqrt(sigma2)
     IminusB = np.eye(p_tilde) - B
     L_C = np.linalg.cholesky(C)
 
-    if state0 is None:
-        state0 = (np.full(K, m0), beta_bar)
+    keys = jax.random.split(key, n)
 
-    keys = jax.random.split(key, T)
+    def _one_path(k):
+        step_keys = jax.random.split(k, T)
 
-    def _sim_step(state, inputs):
-        m_k_prev, beta_tilde_t = state
-        base_t, bidx_t, mask_t, key_t = inputs
+        def step(state, inputs):
+            m_k_prev, beta_tilde_t = state
+            design_t, key_t = inputs
 
-        k1, k2, k3, k4, k5 = jax.random.split(key_t, 5)
+            k1, k2, k3, k4, k5 = jax.random.split(key_t, 5)
 
-        switch = jax.random.bernoulli(k1, gamma_k)
-        new_vals = np.where(jax.random.bernoulli(k2, 0.5, shape=(K,)), 2.0 - m0, m0)
-        m_k_t = np.where(switch, new_vals, m_k_prev)
+            switch = jax.random.bernoulli(k1, gamma_k)
+            new_vals = np.where(jax.random.bernoulli(k2, 0.5, shape=(K,)), 2.0 - m0, m0)
+            m_k_t = np.where(switch, new_vals, m_k_prev)
 
-        sigma_t = sigma_0 * np.prod(m_k_t)
-        beta_full_t = np.concatenate([beta_tilde_t, np.array([sigma_t])])
+            sigma_t = sigma_0 * np.prod(m_k_t)
+            beta_full_t = np.concatenate([beta_tilde_t, np.array([sigma_t])])
 
-        omega_col = omega_load[bidx_t]
-        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
-        Z_mask = Z_t * mask_t[:, None]
-        N_t = np.sum(mask_t)
+            t_scale = np.sqrt(nu / (2.0 * jax.random.gamma(k5, nu / 2.0)))
+            eps_t = t_scale * (sqrt_sigma * jax.random.normal(k3, (N_obs,)) + design_t @ (L_C @ jax.random.normal(k4, (p_full,))))
+            y_t = design_t @ beta_full_t + eps_t
 
-        ZtHinvZ = h_inv * (Z_mask.T @ Z_mask)
-        WLC = ZtHinvZ @ L_C
-        Inner_mat = np.eye(p_full) + L_C.T @ WLC
-        L_Inner = np.linalg.cholesky(Inner_mat)
-        V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
-        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
-        fisher_tilde = ((nu / (nu - 2.0)) * ((nu + N_t) / (nu + N_t + 2.0)) * ZtSigmaInvZ)[:p_tilde, :p_tilde]
+            ZtHinvZ = h_inv * (design_t.T @ design_t)
+            WLC = ZtHinvZ @ L_C
+            Inner_mat = np.eye(p_full) + L_C.T @ WLC
+            L_Inner = np.linalg.cholesky(Inner_mat)
+            V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
+            ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
+            fisher_tilde = (nu / (nu - 2.0)) * ((nu + N_obs) / (nu + N_obs + 2.0)) * ZtSigmaInvZ[:p_tilde, :p_tilde]
 
-        z1 = jax.random.normal(k3, (N_max,)) * mask_t
-        z2 = jax.random.normal(k4, (p_full,))
-        t_scale = np.sqrt(nu / (2.0 * jax.random.gamma(k5, nu / 2.0)))
-        eps_t = t_scale * (np.sqrt(sigma2) * z1 + Z_t @ (L_C @ z2)) * mask_t
+            ZtHinv_eps = h_inv * (design_t.T @ eps_t)
+            wb = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
+            mahal = h_inv * (eps_t @ eps_t) - (wb @ wb)
+            ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ wb
+            nabla_t = ((nu + N_obs) / ((nu - 2.0) + mahal)) * ZtSigmaInv_eps[:p_tilde]
 
-        y_t = np.where(mask_t, Z_t @ beta_full_t + eps_t, np.nan)
+            eigvals, eigvecs = np.linalg.eigh(fisher_tilde)
+            xi_tilde = A @ ((eigvecs * (eigvals ** (-score_power))) @ eigvecs.T) @ nabla_t
+            beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
 
-        ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
-        wb = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
-        mahal = h_inv * (eps_t @ eps_t) - (wb @ wb)
-        ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ wb
-        nabla_t = ((nu + N_t) / ((nu - 2.0) + mahal)) * ZtSigmaInv_eps[:p_tilde]
+            return (m_k_t, beta_tilde_next), (y_t, beta_full_t, m_k_t)
 
-        eigvals, eigvecs = np.linalg.eigh(fisher_tilde)
-        xi_tilde = A @ ((eigvecs * (eigvals ** (-score_power))) @ eigvecs.T) @ nabla_t
-        beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
+        _, (y_path, beta_path, msm_path) = lax.scan(
+            step, (m_k_0, beta_tilde_0), (design, step_keys)
+        )
+        return y_path, beta_path, msm_path
 
-        return (m_k_t, beta_tilde_next), (y_t, beta_full_t, m_k_t)
-
-    _, (ys, betas, msm_states) = lax.scan(
-        _sim_step, state0, (base_covariates, bucket_indices, mask_f, keys)
-    )
-    return ys, betas, msm_states
+    return jax.vmap(_one_path)(keys)

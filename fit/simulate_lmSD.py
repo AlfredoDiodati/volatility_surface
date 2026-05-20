@@ -28,7 +28,7 @@ SCORE_POWER = 1.0
 ALPHA = 0.05
 MAXITER = 2000
 K_VALUES = [1, 2, 3, 5, 10, 20, 30, 50]
-K_VALUES_MSMSD = [1, 2, 3, 5, 10, 20, 30, 50]
+K_VALUES_MSMSD = [1, 2, 3, 5, 10]
 N_BUCKETS = 4
 
 MONEYNESS = jnp.array([0.9, 0.98, 1.05, 1.15, 1.3, 1.5])
@@ -37,6 +37,15 @@ MATURITY = jnp.array([10, 50, 100, 180]) / 255.0
 HORIZONS = [400, 2000]
 SIGMA2_SCALES = [1.0, 10.0, 0.1]
 SCALE_TEX = {1.0: r"\sigma^2", 10.0: r"10\,\sigma^2", 0.1: r"\sigma^2/10"}
+
+LR = {
+    "ffSD":  1e-3,
+    "fSD":   1e-3,
+    "msmSD": 1e-3,
+    "lmSD":  1e-3,
+    "adjSD": 1e-3,
+    "SS":    1e-3,
+}
 
 _P_FF = 4
 _P_TILDE = 3
@@ -213,31 +222,31 @@ def cold_ss_init(y_train, Z_fixed):
 _sim_jit = jax.jit(simulate, static_argnames=("horizon", "score_buf_size"))
 
 @functools.partial(jax.jit, static_argnames=("K",))
-def _ff_fit(data, cov, ig, K):
+def _ff_fit(data, cov, ig, K, lr):
     return ff_SD_fit(data, cov, ig, K=K,
-                     opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
+                     opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER)
 
 @functools.partial(jax.jit, static_argnames=("K",))
-def _f_fit(data, cov, ig, K):
+def _f_fit(data, cov, ig, K, lr):
     return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
-                    opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
+                    opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER)
 
 @functools.partial(jax.jit, static_argnames=("K",))
-def _msmsd_fit(data, cov, ig, K):
+def _msmsd_fit(data, cov, ig, K, lr):
     return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
-                     opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER)
+                     opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER)
 
-_lmSD_fit = jax.jit(lambda data, cov, ig: lmSD_fit(
-    data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
+_lmSD_fit = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER))
 
-_lmSD_oracle = jax.jit(lambda data, cov, ig: lmSD_fit(
-    data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=0))
+_lmSD_oracle = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0))
 
-_adjSD_fit = jax.jit(lambda data, cov, ig: adjSD_fit(
-    data, cov, ig, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
+_adjSD_fit = jax.jit(lambda data, cov, ig, lr: adjSD_fit(
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER))
 
-_ss_fit = jax.jit(lambda data, cov, ig, init: ss_fit(
-    data, cov, ig, init, opt_options={"learning_rate": 1e-3, "tol": 1e-4}, maxiter=MAXITER))
+_ss_fit = jax.jit(lambda data, cov, ig, init, lr: ss_fit(
+    data, cov, ig, init, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER))
 
 def _metrics(y_test, preds, oos_ll, n_params):
     mask = jnp.ones(y_test.shape, dtype=bool)
@@ -253,8 +262,15 @@ def _metrics(y_test, preds, oos_ll, n_params):
     ll_seq = (ll_arr.sum(axis=1) if ll_arr.ndim > 1 else ll_arr).tolist()
     return mse, mae, tot_ll, aic, bic, mse_seq, mae_seq, ll_seq
 
-def _is_cached(results, key):
-    return key in results and len(results[key]) >= 8
+_N_METRICS = len(("mse", "mae", "tot_ll", "aic", "bic", "mse_seq", "mae_seq", "ll_seq"))
+_DEFAULT_LR = 1e-3
+
+def _is_cached(results, key, lr):
+    if key not in results or len(results[key]) < _N_METRICS:
+        return False
+    v = results[key]
+    stored_lr = v[_N_METRICS] if len(v) > _N_METRICS else _DEFAULT_LR
+    return abs(stored_lr - lr) < 1e-12
 
 def make_table(T, results):
     import math
@@ -439,13 +455,13 @@ def main():
         Z_cube = jnp.broadcast_to(Z_fixed[None], (T_half, Z_fixed.shape[0], Z_fixed.shape[1]))
 
         for scale in SIGMA2_SCALES:
-            needs_ff = [K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K))]
-            needs_f = [K for K in K_VALUES if not _is_cached(results, (T, scale, "fSD", K))]
-            needs_msmsd = [K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K))]
-            needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None))
-            needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None))
-            needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None))
-            needs_ss = not _is_cached(results, (T, scale, "SS", None))
+            needs_ff = [K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K), LR["ffSD"])]
+            needs_f = [K for K in K_VALUES if not _is_cached(results, (T, scale, "fSD", K), LR["fSD"])]
+            needs_msmsd = [K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K), LR["msmSD"])]
+            needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None), LR["lmSD"])
+            needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None), LR["lmSD"])
+            needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None), LR["adjSD"])
+            needs_ss = not _is_cached(results, (T, scale, "SS", None), LR["SS"])
 
             if not (needs_ff or needs_f or needs_msmsd or needs_lmsd or
                     needs_oracle or needs_adjsd or needs_ss):
@@ -465,24 +481,26 @@ def main():
             for K in K_VALUES:
                 if K in needs_ff:
                     ig_ff = cold_ffSD(y_train, Z_fixed)
-                    r_ff = _ff_fit(y_train, Z_cube, ig_ff, K)
+                    r_ff = _ff_fit(y_train, Z_cube, ig_ff, K, LR["ffSD"])
                     preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF)
+                    results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF) + (LR["ffSD"],)
                     mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
                     print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                    save_results(results)
                 else:
                     mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
                     print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
                 if K in needs_f:
                     ig_f = cold_fSD(y_train, Z_fixed)
-                    r_f = _f_fit(y_train, Z_cube, ig_f, K)
+                    r_f = _f_fit(y_train, Z_cube, ig_f, K, LR["fSD"])
                     preds_f, _, _, oos_ll_f = f_SD_forecast(r_f, Z_cube, y_test, K, SCORE_POWER, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "fSD", K)] = _metrics(y_test, preds_f, oos_ll_f, NP_F)
+                    results[(T, scale, "fSD", K)] = _metrics(y_test, preds_f, oos_ll_f, NP_F) + (LR["fSD"],)
                     mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
                     print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                    save_results(results)
                 else:
                     mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
                     print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
@@ -490,48 +508,52 @@ def main():
             for K in K_VALUES_MSMSD:
                 if K in needs_msmsd:
                     ig_msmsd = cold_msmSD(y_train, Z_fixed)
-                    r_msmsd = _msmsd_fit(y_train, Z_cube, ig_msmsd, K)
+                    r_msmsd = _msmsd_fit(y_train, Z_cube, ig_msmsd, K, LR["msmSD"])
                     preds_msmsd, _, _, oos_ll_msmsd = msmsd_forecast(r_msmsd, Z_cube, y_test, K, SCORE_POWER, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "msmSD", K)] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD)
+                    results[(T, scale, "msmSD", K)] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD) + (LR["msmSD"],)
                     mse, mae, ll, *_ = results[(T, scale, "msmSD", K)]
                     print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                    save_results(results)
                 else:
                     mse, mae, ll, *_ = results[(T, scale, "msmSD", K)]
                     print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
             if needs_lmsd:
                 ig_lmsd = warm_lmSD(y_train, Z_fixed, params_base)
-                r_lmsd = _lmSD_fit(y_train, Z_cube, ig_lmsd)
+                r_lmsd = _lmSD_fit(y_train, Z_cube, ig_lmsd, LR["lmSD"])
                 preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD)
+                results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD) + (LR["lmSD"],)
                 mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
                 print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                save_results(results)
             else:
                 mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
                 print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
             if needs_oracle:
                 ig_oracle = true_lmSD(params)
-                r_oracle = _lmSD_oracle(y_train, Z_cube, ig_oracle)
+                r_oracle = _lmSD_oracle(y_train, Z_cube, ig_oracle, LR["lmSD"])
                 preds_oracle, _, _, oos_ll_oracle = lmSD_forecast(r_oracle, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD)
+                results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD) + (LR["lmSD"],)
                 mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
                 print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                save_results(results)
             else:
                 mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
                 print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
 
             if needs_adjsd:
                 ig_adjsd = cold_adjSD(y_train, Z_fixed)
-                r_adjsd = _adjSD_fit(y_train, Z_cube, ig_adjsd)
+                r_adjsd = _adjSD_fit(y_train, Z_cube, ig_adjsd, LR["adjSD"])
                 preds_adjsd, _, _, oos_ll_adjsd = adjSD_forecast(r_adjsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "adjSD", None)] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD)
+                results[(T, scale, "adjSD", None)] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD) + (LR["adjSD"],)
                 mse, mae, ll, *_ = results[(T, scale, "adjSD", None)]
                 print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                save_results(results)
             else:
                 mse, mae, ll, *_ = results[(T, scale, "adjSD", None)]
                 print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
@@ -539,12 +561,13 @@ def main():
             if needs_ss:
                 ig_ss = cold_ss(y_train, Z_fixed)
                 init_ss = cold_ss_init(y_train, Z_fixed)
-                r_ss = _ss_fit(y_train, Z_cube, ig_ss, init_ss)
+                r_ss = _ss_fit(y_train, Z_cube, ig_ss, init_ss, LR["SS"])
                 preds_ss, _, _, oos_ll_ss = ss_forecast(r_ss, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "SS", None)] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS)
+                results[(T, scale, "SS", None)] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS) + (LR["SS"],)
                 mse, mae, ll, *_ = results[(T, scale, "SS", None)]
                 print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}", flush=True)
+                save_results(results)
             else:
                 mse, mae, ll, *_ = results[(T, scale, "SS", None)]
                 print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached)", flush=True)
