@@ -7,7 +7,9 @@ import jax
 import jax.numpy as np
 from jax import lax
 from jax.scipy.linalg import solve_triangular
-from models._solver import adam
+from models._solver import adam, sgn
+
+_SOLVERS = {"adam": adam, "sgn": sgn}
 
 def _filter(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -> dict:
     """Kalman Filter implementation
@@ -130,7 +132,8 @@ def _fit(
     opt_options: dict = {}, maxiter: int = 5000,
     extra_loglikelihood_fn: callable = lambda _, __: 0.0,
     extra_ll_data: np.ndarray = None,
-    _filter_fn: callable = _filter_light) -> dict:
+    _filter_fn: callable = _filter_light,
+    solver: str = "adam") -> dict:
     """
     Args:
         data (np.ndarray)
@@ -151,7 +154,7 @@ def _fit(
         return -(_loglikelihood({"logdetF": kf["logdetF"], "quad": kf["quad"]}) + extra_loglikelihood_fn(constr_params, extra_ll_data))
 
     unc_params0 = np.asarray(_invlink(initial_guess))
-    unc_params, niter, final_loss, is_converged = adam(_criterion, unc_params0, opt_options, maxiter)
+    unc_params, niter, final_loss, is_converged = _SOLVERS[solver](_criterion, unc_params0, opt_options, maxiter)
 
     params = _link(unc_params)
     params = dict(params)
@@ -191,7 +194,8 @@ def _fit_collapsed(
     _link: callable = lambda x: x,
     _invlink: callable = lambda x: x,
     opt_options: dict = {},
-    maxiter: int = 5000) -> dict:
+    maxiter: int = 5000,
+    solver: str = "adam") -> dict:
     maxiter = int(maxiter)
     opt_options = opt_options or {}
 
@@ -206,7 +210,7 @@ def _fit_collapsed(
         return -(ll_star + correction)
 
     unc_params0 = np.asarray(_invlink(initial_guess))
-    unc_params, niter, final_loss, is_converged = adam(_criterion, unc_params0, opt_options, maxiter)
+    unc_params, niter, final_loss, is_converged = _SOLVERS[solver](_criterion, unc_params0, opt_options, maxiter)
 
     constr = _link(unc_params)
     Z = constr["Lambda"]
