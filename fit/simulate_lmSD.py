@@ -40,12 +40,12 @@ SIGMA2_SCALES = [1.0, 10.0, 0.1]
 SCALE_TEX = {1.0: r"\sigma^2", 10.0: r"10\,\sigma^2", 0.1: r"\sigma^2/10"}
 
 LR = {
-    "ffSD":  1e-1,
-    "fSD":   1e-1,
-    "msmSD": 1e-1,
-    "lmSD":  1e-1,
-    "adjSD": 1e-1,
-    "SS":    1e-1,
+    "ffSD":  1e-3,
+    "fSD":   1e-3,
+    "msmSD": 1e-3,
+    "lmSD":  1e-3,
+    "adjSD": 1e-3,
+    "SS":    1e-3,
 }
 
 _P_FF = 4
@@ -424,6 +424,16 @@ def make_table(T, results):
     ]
     return "\n".join(lines)
 RESULTS_PATH = os.path.join(OUTPUT_DIR, "results.json")
+PARAMS_CACHE_PATH = os.path.join(OUTPUT_DIR, "params_cache.json")
+
+_IG_KEYS = {
+    "ffSD":  ["beta_bar", "A", "sigma2", "omega_load", "eta", "alpha", "C", "nu"],
+    "fSD":   ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "eta", "alpha", "C", "nu"],
+    "msmSD": ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "C", "nu", "m0", "gamma_K", "b"],
+    "lmSD":  ["beta_bar", "B", "A", "d", "sigma2", "omega", "C", "nu"],
+    "adjSD": ["beta_bar", "B", "A", "sigma2", "omega", "C", "nu"],
+    "SS":    ["Q_param", "H_param", "B", "bar_beta", "omega"],
+}
 
 def _results_key(T, scale, tag, K):
     return json.dumps([T, scale, tag, K], sort_keys=True)
@@ -443,6 +453,26 @@ def save_results(results):
     with open(RESULTS_PATH, "w") as f:
         json.dump(serializable, f, indent=2)
 
+def load_params_cache():
+    if not os.path.exists(PARAMS_CACHE_PATH): return {}
+    with open(PARAMS_CACHE_PATH) as f: raw = json.load(f)
+    cache = {}
+    for key_str, params in raw.items():
+        T, scale, tag, K = json.loads(key_str)
+        cache[(T, scale, tag, K)] = {k: jnp.array(v) for k, v in params.items()}
+    return cache
+
+def save_params_cache(cache):
+    serializable = {
+        _results_key(T, scale, tag, K): {
+            k: (v.tolist() if hasattr(v, "tolist") else v)
+            for k, v in params.items()
+        }
+        for (T, scale, tag, K), params in cache.items()
+    }
+    with open(PARAMS_CACHE_PATH, "w") as f:
+        json.dump(serializable, f, indent=2)
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     params_base = load_params(PARAMS_PATH)
@@ -451,6 +481,7 @@ def main():
 
     key = jax.random.PRNGKey(42)
     results = load_results()
+    params_cache = load_params_cache()
 
     for T in HORIZONS:
         T_half = T // 2
@@ -482,14 +513,18 @@ def main():
 
             for K in K_VALUES:
                 if K in needs_ff:
-                    ig_ff = cold_ffSD(y_train, Z_fixed)
+                    pk = (T, scale, "ffSD", K)
+                    init = "warm" if pk in params_cache else "cold"
+                    ig_ff = params_cache[pk] if pk in params_cache else cold_ffSD(y_train, Z_fixed)
                     r_ff = _ff_fit(y_train, Z_cube, ig_ff, K, LR["ffSD"])
                     preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "ffSD", K)] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF) + (LR["ffSD"], int(r_ff["niter"]), bool(r_ff["is_converged"]), MAXITER, SOLVER)
-                    mse, mae, ll, *_ = results[(T, scale, "ffSD", K)]
-                    print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ff['niter'])}  conv={bool(r_ff['is_converged'])}  solver={SOLVER}", flush=True)
+                    results[pk] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF) + (LR["ffSD"], int(r_ff["niter"]), bool(r_ff["is_converged"]), MAXITER, SOLVER)
+                    params_cache[pk] = {k: r_ff[k] for k in _IG_KEYS["ffSD"]}
+                    mse, mae, ll, *_ = results[pk]
+                    print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ff['niter'])}  conv={bool(r_ff['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
                     save_results(results)
+                    save_params_cache(params_cache)
                 else:
                     v = results[(T, scale, "ffSD", K)]
                     mse, mae, ll = v[0], v[1], v[2]
@@ -497,14 +532,18 @@ def main():
                     print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
                 if K in needs_f:
-                    ig_f = cold_fSD(y_train, Z_fixed)
+                    pk = (T, scale, "fSD", K)
+                    init = "warm" if pk in params_cache else "cold"
+                    ig_f = params_cache[pk] if pk in params_cache else cold_fSD(y_train, Z_fixed)
                     r_f = _f_fit(y_train, Z_cube, ig_f, K, LR["fSD"])
                     preds_f, _, _, oos_ll_f = f_SD_forecast(r_f, Z_cube, y_test, K, SCORE_POWER, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "fSD", K)] = _metrics(y_test, preds_f, oos_ll_f, NP_F) + (LR["fSD"], int(r_f["niter"]), bool(r_f["is_converged"]), MAXITER, SOLVER)
-                    mse, mae, ll, *_ = results[(T, scale, "fSD", K)]
-                    print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_f['niter'])}  conv={bool(r_f['is_converged'])}  solver={SOLVER}", flush=True)
+                    results[pk] = _metrics(y_test, preds_f, oos_ll_f, NP_F) + (LR["fSD"], int(r_f["niter"]), bool(r_f["is_converged"]), MAXITER, SOLVER)
+                    params_cache[pk] = {k: r_f[k] for k in _IG_KEYS["fSD"]}
+                    mse, mae, ll, *_ = results[pk]
+                    print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_f['niter'])}  conv={bool(r_f['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
                     save_results(results)
+                    save_params_cache(params_cache)
                 else:
                     v = results[(T, scale, "fSD", K)]
                     mse, mae, ll = v[0], v[1], v[2]
@@ -513,14 +552,18 @@ def main():
 
             for K in K_VALUES_MSMSD:
                 if K in needs_msmsd:
-                    ig_msmsd = cold_msmSD(y_train, Z_fixed)
+                    pk = (T, scale, "msmSD", K)
+                    init = "warm" if pk in params_cache else "cold"
+                    ig_msmsd = params_cache[pk] if pk in params_cache else cold_msmSD(y_train, Z_fixed)
                     r_msmsd = _msmsd_fit(y_train, Z_cube, ig_msmsd, K, LR["msmSD"])
                     preds_msmsd, _, _, oos_ll_msmsd = msmsd_forecast(r_msmsd, Z_cube, y_test, K, SCORE_POWER, ALPHA)
                     jax.effects_barrier()
-                    results[(T, scale, "msmSD", K)] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD) + (LR["msmSD"], int(r_msmsd["niter"]), bool(r_msmsd["is_converged"]), MAXITER, SOLVER)
-                    mse, mae, ll, *_ = results[(T, scale, "msmSD", K)]
-                    print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_msmsd['niter'])}  conv={bool(r_msmsd['is_converged'])}  solver={SOLVER}", flush=True)
+                    results[pk] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD) + (LR["msmSD"], int(r_msmsd["niter"]), bool(r_msmsd["is_converged"]), MAXITER, SOLVER)
+                    params_cache[pk] = {k: r_msmsd[k] for k in _IG_KEYS["msmSD"]}
+                    mse, mae, ll, *_ = results[pk]
+                    print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_msmsd['niter'])}  conv={bool(r_msmsd['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
                     save_results(results)
+                    save_params_cache(params_cache)
                 else:
                     v = results[(T, scale, "msmSD", K)]
                     mse, mae, ll = v[0], v[1], v[2]
@@ -528,14 +571,18 @@ def main():
                     print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
             if needs_lmsd:
-                ig_lmsd = warm_lmSD(y_train, Z_fixed, params_base)
+                pk = (T, scale, "lmSD", None)
+                init = "warm" if pk in params_cache else "cold"
+                ig_lmsd = params_cache[pk] if pk in params_cache else warm_lmSD(y_train, Z_fixed, params_base)
                 r_lmsd = _lmSD_fit(y_train, Z_cube, ig_lmsd, LR["lmSD"])
                 preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "lmSD", None)] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD) + (LR["lmSD"], int(r_lmsd["niter"]), bool(r_lmsd["is_converged"]), MAXITER, SOLVER)
-                mse, mae, ll, *_ = results[(T, scale, "lmSD", None)]
-                print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_lmsd['niter'])}  conv={bool(r_lmsd['is_converged'])}  solver={SOLVER}", flush=True)
+                results[pk] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD) + (LR["lmSD"], int(r_lmsd["niter"]), bool(r_lmsd["is_converged"]), MAXITER, SOLVER)
+                params_cache[pk] = {k: r_lmsd[k] for k in _IG_KEYS["lmSD"]}
+                mse, mae, ll, *_ = results[pk]
+                print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_lmsd['niter'])}  conv={bool(r_lmsd['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
                 save_results(results)
+                save_params_cache(params_cache)
             else:
                 v = results[(T, scale, "lmSD", None)]
                 mse, mae, ll = v[0], v[1], v[2]
@@ -549,7 +596,7 @@ def main():
                 jax.effects_barrier()
                 results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD) + (LR["lmSD"], int(r_oracle["niter"]), bool(r_oracle["is_converged"]), 0, SOLVER)
                 mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
-                print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_oracle['niter'])}  conv={bool(r_oracle['is_converged'])}  solver={SOLVER}", flush=True)
+                print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_oracle['niter'])}  conv={bool(r_oracle['is_converged'])}  solver={SOLVER}  init=oracle", flush=True)
                 save_results(results)
             else:
                 v = results[(T, scale, "lmSD_oracle", None)]
@@ -558,14 +605,18 @@ def main():
                 print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
             if needs_adjsd:
-                ig_adjsd = cold_adjSD(y_train, Z_fixed)
+                pk = (T, scale, "adjSD", None)
+                init = "warm" if pk in params_cache else "cold"
+                ig_adjsd = params_cache[pk] if pk in params_cache else cold_adjSD(y_train, Z_fixed)
                 r_adjsd = _adjSD_fit(y_train, Z_cube, ig_adjsd, LR["adjSD"])
                 preds_adjsd, _, _, oos_ll_adjsd = adjSD_forecast(r_adjsd, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "adjSD", None)] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD) + (LR["adjSD"], int(r_adjsd["niter"]), bool(r_adjsd["is_converged"]), MAXITER, SOLVER)
-                mse, mae, ll, *_ = results[(T, scale, "adjSD", None)]
-                print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_adjsd['niter'])}  conv={bool(r_adjsd['is_converged'])}  solver={SOLVER}", flush=True)
+                results[pk] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD) + (LR["adjSD"], int(r_adjsd["niter"]), bool(r_adjsd["is_converged"]), MAXITER, SOLVER)
+                params_cache[pk] = {k: r_adjsd[k] for k in _IG_KEYS["adjSD"]}
+                mse, mae, ll, *_ = results[pk]
+                print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_adjsd['niter'])}  conv={bool(r_adjsd['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
                 save_results(results)
+                save_params_cache(params_cache)
             else:
                 v = results[(T, scale, "adjSD", None)]
                 mse, mae, ll = v[0], v[1], v[2]
@@ -573,15 +624,19 @@ def main():
                 print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
             if needs_ss:
-                ig_ss = cold_ss(y_train, Z_fixed)
+                pk = (T, scale, "SS", None)
+                init = "warm" if pk in params_cache else "cold"
+                ig_ss = params_cache[pk] if pk in params_cache else cold_ss(y_train, Z_fixed)
                 init_ss = cold_ss_init(y_train, Z_fixed)
                 r_ss = _ss_fit(y_train, Z_cube, ig_ss, init_ss, LR["SS"])
                 preds_ss, _, _, oos_ll_ss = ss_forecast(r_ss, Z_cube, y_test, ALPHA)
                 jax.effects_barrier()
-                results[(T, scale, "SS", None)] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS) + (LR["SS"], int(r_ss["niter"]), bool(r_ss["is_converged"]), MAXITER, SOLVER)
-                mse, mae, ll, *_ = results[(T, scale, "SS", None)]
-                print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ss['niter'])}  conv={bool(r_ss['is_converged'])}  solver={SOLVER}", flush=True)
+                results[pk] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS) + (LR["SS"], int(r_ss["niter"]), bool(r_ss["is_converged"]), MAXITER, SOLVER)
+                params_cache[pk] = {k: r_ss[k] for k in _IG_KEYS["SS"]}
+                mse, mae, ll, *_ = results[pk]
+                print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ss['niter'])}  conv={bool(r_ss['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
                 save_results(results)
+                save_params_cache(params_cache)
             else:
                 v = results[(T, scale, "SS", None)]
                 mse, mae, ll = v[0], v[1], v[2]
