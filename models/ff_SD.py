@@ -245,6 +245,33 @@ def forecast(fit_result, M, y_test, K, alpha):
 
     return predictions, P, VaR, log_liks
 
+def forecast_h(fit_result, M, K):
+    beta_bar = fit_result["beta_bar"]
+    omega_load = fit_result["omega_load"]
+    eta = fit_result["eta"]
+    alpha = fit_result["alpha"]
+
+    M = np.asarray(M, dtype=float)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    n_h = base_covariates.shape[1]
+
+    ws, lambdas = _solve_weights_ff(eta, alpha, K)
+    exp_neg_lambdas = np.exp(-lambdas)
+
+    def _step(b_t, inputs):
+        base_t, bidx_t = inputs
+        beta_t = beta_bar + np.sum(ws * b_t, axis=0)
+        b_next = exp_neg_lambdas * b_t
+        omega_col = omega_load[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        predictions_t = Z_t @ beta_t
+        P_t = predictions_t.sum() / n_h
+        return b_next, (predictions_t, P_t)
+
+    _, (predictions, P) = lax.scan(_step, fit_result["b_T"], (base_covariates, bucket_indices))
+    return predictions, P
+
 def simulate_panel(params, M, n, key, K, b_0=None):
     A = params["A"]
     sigma2 = params["sigma2"]

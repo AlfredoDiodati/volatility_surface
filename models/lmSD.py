@@ -244,6 +244,44 @@ def simulate(params, M, horizon, key, beta_0=None, score_buf_size=None, score_bu
     )
     return y_sim, beta_sim
 
+def forecast_h(fit_result, M):
+    B = fit_result["B"]
+    A = fit_result["A"]
+    d = fit_result["d"]
+    beta_bar = fit_result["beta_bar"]
+    omega = fit_result["omega"]
+    p = beta_bar.shape[0]
+
+    M = np.asarray(M, dtype=float)
+    H = M.shape[0]
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    n_h = base_covariates.shape[1]
+
+    score_buf_T = fit_result["score_buf_T"]
+    T_buf = score_buf_T.shape[0]
+    score_buf_init = np.concatenate([score_buf_T, np.zeros((H, p))], axis=0)
+
+    A_diag = np.diag(A)
+    weights = _compute_weights(d, T_buf + H)
+
+    def _step(carry, inputs):
+        beta_h, score_buf = carry
+        base_t, bidx_t = inputs
+        score_buf_new = np.roll(score_buf, 1, axis=0)
+        conv = A_diag * (weights * score_buf_new).sum(axis=0)
+        beta_next = beta_bar + B @ (beta_h - beta_bar) + conv
+        omega_col = omega[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        predictions_t = Z_t @ beta_next
+        P_t = predictions_t.sum() / n_h
+        return (beta_next, score_buf_new), (predictions_t, P_t)
+
+    _, (predictions, P) = lax.scan(
+        _step, (fit_result["beta_T"], score_buf_init), (base_covariates, bucket_indices)
+    )
+    return predictions, P
+
 def simulate_panel(params, M, n, key, beta_0=None, score_buf_size=None, score_buf_0=None):
     B = params["B"]
     A = params["A"]

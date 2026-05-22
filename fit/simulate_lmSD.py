@@ -26,14 +26,13 @@ PARAMS_PATH = "out/SPX/otm/params_lmSD.json"
 OUTPUT_DIR = "out/SPX/mc/simulate_lmSD"
 SCORE_POWER = 1.0
 ALPHA = 0.05
-MAXITER = 100_000
+MAXITER = 5000
 SOLVER = "adam"
 K_VALUES = [1, 2, 3, 5, 10, 20, 30, 50]
 K_VALUES_MSMSD = [1, 2, 3, 5, 10]
-N_BUCKETS = 4
-
 MONEYNESS = jnp.array([0.9, 0.98, 1.05, 1.15, 1.3, 1.5])
 MATURITY = jnp.array([10, 50, 100, 180]) / 255.0
+N_BUCKETS = len(MONEYNESS) * len(MATURITY)
 
 HORIZONS = [400, 2000]
 SIGMA2_SCALES = [1.0, 10.0, 0.1]
@@ -77,9 +76,8 @@ def load_params(path):
 
 def make_Z_fixed():
     mon_g, mat_g = jnp.meshgrid(MONEYNESS, MATURITY, indexing="ij")
-    _, midx_g = jnp.meshgrid(jnp.arange(len(MONEYNESS)), jnp.arange(len(MATURITY)), indexing="ij")
     N = mon_g.size
-    return jnp.stack([jnp.ones(N), mon_g.ravel(), mat_g.ravel(), midx_g.ravel().astype(float)], axis=1)
+    return jnp.stack([jnp.ones(N), mon_g.ravel(), mat_g.ravel(), jnp.arange(N).astype(float)], axis=1)
 
 def _ols(y_train, M):
     T, N = y_train.shape
@@ -270,8 +268,10 @@ def _is_cached(results, key, lr, solver):
     if key not in results or len(results[key]) < _N_METRICS:
         return False
     v = results[key]
-    stored_lr = v[_N_METRICS] if len(v) > _N_METRICS else _DEFAULT_LR
-    stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
+    if len(v) <= _N_METRICS:
+        return False
+    stored_lr = v[_N_METRICS]
+    stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else None
     return abs(stored_lr - lr) < 1e-12 and stored_solver == solver
 
 def make_table(T, results):

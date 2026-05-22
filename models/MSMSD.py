@@ -249,6 +249,48 @@ def fit(
         "K": K,
     }
 
+def forecast_h(fit_result, M, K):
+    beta_bar = fit_result["beta_bar"]
+    B = fit_result["B"]
+    IminusB = np.eye(beta_bar.shape[0]) - B
+    sigma_0 = fit_result["sigma_0"]
+    omega_load = fit_result["omega_load"]
+    m0 = fit_result["m0"]
+    gamma_k = fit_result["gamma_k"]
+
+    M = np.asarray(M, dtype=float)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    n_h = base_covariates.shape[1]
+
+    g_vals = _build_msm_states(K, m0)
+    log_P = _build_log_transition_tensor(gamma_k)
+    h_states = 2 ** K
+    j_range = np.arange(h_states, dtype=np.int32)
+    k_range = np.arange(K, dtype=np.int32)
+    masks = np.int32(1) << k_range
+    bits_matrix = ((j_range[None, :] >> k_range[:, None]) & 1)
+    idx0_all = j_range[None, :] & (~masks[:, None])
+    idx1_all = j_range[None, :] | masks[:, None]
+
+    def _step(state, inputs):
+        log_pi_t, beta_tilde_t = state
+        base_t, bidx_t = inputs
+        log_pi_pred = _transition_step_log(log_P, idx0_all, idx1_all, bits_matrix, log_pi_t)
+        pi_pred = np.exp(log_pi_pred)
+        sigma_t = sigma_0 * (pi_pred * g_vals).sum()
+        beta_full_t = np.concatenate([beta_tilde_t, np.array([sigma_t])])
+        beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t
+        omega_col = omega_load[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        predictions_t = Z_t @ beta_full_t
+        P_t = predictions_t.sum() / n_h
+        return (log_pi_pred, beta_tilde_next), (predictions_t, P_t)
+
+    state0 = (fit_result["log_pi_T"], fit_result["beta_tilde_T"])
+    _, (predictions, P) = lax.scan(_step, state0, (base_covariates, bucket_indices))
+    return predictions, P
+
 def forecast(fit_result, M, y_test, K, score_power, alpha):
     M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)

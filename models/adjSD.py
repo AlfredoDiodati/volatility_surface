@@ -174,6 +174,28 @@ def forecast(fit_result, M, y_test, alpha):
 
     return predictions, P, VaR, log_liks
 
+def forecast_h(fit_result, M):
+    B = fit_result["B"]
+    beta_bar = fit_result["beta_bar"]
+    omega = fit_result["omega"]
+
+    M = np.asarray(M, dtype=float)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    n_h = base_covariates.shape[1]
+
+    def _step(beta_h, inputs):
+        base_t, bidx_t = inputs
+        beta_next = beta_bar + B @ (beta_h - beta_bar)
+        omega_col = omega[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        predictions_t = Z_t @ beta_next
+        P_t = predictions_t.sum() / n_h
+        return beta_next, (predictions_t, P_t)
+
+    _, (predictions, P) = lax.scan(_step, fit_result["beta_T"], (base_covariates, bucket_indices))
+    return predictions, P
+
 def simulate_panel(params, M, n, key, beta_0=None):
     B = params["B"]
     A = params["A"]

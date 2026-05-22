@@ -231,6 +231,35 @@ def forecast(fit_result, M, y_test, q_alpha):
 
     return predictions, P_means, VaR, log_liks
 
+def forecast_h(fit_result, M, q_alpha):
+    a0 = fit_result["att"][-1]
+    P0 = fit_result["Ptt"][-1]
+    B = fit_result["B"]
+    Q = fit_result["Q_param"]
+    ct = fit_result["ct"]
+    sigma2 = fit_result["H_param"][0, 0]
+    omega = fit_result["omega"]
+
+    M = np.asarray(M, dtype=float)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    Z_all = _build_Zt_all(base_covariates, bucket_indices, omega)
+    n_h = Z_all.shape[1]
+
+    def _step(carry, Z_h):
+        a_t, P_t = carry
+        a_pred = B @ a_t + ct
+        P_pred = B @ P_t @ B.T + Q
+        y_hat = Z_h @ a_pred
+        P_mean = y_hat.sum() / n_h
+        z_sum = Z_h.sum(axis=0)
+        F_sum = n_h * sigma2 + z_sum @ P_pred @ z_sum
+        VaR_h = P_mean + q_alpha / n_h * np.sqrt(F_sum)
+        return (a_pred, P_pred), (y_hat, P_mean, VaR_h)
+
+    _, (predictions, P_means, VaR) = jax.lax.scan(_step, (a0, P0), Z_all)
+    return predictions, P_means, VaR
+
 def simulation(fit_result, M, n, key: jax.Array):
     B = fit_result["B"]
     Q = fit_result["Q_param"]

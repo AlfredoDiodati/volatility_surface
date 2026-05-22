@@ -247,6 +247,40 @@ def fit(
     }
 
 
+def forecast_h(fit_result, M, K):
+    beta_bar = fit_result["beta_bar"]
+    B = fit_result["B"]
+    IminusB = np.eye(beta_bar.shape[0]) - B
+    sigma_0 = fit_result["sigma_0"]
+    omega_load = fit_result["omega_load"]
+    eta = fit_result["eta"]
+    alpha = fit_result["alpha"]
+
+    M = np.asarray(M, dtype=float)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    n_h = base_covariates.shape[1]
+
+    weights, lambdas = _solve_weights(eta, alpha, K)
+    exp_neg_lambdas = np.exp(-lambdas)
+
+    def _step(state, inputs):
+        b_t, beta_tilde_t = state
+        base_t, bidx_t = inputs
+        sigma_t = sigma_0 + weights @ b_t
+        beta_full_t = np.concatenate([beta_tilde_t, np.array([sigma_t])])
+        b_next = exp_neg_lambdas * b_t
+        beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t
+        omega_col = omega_load[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        predictions_t = Z_t @ beta_full_t
+        P_t = predictions_t.sum() / n_h
+        return (b_next, beta_tilde_next), (predictions_t, P_t)
+
+    state0 = (fit_result["b_T"], fit_result["beta_tilde_T"])
+    _, (predictions, P) = lax.scan(_step, state0, (base_covariates, bucket_indices))
+    return predictions, P
+
 def forecast(fit_result, M, y_test, K, score_power, alpha):
     state0 = (fit_result["b_T"], fit_result["beta_tilde_T"])
 
