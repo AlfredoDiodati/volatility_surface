@@ -3,9 +3,9 @@ import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
-from models._solver import adam_adj, sgn
+from models._solver import adam, adam_adj, sgn
 
-_SOLVERS = {"adam": adam_adj, "sgn": sgn}
+_SOLVERS = {"adam": adam, "adam_adj": adam_adj, "sgn": sgn}
 
 
 def _t_unit_var_ppf(alpha, nu):

@@ -7,9 +7,9 @@ import jax
 import jax.numpy as np
 from jax import lax
 from jax.scipy.linalg import solve_triangular
-from models._solver import adam_adj, sgn
+from models._solver import adam, adam_adj, sgn
 
-_SOLVERS = {"adam": adam_adj, "sgn": sgn}
+_SOLVERS = {"adam": adam, "adam_adj": adam_adj, "sgn": sgn}
 
 def _filter(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -> dict:
     """Kalman Filter implementation
