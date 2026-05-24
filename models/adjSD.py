@@ -2,9 +2,9 @@ import jax
 import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
-from models._solver import adam, adam_adj, sgn
+from models._solver import adam, adam_adj, sgn, lbfgs
 
-_SOLVERS = {"adam": adam, "adam_adj": adam_adj, "sgn": sgn}
+_SOLVERS = {"adam": adam, "adam_adj": adam_adj, "sgn": sgn, "lbfgs": lbfgs}
 
 
 def _t_unit_var_ppf(alpha, nu):
