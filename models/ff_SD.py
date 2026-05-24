@@ -218,6 +218,79 @@ def fit(
         "is_converged": is_converged,
     }
 
+def standard_errors(fit_result, data, M, K):
+    data = np.asarray(data, dtype=float)
+    M = np.asarray(M, dtype=float)
+    p = fit_result["beta_bar"].shape[0]
+    n_buckets = fit_result["omega_load"].shape[0]
+
+    mask_bool = ~np.isnan(data)
+    y_masked = np.where(mask_bool, data, 0.0)
+    mask_f = mask_bool.astype(float)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+
+    def _link(theta):
+        idx = 0
+        beta_bar = theta[idx:idx + p]; idx += p
+        A_diag = theta[idx:idx + p]; idx += p
+        sigma2 = np.exp(theta[idx]); idx += 1
+        omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]]); idx += n_buckets - 1
+        eta = np.exp(theta[idx:idx + p]); idx += p
+        alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
+        C_diag = np.exp(theta[idx:idx + p]); idx += p
+        nu = np.exp(theta[idx]) + 2.0
+        return np.concatenate([beta_bar, A_diag, np.array([sigma2]),
+                                omega_load[1:], eta, np.array([alpha[0]]),
+                                C_diag, np.array([nu])])
+
+    def _invlink(params):
+        A_diag = np.diag(params["A"])
+        unc_s2 = np.log(params["sigma2"])
+        unc_omega_load = params["omega_load"][1:]
+        unc_eta = np.log(params["eta"])
+        unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
+        unc_C = np.log(np.diag(params["C"]))
+        unc_nu = np.log(params["nu"] - 2.0)
+        return np.concatenate([params["beta_bar"], A_diag, np.array([unc_s2]),
+                                unc_omega_load, unc_eta, np.array([unc_alpha]),
+                                unc_C, np.array([unc_nu])])
+
+    def _criterion(theta):
+        idx = 0
+        beta_bar = theta[idx:idx + p]; idx += p
+        A = np.diag(theta[idx:idx + p]); idx += p
+        sigma2 = np.exp(theta[idx]); idx += 1
+        omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]]); idx += n_buckets - 1
+        eta = np.exp(theta[idx:idx + p]); idx += p
+        alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
+        C = np.diag(np.exp(theta[idx:idx + p])); idx += p
+        nu = np.exp(theta[idx]) + 2.0
+        params = {"beta_bar": beta_bar, "A": A, "sigma2": sigma2,
+                  "omega_load": omega_load, "eta": eta, "alpha": alpha, "C": C, "nu": nu}
+        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
+        return -np.sum(lls)
+
+    theta_opt = _invlink(fit_result)
+    H = jax.hessian(_criterion)(theta_opt)
+    cov_theta = np.linalg.inv(H)
+    J = jax.jacobian(_link)(theta_opt)
+    cov_natural = J @ cov_theta @ J.T
+    se_flat = np.sqrt(np.diag(cov_natural))
+
+    idx = 0
+    se = {}
+    se["beta_bar"] = se_flat[idx:idx + p]; idx += p
+    se["A_diag"]   = se_flat[idx:idx + p]; idx += p
+    se["sigma2"]   = se_flat[idx];         idx += 1
+    se["omega_load"] = se_flat[idx:idx + n_buckets - 1]; idx += n_buckets - 1
+    se["eta"]      = se_flat[idx:idx + p]; idx += p
+    se["alpha"]    = se_flat[idx:idx + 1]; idx += 1
+    se["C_diag"]   = se_flat[idx:idx + p]; idx += p
+    se["nu"]       = se_flat[idx]
+    return se
+
+
 def forecast(fit_result, M, y_test, K, alpha):
     state0 = fit_result["b_T"]
 

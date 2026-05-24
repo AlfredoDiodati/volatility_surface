@@ -299,17 +299,17 @@ def make_table(T, results):
         return 3 * round(math.floor(math.log10(mag)) / 3)
 
     mse_exp = _exp3(all_mse)
-    mae_exp = _exp3(all_mae)
     mse_mult = 10.0 ** (-mse_exp)
-    mae_mult = 10.0 ** (-mae_exp)
+    mae_exp = -2
+    mae_mult = 100.0
+    ll_exp = 3
 
-    def _fmt(v):
-        """Format a scaled value without scientific notation."""
+    def _fmt_mse(v):
         if v is None: return "--"
         av = abs(v)
-        if av >= 10: return f"{v:.1f}"
-        elif av >= 1: return f"{v:.2f}"
-        else: return f"{v:.3f}"
+        if av >= 10: return f"{v:.2f}"
+        elif av >= 1: return f"{v:.3f}"
+        else: return f"{v:.4f}"
 
     def _bench_seqs(scale):
         key = (T, scale, "lmSD_oracle", None)
@@ -369,7 +369,7 @@ def make_table(T, results):
     lines.append(rf"& & {metric_hdr} \\")
 
     scale_hdr = " & ".join(
-        f"{_scale_cell(mse_exp)} & {_scale_cell(mae_exp)} & " for _ in SIGMA2_SCALES
+        f"{_scale_cell(mse_exp)} & {_scale_cell(mae_exp)} & {_scale_cell(ll_exp)}" for _ in SIGMA2_SCALES
     )
     lines.append(rf"& & {scale_hdr} \\")
     lines.append(r"\midrule")
@@ -388,7 +388,7 @@ def make_table(T, results):
                     s_mse = _dm_stars(seqs[0], b_mse)
                     s_mae = _dm_stars(seqs[1], b_mae)
                     s_ll = _dm_stars(seqs[2], b_ll, higher_better=True)
-                cells += [_fmt(mse_v) + s_mse, _fmt(mae_v) + s_mae, f"{ll_v:.1f}" + s_ll]
+                cells += [_fmt_mse(mse_v) + s_mse, f"{mae_v:.1f}" + s_mae, f"{ll_v/1000:.2f}" + s_ll]
         return "    " + " & ".join(cells) + r" \\"
 
     K_groups = [("ff-SD", "ffSD", K_VALUES), ("f-SD", "fSD", K_VALUES), ("msm-SD", "msmSD", K_VALUES_MSMSD)]
