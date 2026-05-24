@@ -280,15 +280,18 @@ def standard_errors(fit_result, data, M, K):
 
     idx = 0
     se = {}
-    se["beta_bar"] = se_flat[idx:idx + p]; idx += p
-    se["A_diag"]   = se_flat[idx:idx + p]; idx += p
-    se["sigma2"]   = se_flat[idx];         idx += 1
+    se["beta_bar"]   = se_flat[idx:idx + p];             idx += p
+    se["A_diag"]     = se_flat[idx:idx + p];             idx += p
+    se["sigma2"]     = se_flat[idx];                     idx += 1
     se["omega_load"] = se_flat[idx:idx + n_buckets - 1]; idx += n_buckets - 1
-    se["eta"]      = se_flat[idx:idx + p]; idx += p
-    se["alpha"]    = se_flat[idx:idx + 1]; idx += 1
-    se["C_diag"]   = se_flat[idx:idx + p]; idx += p
-    se["nu"]       = se_flat[idx]
-    return se
+    eta_idx = idx
+    se["eta"]        = se_flat[idx:idx + p];             idx += p
+    se["alpha"]      = se_flat[idx:idx + 1];             idx += 1
+    se["C_diag"]     = se_flat[idx:idx + p];             idx += p
+    se["nu"]         = se_flat[idx]
+
+    cov_eta = cov_natural[eta_idx:eta_idx + p, eta_idx:eta_idx + p]
+    return se, cov_eta
 
 
 def forecast(fit_result, M, y_test, K, alpha):

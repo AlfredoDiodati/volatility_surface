@@ -14,8 +14,8 @@ from models.lmSD import simulate
 from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
 from models.ss import fit_collapsed as ss_fit, forecast as ss_forecast
-from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast
-from models.f_SD import fit as f_SD_fit, forecast as f_SD_forecast
+from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast, standard_errors as ff_SD_se
+from models.f_SD import fit as f_SD_fit, forecast as f_SD_forecast, standard_errors as f_SD_se
 from models.MSMSD import fit as msmsd_fit, forecast as msmsd_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
@@ -472,6 +472,127 @@ def save_params_cache(cache):
     with open(PARAMS_CACHE_PATH, "w") as f:
         json.dump(serializable, f, indent=2)
 
+def compute_wald_tests(params_base, Z_fixed):
+    from scipy import stats as scipy_stats
+    params_cache = load_params_cache()
+    d_true = jnp.array(params_base["d"])
+    sigma2_base = params_base["sigma2"]
+    p = d_true.shape[0]
+
+    test_results = {}
+    key = jax.random.PRNGKey(42)
+
+    for T in HORIZONS:
+        T_half = T // 2
+        Z_cube = jnp.broadcast_to(Z_fixed[None], (T_half, Z_fixed.shape[0], Z_fixed.shape[1]))
+
+        for scale in SIGMA2_SCALES:
+            key, subkey = jax.random.split(key)
+            params_scaled = params_base | {"sigma2": sigma2_base * scale}
+            y_sim, _ = _sim_jit(params_scaled, Z_fixed, horizon=T, key=subkey, score_buf_size=T)
+            y_train = y_sim[:T_half]
+
+            for K in K_VALUES:
+                pk = (T, scale, "ffSD", K)
+                if pk not in params_cache:
+                    continue
+                cached = params_cache[pk]
+                se, cov_eta = ff_SD_se(cached, y_train, Z_cube, K)
+                eta_hat = cached["eta"]
+                diff = eta_hat - d_true
+                joint_stat = float(diff @ jnp.linalg.inv(cov_eta) @ diff)
+                joint_pval = float(scipy_stats.chi2.sf(joint_stat, df=p))
+                marginal_z = [(float(eta_hat[j]) - float(d_true[j])) / float(se["eta"][j]) for j in range(p)]
+                marginal_pval = [float(2 * scipy_stats.norm.sf(abs(z))) for z in marginal_z]
+                test_results[pk] = {
+                    "joint_stat": joint_stat, "joint_pval": joint_pval,
+                    "marginal_z": marginal_z, "marginal_pval": marginal_pval,
+                }
+                print(f"  wald ffSD T={T} scale={scale} K={K}: chi2={joint_stat:.2f} p={joint_pval:.3f}", flush=True)
+
+
+    return test_results
+
+
+def make_wald_table(T, test_results, p):
+    from scipy import stats as scipy_stats
+
+    def _sig(pval):
+        if pval is None: return ""
+        if pval < 0.01: return r"\rlap{$^{\ddagger}$}"
+        if pval < 0.05: return r"\rlap{$^{\dagger}$}"
+        if pval < 0.10: return r"\rlap{$^{\circ}$}"
+        return ""
+
+    def _zfmt(z, pval):
+        if z is None: return "--"
+        return f"{z:+.2f}{_sig(pval)}"
+
+    def _chi2fmt(stat, pval):
+        if stat is None: return "--"
+        return f"{stat:.2f}{_sig(pval)}"
+
+    N_MET = p + 1
+    col_spec = "ll" + "r" * (N_MET * len(SIGMA2_SCALES))
+
+    cmidrules = " ".join(
+        rf"\cmidrule(lr){{{3 + i * N_MET}-{2 + (i + 1) * N_MET}}}"
+        for i in range(len(SIGMA2_SCALES))
+    )
+    grp_hdrs = " & ".join(
+        rf"\multicolumn{{{N_MET}}}{{c}}{{${SCALE_TEX[s]}$}}"
+        for s in SIGMA2_SCALES
+    )
+    dim_hdrs = " & ".join(
+        rf"$\chi^2({p})$ & " + " & ".join(rf"$d_{{{j+1}}}$" for j in range(p))
+        for _ in SIGMA2_SCALES
+    )
+
+    lines = [
+        r"\begin{table}[H]",
+        r"\centering",
+        r"\small",
+        rf"\begin{{tabular}}{{{col_spec}}}",
+        r"\toprule",
+        rf"Model & $K$ & {grp_hdrs} \\",
+        cmidrules,
+        rf"& & {dim_hdrs} \\",
+        r"\midrule",
+    ]
+
+    def _row(model_cell, K_cell, tag, K):
+        cells = [model_cell, K_cell]
+        for scale in SIGMA2_SCALES:
+            key = (T, scale, tag, K)
+            r = test_results.get(key)
+            if r is None:
+                cells += ["--"] * N_MET
+            else:
+                cells.append(_chi2fmt(r["joint_stat"], r["joint_pval"]))
+                for j in range(p):
+                    cells.append(_zfmt(r["marginal_z"][j], r["marginal_pval"][j]))
+        return "    " + " & ".join(cells) + r" \\"
+
+    K_groups = [("ff-SD", "ffSD", K_VALUES)]
+    for gi, (model_name, tag, k_list) in enumerate(K_groups):
+        if gi > 0: lines.append(r"\addlinespace[3pt]")
+        n = len(k_list)
+        for ri, K in enumerate(k_list):
+            model_cell = rf"\multirow{{{n}}}{{*}}{{{model_name}}}" if ri == 0 else ""
+            lines.append(_row(model_cell, str(K), tag, K))
+
+    lines += [
+        r"\bottomrule",
+        r"\end{tabular}",
+        rf"\caption{{Wald tests for $\hat{{\eta}} = d_{{\mathrm{{true}}}}$ on data simulated from the lmSD model, $T={T}$."
+        rf" $\chi^2({p})$: joint test; $d_j$: marginal $z$-test for dimension $j$."
+        rf" Superscripts: $^{{\circ}}$10\%, $^{{\dagger}}$5\%, $^{{\ddagger}}$1\%.}}",
+        rf"\label{{tab:wald_lmSD_T{T}}}",
+        r"\end{table}",
+    ]
+    return "\n".join(lines)
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     params_base = load_params(PARAMS_PATH)
@@ -649,5 +770,14 @@ def main():
     with open(out_path, "w") as f:
         f.write(tex)
     print(f"\nLaTeX tables saved to {out_path}")
+
+    print("\nComputing Wald tests...", flush=True)
+    p = int(params_base["d"].shape[0])
+    test_results = compute_wald_tests(params_base, Z_fixed)
+    wald_tex = "\n\n".join(make_wald_table(T, test_results, p) for T in HORIZONS)
+    wald_path = os.path.join(OUTPUT_DIR, "wald_lmSD.tex")
+    with open(wald_path, "w") as f:
+        f.write(wald_tex)
+    print(f"Wald test tables saved to {wald_path}")
 
 if __name__ == "__main__": main()
