@@ -251,7 +251,7 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
 
         def ls_cond(state):
             alpha, f_trial, i = state
-            return (i < maxls) & (f_trial > f0 + c1 * alpha * slope)
+            return (i < maxls) & (~jnp.isfinite(f_trial) | (f_trial > f0 + c1 * alpha * slope))
 
         def ls_body(state):
             alpha, _, i = state

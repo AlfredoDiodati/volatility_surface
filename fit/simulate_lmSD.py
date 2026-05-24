@@ -26,7 +26,7 @@ PARAMS_PATH = "out/SPX/otm/params_lmSD.json"
 OUTPUT_DIR = "out/SPX/mc/simulate_lmSD"
 SCORE_POWER = 1.0
 ALPHA = 0.05
-MAXITER = 500
+MAXITER = 2000
 SOLVER = "lbfgs"
 K_VALUES = [1, 2, 3, 5, 10, 20, 30, 50]
 K_VALUES_MSMSD = [1, 2, 3, 5, 10]
@@ -269,6 +269,9 @@ def _is_cached(results, key, lr, solver):
         return False
     v = results[key]
     if len(v) <= _N_METRICS:
+        return False
+    mse = v[0]
+    if mse != mse:
         return False
     stored_lr = v[_N_METRICS]
     stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else None
