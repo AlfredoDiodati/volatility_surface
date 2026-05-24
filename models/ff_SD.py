@@ -273,10 +273,12 @@ def standard_errors(fit_result, data, M, K):
 
     theta_opt = _invlink(fit_result)
     H = jax.hessian(_criterion)(theta_opt)
-    cov_theta = np.linalg.inv(H)
+    eigvals, eigvecs = np.linalg.eigh(H)
+    H_pd = eigvecs @ np.diag(np.maximum(eigvals, 1e-8)) @ eigvecs.T
+    cov_theta = np.linalg.inv(H_pd)
     J = jax.jacobian(_link)(theta_opt)
     cov_natural = J @ cov_theta @ J.T
-    se_flat = np.sqrt(np.diag(cov_natural))
+    se_flat = np.sqrt(np.abs(np.diag(cov_natural)))
 
     idx = 0
     se = {}

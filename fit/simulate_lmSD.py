@@ -499,10 +499,13 @@ def compute_wald_tests(params_base, Z_fixed):
                 cached = params_cache[pk]
                 se, cov_eta = ff_SD_se(cached, y_train, Z_cube, K)
                 eta_hat = cached["eta"]
-                diff = eta_hat - d_true
-                joint_stat = float(diff @ jnp.linalg.inv(cov_eta) @ diff)
+                d_hat = (1.0 - eta_hat) / 2.0
+                cov_d = cov_eta / 4.0
+                se_d = se["eta"] / 2.0
+                diff = d_hat - d_true
+                joint_stat = float(diff @ jnp.linalg.inv(cov_d) @ diff)
                 joint_pval = float(scipy_stats.chi2.sf(joint_stat, df=p))
-                marginal_z = [(float(eta_hat[j]) - float(d_true[j])) / float(se["eta"][j]) for j in range(p)]
+                marginal_z = [(float(d_hat[j]) - float(d_true[j])) / float(se_d[j]) for j in range(p)]
                 marginal_pval = [float(2 * scipy_stats.norm.sf(abs(z))) for z in marginal_z]
                 test_results[pk] = {
                     "joint_stat": joint_stat, "joint_pval": joint_pval,
