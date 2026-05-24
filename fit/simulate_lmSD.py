@@ -312,7 +312,7 @@ def make_table(T, results):
         else: return f"{v:.3f}"
 
     def _bench_seqs(scale):
-        key = (T, scale, "lmSD", None)
+        key = (T, scale, "lmSD_oracle", None)
         if key not in results or len(results[key]) < 8: return None, None, None
         r = results[key]
         return r[5], r[6], r[7]
@@ -327,9 +327,9 @@ def make_table(T, results):
         var_d = sum((x - mean_d) ** 2 for x in d) / (n - 1)
         if var_d <= 0: return ""
         stat = abs(mean_d) / (var_d ** 0.5 / n ** 0.5)
-        if stat > 2.576: return "***"
-        elif stat > 1.96: return "**"
-        elif stat > 1.645: return "*"
+        if stat > 2.576: return r"\rlap{$^{\ddagger}$}"
+        elif stat > 1.96: return r"\rlap{$^{\dagger}$}"
+        elif stat > 1.645: return r"\rlap{$^{\circ}$}"
         return ""
 
     def _get(scale, tag, K):
@@ -401,14 +401,12 @@ def make_table(T, results):
             )
             lines.append(_row(model_cell, str(K), tag, K))
 
+    for model_name, tag in [("adj-SD", "adjSD"), ("SS", "SS")]:
+        lines.append(r"\addlinespace[3pt]")
+        lines.append(_row(model_name, "", tag, None))
+
     lines.append(r"\midrule")
-    fixed = [
-        (r"lmSD$^{\star}$", "lmSD", None, True),
-        ("adj-SD", "adjSD", None, False),
-        ("SS", "SS", None, False),
-    ]
-    for model_name, tag, K, is_bench in fixed:
-        lines.append(_row(model_name, "", tag, K, is_bench=is_bench))
+    lines.append(_row("lmSD", "", "lmSD_oracle", None, is_bench=True))
 
     lines += [
         r"\bottomrule",
@@ -417,9 +415,8 @@ def make_table(T, results):
             rf"\caption{{One-step-ahead predictive performance on data simulated"
             rf" from the lmSD model, $T={T}$"
             rf" (first $T/2$ for training, second $T/2$ for evaluation)."
-            rf" $\star$: warm-started from true DGP parameters."
-            rf" Stars denote significance of Diebold-Mariano test against lmSD$^{{\star}}$:"
-            rf" $^{{*}}$10\%, $^{{**}}$5\%, $^{{***}}$1\%.}}"
+            rf" Superscripts denote significance of Diebold-Mariano test against lmSD:"
+            rf" $^{{\circ}}$10\%, $^{{\dagger}}$5\%, $^{{\ddagger}}$1\%.}}"
         ),
         rf"\label{{tab:sim_lmSD_T{T}}}",
         r"\end{table}",
