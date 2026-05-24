@@ -10,10 +10,10 @@ def _dynamics(y, _a, _P, params, _Z, _T, _H, _R, _Q, idx):
     base_cols = raw[:, :-1]
     bucket_indices = raw[:, -1].astype(int)
     omega_col = params["omega"][bucket_indices]
-    M_t = np.concatenate([base_cols, omega_col[:, None]], axis=-1)        # (max_n, p)
-    ws = params["ws"]                                                       # (K+1, p)
-    Z_t = (M_t[:, None, :] * ws[None, :, :]).reshape(M_t.shape[0], -1)   # (max_n, (K+1)*p)
-    d_t = M_t @ params["beta_bar"]                                         # (max_n,)
+    M_t = np.concatenate([base_cols, omega_col[:, None]], axis=-1) # (max_n, p)
+    ws = params["ws"] # (K+1, p)
+    Z_t = (M_t[:, None, :] * ws[None, :, :]).reshape(M_t.shape[0], -1) # (max_n, (K+1)*p)
+    d_t = M_t @ params["beta_bar"] # (max_n,)
     return Z_t, params["T_aug"], params["H_obs"], _R, params["Q_aug"], d_t, 0.0
 
 
@@ -21,7 +21,7 @@ def _build_M_base(M, omega):
     base_cols = M[:, :, :-1]
     bucket_indices = M[:, :, -1].astype(np.int32)
     omega_cube = omega[bucket_indices]
-    return np.concatenate([base_cols, omega_cube[:, :, None]], axis=-1)    # (H, N, p)
+    return np.concatenate([base_cols, omega_cube[:, :, None]], axis=-1) # (H, N, p)
 
 
 def fit(
@@ -123,9 +123,9 @@ def forecast(fit_result, M, y_test, q_alpha):
     y_test = np.asarray(y_test, dtype=float)
     H, N, _ = M.shape
 
-    M_base = _build_M_base(M, omega)                                           # (H, N, p)
-    Z_all = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(H, N, -1)  # (H, N, (K+1)*p)
-    d_all = np.einsum("hnp,p->hn", M_base, beta_bar)                          # (H, N)
+    M_base = _build_M_base(M, omega) # (H, N, p)
+    Z_all = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(H, N, -1) # (H, N, (K+1)*p)
+    d_all = np.einsum("hnp,p->hn", M_base, beta_bar) # (H, N)
 
     def _step(carry, inputs):
         Z_h, d_h, y_h = inputs
