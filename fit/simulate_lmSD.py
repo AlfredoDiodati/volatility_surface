@@ -36,7 +36,7 @@ N_BUCKETS = len(MONEYNESS) * len(MATURITY)
 
 HORIZONS = [400, 2000]
 SIGMA2_SCALES = [1.0, 10.0, 0.1]
-SCALE_TEX = {1.0: r"\sigma^2", 10.0: r"10\,\sigma^2", 0.1: r"\sigma^2/10"}
+SCALE_TEX = {1.0: r"\boldsymbol H", 10.0: r"10\,\boldsymbol H", 0.1: r"\boldsymbol H/10"}
 
 LR = {
     "ffSD":  1e-3,
@@ -303,8 +303,6 @@ def make_table(T, results):
     mse_mult = 10.0 ** (-mse_exp)
     mae_mult = 10.0 ** (-mae_exp)
 
-    def _col_hdr(name, exp): return name if exp == 0 else rf"{name} ($\times 10^{{{exp}}}$)"
-
     def _fmt(v):
         """Format a scaled value without scientific notation."""
         if v is None: return "--"
@@ -347,12 +345,13 @@ def make_table(T, results):
         lo = 3 + i * N_MET
         return rf"\cmidrule(lr){{{lo}-{lo + N_MET - 1}}}"
 
-    mse_hdr = _col_hdr("MSE", mse_exp)
-    mae_hdr = _col_hdr("MAE", mae_exp)
     col_spec = "ll" + "rrr" * len(SIGMA2_SCALES)
 
+    def _scale_cell(exp):
+        return rf"($\times 10^{{{exp}}}$)" if exp != 0 else ""
+
     lines = [
-        r"\begin{table}[ht]",
+        r"\begin{table}[H]",
         r"\centering",
         r"\small",
         rf"\begin{{tabular}}{{{col_spec}}}",
@@ -366,10 +365,13 @@ def make_table(T, results):
     lines.append(rf"Model & $K$ & {grp_hdrs} \\")
     lines.append(" ".join(_cmidrule(i) for i in range(len(SIGMA2_SCALES))))
 
-    metric_hdr = " & ".join(
-        f"{mse_hdr} & {mae_hdr} & loglik" for _ in SIGMA2_SCALES
-    )
+    metric_hdr = " & ".join("MSE & MAE & loglik" for _ in SIGMA2_SCALES)
     lines.append(rf"& & {metric_hdr} \\")
+
+    scale_hdr = " & ".join(
+        f"{_scale_cell(mse_exp)} & {_scale_cell(mae_exp)} & " for _ in SIGMA2_SCALES
+    )
+    lines.append(rf"& & {scale_hdr} \\")
     lines.append(r"\midrule")
 
     def _row(model_cell, K_cell, tag, K, is_bench=False):
@@ -646,7 +648,7 @@ def main():
             save_results(results)
 
     tex = "\n\n".join(make_table(T, results) for T in HORIZONS)
-    out_path = os.path.join(OUTPUT_DIR, "tables.tex")
+    out_path = os.path.join(OUTPUT_DIR, "MC_lmSD.tex")
     with open(out_path, "w") as f:
         f.write(tex)
     print(f"\nLaTeX tables saved to {out_path}")
