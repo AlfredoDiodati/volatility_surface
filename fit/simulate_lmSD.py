@@ -15,6 +15,7 @@ from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
 from models.ss import fit_collapsed as ss_fit, forecast as ss_forecast
 from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast, standard_errors as ff_SD_se
+from models.ff_SS import fit as ff_SS_fit, forecast as ff_SS_forecast
 from models.f_SD import fit as f_SD_fit, forecast as f_SD_forecast, standard_errors as f_SD_se
 from models.MSMSD import fit as msmsd_fit, forecast as msmsd_forecast
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
@@ -26,7 +27,7 @@ PARAMS_PATH = "out/SPX/otm/params_lmSD.json"
 OUTPUT_DIR = "out/SPX/mc/simulate_lmSD"
 SCORE_POWER = 1.0
 ALPHA = 0.05
-MAXITER = 2000
+MAXITER = 5000
 SOLVER = "lbfgs"
 K_VALUES = [1, 2, 3, 5, 10, 20, 30, 50]
 K_VALUES_MSMSD = [1, 2, 3, 5, 10]
@@ -40,6 +41,7 @@ SCALE_TEX = {1.0: r"\boldsymbol H", 10.0: r"10\,\boldsymbol H", 0.1: r"\boldsymb
 
 LR = {
     "ffSD":  1.0,
+    "ffSS":  1.0,
     "fSD":   1.0,
     "msmSD": 1.0,
     "lmSD":  1.0,
@@ -52,6 +54,7 @@ _P_TILDE = 3
 _P_FULL = 4
 
 NP_FF = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
+NP_FFSS = _P_FF + 1 + _P_FF + (N_BUCKETS - 1) + _P_FF + 1
 NP_F = _P_TILDE + _P_TILDE + _P_FULL + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
 NP_LMSD = 5 * _P_FF + N_BUCKETS + 1
 NP_ADJSD = 4 * _P_FF + N_BUCKETS + 1
@@ -97,6 +100,19 @@ def cold_ffSD(y_train, Z_fixed):
         "alpha": jnp.full(_P_FF, 1.5),
         "C": jnp.diag(jnp.full(_P_FF, 1e-3)),
         "nu": jnp.array(10.0),
+    }
+
+def cold_ffSS(y_train, Z_fixed):
+    M = Z_fixed[:, :3]
+    beta3 = _ols(y_train, M)
+    resid = y_train - (M @ beta3)
+    return {
+        "beta_bar": jnp.append(beta3, 0.0),
+        "sigma2": jnp.var(resid),
+        "Q_param": jnp.diag(jnp.full(_P_FF, 1e-3)),
+        "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
+        "eta": jnp.full(_P_FF, 0.06),
+        "alpha": jnp.array(1.5),
     }
 
 def cold_fSD(y_train, Z_fixed):
@@ -226,6 +242,11 @@ def _ff_fit(data, cov, ig, K, lr):
                      opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=MAXITER, solver=SOLVER)
 
 @functools.partial(jax.jit, static_argnames=("K",))
+def _ff_SS_fit(data, cov, ig, K, lr):
+    return ff_SS_fit(data, cov, ig, K=K,
+                     opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=MAXITER, solver=SOLVER)
+
+@functools.partial(jax.jit, static_argnames=("K",))
 def _f_fit(data, cov, ig, K, lr):
     return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                     opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=MAXITER, solver=SOLVER)
@@ -251,13 +272,13 @@ def _metrics(y_test, preds, oos_ll, n_params):
     mask = jnp.ones(y_test.shape, dtype=bool)
     mse = float(compute_mse(y_test, preds, mask))
     mae = float(compute_mae(y_test, preds, mask))
-    tot_ll = float(jnp.sum(oos_ll))
+    ll_arr = jnp.asarray(oos_ll)
+    tot_ll = float(ll_arr.sum())
     n_obs = int(y_test.size)
-    aic = float(compute_aic(jnp.array(tot_ll), n_params))
-    bic = float(compute_bic(jnp.array(tot_ll), n_params, n_obs))
+    aic = float(compute_aic(ll_arr.sum(), n_params))
+    bic = float(compute_bic(ll_arr.sum(), n_params, n_obs))
     mse_seq = ((y_test - preds) ** 2).mean(axis=1).tolist()
     mae_seq = jnp.abs(y_test - preds).mean(axis=1).tolist()
-    ll_arr = jnp.array(oos_ll)
     ll_seq = (ll_arr.sum(axis=1) if ll_arr.ndim > 1 else ll_arr).tolist()
     return mse, mae, tot_ll, aic, bic, mse_seq, mae_seq, ll_seq
 
@@ -265,24 +286,23 @@ _N_METRICS = len(("mse", "mae", "tot_ll", "aic", "bic", "mse_seq", "mae_seq", "l
 _DEFAULT_LR = 1e-3
 
 def _is_cached(results, key, lr, solver):
-    if key not in results or len(results[key]) < _N_METRICS:
-        return False
-    v = results[key]
-    if len(v) <= _N_METRICS:
+    v = results.get(key)
+    if v is None or len(v) <= _N_METRICS:
         return False
     mse = v[0]
     if mse != mse:
         return False
     stored_lr = v[_N_METRICS]
+    is_converged = v[_N_METRICS + 2] if len(v) > _N_METRICS + 2 else True
     stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else None
-    return abs(stored_lr - lr) < 1e-12 and stored_solver == solver
+    return abs(stored_lr - lr) < 1e-12 and stored_solver == solver and is_converged
 
 def make_table(T, results):
     import math
 
     all_mse, all_mae = [], []
     all_keys = (
-        [(t, k) for t in ("ffSD", "fSD") for k in K_VALUES]
+        [(t, k) for t in ("ffSD", "ffSS", "fSD") for k in K_VALUES]
         + [("msmSD", k) for k in K_VALUES_MSMSD]
         + [(t, None) for t in ("lmSD", "adjSD", "SS")]
     )
@@ -394,7 +414,7 @@ def make_table(T, results):
                 cells += [_fmt_mse(mse_v) + s_mse, f"{mae_v:.1f}" + s_mae, f"{ll_v/1000:.2f}" + s_ll]
         return "    " + " & ".join(cells) + r" \\"
 
-    K_groups = [("ff-SD", "ffSD", K_VALUES), ("f-SD", "fSD", K_VALUES), ("msm-SD", "msmSD", K_VALUES_MSMSD)]
+    K_groups = [("ff-SD", "ffSD", K_VALUES), ("ff-SS", "ffSS", K_VALUES), ("f-SD", "fSD", K_VALUES), ("msm-SD", "msmSD", K_VALUES_MSMSD)]
     for gi, (model_name, tag, k_list) in enumerate(K_groups):
         if gi > 0: lines.append(r"\addlinespace[3pt]")
         n = len(k_list)
@@ -430,6 +450,7 @@ PARAMS_CACHE_PATH = os.path.join(OUTPUT_DIR, "params_cache.json")
 
 _IG_KEYS = {
     "ffSD":  ["beta_bar", "A", "sigma2", "omega_load", "eta", "alpha", "C", "nu"],
+    "ffSS":  ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha"],
     "fSD":   ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "eta", "alpha", "C", "nu"],
     "msmSD": ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "C", "nu", "m0", "gamma_K", "b"],
     "lmSD":  ["beta_bar", "B", "A", "d", "sigma2", "omega", "C", "nu"],
@@ -438,7 +459,7 @@ _IG_KEYS = {
 }
 
 def _results_key(T, scale, tag, K):
-    return json.dumps([T, scale, tag, K], sort_keys=True)
+    return json.dumps([T, scale, tag, K])
 
 def load_results():
     if not os.path.exists(RESULTS_PATH): return {}
@@ -614,15 +635,16 @@ def main():
         Z_cube = jnp.broadcast_to(Z_fixed[None], (T_half, Z_fixed.shape[0], Z_fixed.shape[1]))
 
         for scale in SIGMA2_SCALES:
-            needs_ff = [K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K), LR["ffSD"], SOLVER)]
-            needs_f = [K for K in K_VALUES if not _is_cached(results, (T, scale, "fSD", K), LR["fSD"], SOLVER)]
-            needs_msmsd = [K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K), LR["msmSD"], SOLVER)]
+            needs_ff = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K), LR["ffSD"], SOLVER)}
+            needs_ffSS = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSS", K), LR["ffSS"], SOLVER)}
+            needs_f = {K for K in K_VALUES if not _is_cached(results, (T, scale, "fSD", K), LR["fSD"], SOLVER)}
+            needs_msmsd = {K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K), LR["msmSD"], SOLVER)}
             needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None), LR["lmSD"], SOLVER)
             needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None), LR["lmSD"], SOLVER)
             needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None), LR["adjSD"], SOLVER)
             needs_ss = not _is_cached(results, (T, scale, "SS", None), LR["SS"], SOLVER)
 
-            if not (needs_ff or needs_f or needs_msmsd or needs_lmsd or
+            if not (needs_ff or needs_ffSS or needs_f or needs_msmsd or needs_lmsd or
                     needs_oracle or needs_adjsd or needs_ss):
                 print(f"T={T:5d}  scale={scale:.1f}  all models cached, skipping simulation.", flush=True)
                 continue
@@ -656,6 +678,25 @@ def main():
                     mse, mae, ll = v[0], v[1], v[2]
                     stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                     print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
+
+                if K in needs_ffSS:
+                    pk = (T, scale, "ffSS", K)
+                    init = "warm" if pk in params_cache else "cold"
+                    ig_ffSS = params_cache[pk] if pk in params_cache else cold_ffSS(y_train, Z_fixed)
+                    r_ffSS = _ff_SS_fit(y_train, Z_cube, ig_ffSS, K, LR["ffSS"])
+                    preds_ffSS, _, _, oos_ll_ffSS = ff_SS_forecast(r_ffSS, Z_cube, y_test, ALPHA)
+                    jax.effects_barrier()
+                    results[pk] = _metrics(y_test, preds_ffSS, oos_ll_ffSS, NP_FFSS) + (LR["ffSS"], int(r_ffSS["niter"]), bool(r_ffSS["is_converged"]), MAXITER, SOLVER)
+                    params_cache[pk] = {k: r_ffSS[k] for k in _IG_KEYS["ffSS"]}
+                    mse, mae, ll, *_ = results[pk]
+                    print(f"  ff-SS K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ffSS['niter'])}  conv={bool(r_ffSS['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
+                    save_results(results)
+                    save_params_cache(params_cache)
+                else:
+                    v = results[(T, scale, "ffSS", K)]
+                    mse, mae, ll = v[0], v[1], v[2]
+                    stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
+                    print(f"  ff-SS K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
                 if K in needs_f:
                     pk = (T, scale, "fSD", K)

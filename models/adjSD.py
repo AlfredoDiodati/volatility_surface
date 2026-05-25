@@ -53,11 +53,12 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
         S = np.diag(C_inv) + V_t
         
         mahal_H = h_inv * np.sum(eps_t**2)
-        S_inv_G = np.linalg.solve(S, G_t)
+        S_inv = np.linalg.solve(S, np.concatenate([G_t[:, None], V_t], axis=1))
+        S_inv_G = S_inv[:, 0]
+        S_inv_V = S_inv[:, 1:]
         mahal_F = mahal_H - G_t @ S_inv_G
 
         weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))
-        S_inv_V = np.linalg.solve(S, V_t)
         g_tilde = G_t - V_t @ S_inv_G
         V_tilde = V_t - V_t @ S_inv_V
         xi = A @ (weight * np.linalg.solve(V_tilde, g_tilde))
@@ -232,15 +233,16 @@ def simulate_panel(params, M, n, key, beta_0=None):
 
             V_t = h_inv * (design_t.T @ design_t)
             S_t = np.diag(C_inv) + V_t
-            S_inv_V_t = np.linalg.solve(S_t, V_t)
-            V_tilde_t = V_t - V_t @ S_inv_V_t
 
             scale = np.sqrt((nu - 2.0) / g)
             eps_t = scale * (design_t @ (sqrt_C * w) + sqrt_sigma * z)
             y_t = design_t @ beta_t + eps_t
 
             G_t = h_inv * (design_t.T @ eps_t)
-            S_inv_G = np.linalg.solve(S_t, G_t)
+            S_inv = np.linalg.solve(S_t, np.concatenate([G_t[:, None], V_t], axis=1))
+            S_inv_G = S_inv[:, 0]
+            S_inv_V_t = S_inv[:, 1:]
+            V_tilde_t = V_t - V_t @ S_inv_V_t
             mahal_H = h_inv * np.sum(eps_t ** 2)
             mahal_F = mahal_H - G_t @ S_inv_G
             wt = (1.0 + (N_obs + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))

@@ -223,9 +223,13 @@ def forecast(fit_result, M, y_test, q_alpha):
         g = P_pred @ ZtV
         _, log_det_correction = np.linalg.slogdet(M)
         log_det_F = n_h * np.log(sigma2) + log_det_correction
-        quad = h_inv * np.sum(v ** 2) - h_inv ** 2 * ZtV @ np.linalg.solve(M, g)
+        c = np.linalg.solve(M, g)
+        quad = h_inv * np.sum(v ** 2) - h_inv ** 2 * ZtV @ c
         oos_ll = -0.5 * (n_h * np.log(2 * np.pi) + log_det_F + quad)
-        return (a_pred, P_pred), (y_hat, P_mean, VaR_h, oos_ll)
+        D = np.linalg.solve(M, P_pred @ ZtZt)
+        a_filtered = a_pred + h_inv * c
+        P_filtered = P_pred - h_inv * D @ P_pred
+        return (a_filtered, P_filtered), (y_hat, P_mean, VaR_h, oos_ll)
 
     _, (predictions, P_means, VaR, log_liks) = jax.lax.scan(_step, (a0, P0), (Z_all, y_test))
 

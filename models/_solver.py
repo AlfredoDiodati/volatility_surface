@@ -222,24 +222,26 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
     float_info = jnp.finfo(theta0.dtype)
     value_and_grad_fn = jax.value_and_grad(criterion)
 
-    # s_hist[memory-1] is the most recent pair, s_hist[0] the oldest.
-    # Entries with rho=0 (uninitialised or skipped) are transparent in the recursion
-    # because alpha_i = 0 * ... = 0 and s_hist[i] = 0 => no contribution.
-    def two_loop_recursion(g, s_hist, y_hist, rho_hist):
-        def backward_body(q, i):
-            alpha_i = rho_hist[memory - 1 - i] * jnp.dot(s_hist[memory - 1 - i], q)
-            return q - alpha_i * y_hist[memory - 1 - i], alpha_i
+    def two_loop_recursion(g, s_hist, y_hist, rho_hist, write_idx):
+        indices = (write_idx + jnp.arange(memory)) % memory
+
+        def backward_body(q, k):
+            idx = indices[memory - 1 - k]
+            alpha_i = rho_hist[idx] * jnp.dot(s_hist[idx], q)
+            return q - alpha_i * y_hist[idx], alpha_i
 
         q, alphas = lax.scan(backward_body, g, jnp.arange(memory))
 
-        sy = jnp.dot(s_hist[memory - 1], y_hist[memory - 1])
-        yy = jnp.dot(y_hist[memory - 1], y_hist[memory - 1])
+        newest = indices[memory - 1]
+        sy = jnp.dot(s_hist[newest], y_hist[newest])
+        yy = jnp.dot(y_hist[newest], y_hist[newest])
         gamma = jnp.where(yy > 1e-10, sy / yy, jnp.ones((), dtype=theta0.dtype))
         r = gamma * q
 
-        def forward_body(r, i):
-            beta_i = rho_hist[i] * jnp.dot(y_hist[i], r)
-            return r + s_hist[i] * (alphas[memory - 1 - i] - beta_i), None
+        def forward_body(r, k):
+            idx = indices[k]
+            beta_i = rho_hist[idx] * jnp.dot(y_hist[idx], r)
+            return r + s_hist[idx] * (alphas[memory - 1 - k] - beta_i), None
 
         r, _ = lax.scan(forward_body, r, jnp.arange(memory))
         return r
@@ -265,9 +267,9 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
         return alpha_final
 
     def _step(state):
-        theta, g, f, s_hist, y_hist, rho_hist, i, best_theta, best_loss, loss_finite, converged = state
+        theta, g, f, s_hist, y_hist, rho_hist, write_idx, i, best_theta, best_loss, loss_finite, converged = state
 
-        direction = -two_loop_recursion(g, s_hist, y_hist, rho_hist)
+        direction = -two_loop_recursion(g, s_hist, y_hist, rho_hist, write_idx)
         alpha = backtracking_line_search(theta, f, g, direction)
 
         theta_new = theta + alpha * direction
@@ -278,9 +280,10 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
         ys = jnp.dot(y_new, s_new)
         rho_new = jnp.where(ys > 1e-10, 1.0 / ys, jnp.zeros((), dtype=theta0.dtype))
 
-        s_hist_new = jnp.roll(s_hist, -1, axis=0).at[memory - 1].set(s_new)
-        y_hist_new = jnp.roll(y_hist, -1, axis=0).at[memory - 1].set(y_new)
-        rho_hist_new = jnp.roll(rho_hist, -1).at[memory - 1].set(rho_new)
+        s_hist_new = s_hist.at[write_idx].set(s_new)
+        y_hist_new = y_hist.at[write_idx].set(y_new)
+        rho_hist_new = rho_hist.at[write_idx].set(rho_new)
+        write_idx_new = (write_idx + 1) % memory
 
         loss_finite_new = jnp.isfinite(f_new) & jnp.all(jnp.isfinite(g_new))
         update_best = loss_finite_new & (f_new < best_loss)
@@ -289,12 +292,12 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
         converged_new = jnp.linalg.norm(g_new) / jnp.sqrt(p) < tol
 
         return (
-            theta_new, g_new, f_new, s_hist_new, y_hist_new, rho_hist_new, i + 1,
+            theta_new, g_new, f_new, s_hist_new, y_hist_new, rho_hist_new, write_idx_new, i + 1,
             best_theta_new, best_loss_new, loss_finite_new, converged_new,
         )
 
     def _not_converged(state):
-        _, _, _, _, _, _, i, _, _, loss_finite, converged = state
+        _, _, _, _, _, _, _, i, _, _, loss_finite, converged = state
         return (i < maxiter) & ~converged & loss_finite
 
     f0, g0 = value_and_grad_fn(theta0)
@@ -307,13 +310,14 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
         jnp.zeros((memory, p), dtype=theta0.dtype),
         jnp.zeros(memory, dtype=theta0.dtype),
         jnp.asarray(0, jnp.int32),
+        jnp.asarray(0, jnp.int32),
         theta0,
         jnp.asarray(float_info.max, dtype=theta0.dtype),
         jnp.isfinite(f0),
         jnp.asarray(False),
     )
 
-    _, _, _, _, _, _, niter, best_theta, best_loss, _, is_converged = lax.while_loop(
+    _, _, _, _, _, _, _, niter, best_theta, best_loss, _, is_converged = lax.while_loop(
         _not_converged, _step, state0
     )
 
