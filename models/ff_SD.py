@@ -366,8 +366,7 @@ def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
 
         beta_t = beta_bar + np.sum(ws * b_t, axis=0)
         b_h_all = exp_neg_h_stack * b_t[None, :, :]
-        beta_h_all = beta_bar + np.sum(ws[None, :, :] * b_h_all, axis=1)
-        preds_h = np.einsum("hnp,hp->hn", Z_h_t, beta_h_all) + d_h_t
+        preds_h = np.einsum("hnp,hp->hn", Z_h_t, b_h_all.reshape(b_h_all.shape[0], -1)) + d_h_t
 
         omega_col = omega_load[bidx_t]
         Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
