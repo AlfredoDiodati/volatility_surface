@@ -11,13 +11,13 @@ import jax
 import jax.numpy as jnp
 
 from models.lmSD import simulate
-from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
-from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
-from models.ss import fit_collapsed as ss_fit, forecast as ss_forecast
-from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast, standard_errors as ff_SD_se
-from models.ff_SS import fit as ff_SS_fit, forecast as ff_SS_forecast
-from models.f_SD import fit as f_SD_fit, forecast as f_SD_forecast, standard_errors as f_SD_se
-from models.MSMSD import fit as msmsd_fit, forecast as msmsd_forecast
+from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast, forecast_rolling_h as lmSD_forecast_rolling_h
+from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast, forecast_rolling_h as adjSD_forecast_rolling_h
+from models.ss import fit_collapsed as ss_fit, forecast as ss_forecast, forecast_rolling_h as ss_forecast_rolling_h
+from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast, standard_errors as ff_SD_se, forecast_rolling_h as ff_SD_forecast_rolling_h
+from models.ff_SS import fit as ff_SS_fit, forecast as ff_SS_forecast, forecast_rolling_h as ff_SS_forecast_rolling_h
+from models.f_SD import fit as f_SD_fit, forecast as f_SD_forecast, standard_errors as f_SD_se, forecast_rolling_h as f_SD_forecast_rolling_h
+from models.MSMSD import fit as msmsd_fit, forecast as msmsd_forecast, forecast_rolling_h as msmsd_forecast_rolling_h
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 print(f"Running on: {jax.devices()}")
@@ -34,6 +34,9 @@ K_VALUES_MSMSD = [1, 2, 3, 5, 10]
 MONEYNESS = jnp.array([0.9, 0.98, 1.05, 1.15, 1.3, 1.5])
 MATURITY = jnp.array([10, 50, 100, 180]) / 255.0
 N_BUCKETS = len(MONEYNESS) * len(MATURITY)
+
+FCST_HORIZONS = (5, 22, 66, 260)
+_MAX_FCST_H = max(FCST_HORIZONS)
 
 HORIZONS = [400, 2000]
 SIGMA2_SCALES = [1.0, 10.0, 0.1]
@@ -262,6 +265,35 @@ _lmSD_fit = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
 _lmSD_oracle = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
     data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=0, solver=SOLVER))
 
+@functools.partial(jax.jit, static_argnames=("K",))
+def _ff_refilter(data, cov, ig, K, lr):
+    return ff_SD_fit(data, cov, ig, K=K,
+                     opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=0, solver=SOLVER)
+
+@functools.partial(jax.jit, static_argnames=("K",))
+def _ff_SS_refilter(data, cov, ig, K, lr):
+    return ff_SS_fit(data, cov, ig, K=K,
+                     opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=0, solver=SOLVER)
+
+@functools.partial(jax.jit, static_argnames=("K",))
+def _f_refilter(data, cov, ig, K, lr):
+    return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
+                    opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=0, solver=SOLVER)
+
+@functools.partial(jax.jit, static_argnames=("K",))
+def _msmsd_refilter(data, cov, ig, K, lr):
+    return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
+                     opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=0, solver=SOLVER)
+
+_lmSD_refilter = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=0, solver=SOLVER))
+
+_adjSD_refilter = jax.jit(lambda data, cov, ig, lr: adjSD_fit(
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=0, solver=SOLVER))
+
+_ss_refilter = jax.jit(lambda data, cov, ig, init, lr: ss_fit(
+    data, cov, ig, init, opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=0, solver=SOLVER))
+
 _adjSD_fit = jax.jit(lambda data, cov, ig, lr: adjSD_fit(
     data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-6}, maxiter=MAXITER, solver=SOLVER))
 
@@ -445,7 +477,44 @@ def make_table(T, results):
         r"\end{table}",
     ]
     return "\n".join(lines)
+@functools.partial(jax.jit, static_argnames=("eval_horizons",))
+def _adjSD_rh(r, M, y, eval_horizons): return adjSD_forecast_rolling_h(r, M, y, eval_horizons)
+
+@functools.partial(jax.jit, static_argnames=("eval_horizons",))
+def _lmSD_rh(r, M, y, eval_horizons): return lmSD_forecast_rolling_h(r, M, y, eval_horizons)
+
+@functools.partial(jax.jit, static_argnames=("eval_horizons",))
+def _ss_rh(r, M, y, eval_horizons): return ss_forecast_rolling_h(r, M, y, eval_horizons)
+
+@functools.partial(jax.jit, static_argnames=("eval_horizons",))
+def _ff_SS_rh(r, M, y, eval_horizons): return ff_SS_forecast_rolling_h(r, M, y, eval_horizons)
+
+@functools.partial(jax.jit, static_argnames=("K", "eval_horizons"))
+def _ff_SD_rh(r, M, y, K, eval_horizons): return ff_SD_forecast_rolling_h(r, M, y, K, eval_horizons)
+
+@functools.partial(jax.jit, static_argnames=("K", "score_power", "eval_horizons"))
+def _f_SD_rh(r, M, y, K, score_power, eval_horizons): return f_SD_forecast_rolling_h(r, M, y, K, score_power, eval_horizons)
+
+@functools.partial(jax.jit, static_argnames=("K", "score_power", "eval_horizons"))
+def _msmsd_rh(r, M, y, K, score_power, eval_horizons): return msmsd_forecast_rolling_h(r, M, y, K, score_power, eval_horizons)
+
+def _metrics_h(y_test_ext, preds_h_all, eval_horizons, T_half):
+    results = []
+    for h_idx, h in enumerate(eval_horizons):
+        targets = jnp.asarray(y_test_ext[h - 1:T_half + h - 1])
+        preds = jnp.asarray(preds_h_all[h_idx])
+        err2 = (targets - preds) ** 2
+        mse = float(err2.mean())
+        mse_seq = err2.mean(axis=1).tolist()
+        results.append((mse, mse_seq))
+    return results
+
+def _is_cached_h(results_h, key):
+    v = results_h.get(key)
+    return v is not None and len(v) == len(FCST_HORIZONS)
+
 RESULTS_PATH = os.path.join(OUTPUT_DIR, "results.json")
+RESULTS_H_PATH = os.path.join(OUTPUT_DIR, "results_h.json")
 PARAMS_CACHE_PATH = os.path.join(OUTPUT_DIR, "params_cache.json")
 
 _IG_KEYS = {
@@ -474,6 +543,21 @@ def save_results(results):
     serializable = {_results_key(T, scale, tag, K): list(v)
         for (T, scale, tag, K), v in results.items()}
     with open(RESULTS_PATH, "w") as f:
+        json.dump(serializable, f, indent=2)
+
+def load_results_h():
+    if not os.path.exists(RESULTS_H_PATH): return {}
+    with open(RESULTS_H_PATH) as f: raw = json.load(f)
+    results_h = {}
+    for key_str, metrics in raw.items():
+        T, scale, tag, K = json.loads(key_str)
+        results_h[(T, scale, tag, K)] = metrics
+    return results_h
+
+def save_results_h(results_h):
+    serializable = {_results_key(T, scale, tag, K): list(v)
+        for (T, scale, tag, K), v in results_h.items()}
+    with open(RESULTS_H_PATH, "w") as f:
         json.dump(serializable, f, indent=2)
 
 def load_params_cache():
@@ -620,6 +704,131 @@ def make_wald_table(T, test_results, p):
     return "\n".join(lines)
 
 
+def make_table_h(T, results_h):
+    import math
+
+    n_h = len(FCST_HORIZONS)
+    all_keys = (
+        [(t, k) for t in ("ffSD", "ffSS", "fSD") for k in K_VALUES]
+        + [("msmSD", k) for k in K_VALUES_MSMSD]
+        + [(t, None) for t in ("lmSD", "adjSD", "SS")]
+    )
+
+    all_mse = []
+    for scale in SIGMA2_SCALES:
+        for tag, K in all_keys:
+            key = (T, scale, tag, K)
+            if key in results_h:
+                for mse, _ in results_h[key]:
+                    all_mse.append(mse)
+
+    def _exp3(vals):
+        if not vals: return 0
+        mag = sum(abs(v) for v in vals) / len(vals)
+        if mag == 0: return 0
+        return 3 * round(math.floor(math.log10(mag)) / 3)
+
+    mse_exp = _exp3(all_mse)
+    mse_mult = 10.0 ** (-mse_exp)
+
+    def _fmt(v):
+        if v is None: return "--"
+        av = abs(v)
+        if av >= 10: return f"{v:.2f}"
+        elif av >= 1: return f"{v:.3f}"
+        else: return f"{v:.4f}"
+
+    def _dm_stars(seq_m, seq_b):
+        if seq_m is None or seq_b is None: return ""
+        n = min(len(seq_m), len(seq_b))
+        if n < 2: return ""
+        d = [seq_m[i] - seq_b[i] for i in range(n)]
+        mean_d = sum(d) / n
+        var_d = sum((x - mean_d) ** 2 for x in d) / (n - 1)
+        if var_d <= 0: return ""
+        stat = abs(mean_d) / (var_d ** 0.5 / n ** 0.5)
+        if stat > 2.576: return r"\rlap{$^{\ddagger}$}"
+        elif stat > 1.96: return r"\rlap{$^{\dagger}$}"
+        elif stat > 1.645: return r"\rlap{$^{\circ}$}"
+        return ""
+
+    def _oracle_seqs(scale):
+        key = (T, scale, "lmSD_oracle", None)
+        if key not in results_h: return [None] * n_h
+        return [seq for _, seq in results_h[key]]
+
+    def _get(scale, tag, K):
+        key = (T, scale, tag, K)
+        return results_h.get(key)
+
+    col_spec = "ll" + "r" * (n_h * len(SIGMA2_SCALES))
+    grp_hdrs = " & ".join(
+        rf"\multicolumn{{{n_h}}}{{c}}{{${SCALE_TEX[s]}$}}"
+        for s in SIGMA2_SCALES
+    )
+
+    def _cmidrule(i):
+        lo = 3 + i * n_h
+        return rf"\cmidrule(lr){{{lo}-{lo + n_h - 1}}}"
+
+    h_hdr = " & ".join(f"$h={h}$" for h in FCST_HORIZONS)
+    h_hdrs = " & ".join(h_hdr for _ in SIGMA2_SCALES)
+    scale_hdr = rf"($\times 10^{{{mse_exp}}}$)" if mse_exp != 0 else ""
+    scale_hdrs = " & ".join(" & ".join(scale_hdr for _ in FCST_HORIZONS) for _ in SIGMA2_SCALES)
+
+    lines = [
+        r"\begin{table}[H]",
+        r"\centering",
+        r"\small",
+        rf"\begin{{tabular}}{{{col_spec}}}",
+        r"\toprule",
+        rf"Model & $K$ & {grp_hdrs} \\",
+        " ".join(_cmidrule(i) for i in range(len(SIGMA2_SCALES))),
+        rf"& & {h_hdrs} \\",
+        rf"& & {scale_hdrs} \\",
+        r"\midrule",
+    ]
+
+    def _row(model_cell, K_cell, tag, K, is_bench=False):
+        cells = [model_cell, K_cell]
+        for scale in SIGMA2_SCALES:
+            got = _get(scale, tag, K)
+            oracle_seqs = _oracle_seqs(scale)
+            for h_idx in range(n_h):
+                if got is None:
+                    cells.append("--")
+                else:
+                    mse_v, seq = got[h_idx]
+                    stars = "" if is_bench else _dm_stars(seq, oracle_seqs[h_idx])
+                    cells.append(_fmt(mse_v * mse_mult) + stars)
+        return "    " + " & ".join(cells) + r" \\"
+
+    K_groups = [("ff-SD", "ffSD", K_VALUES), ("ff-SS", "ffSS", K_VALUES),
+                ("f-SD", "fSD", K_VALUES), ("msm-SD", "msmSD", K_VALUES_MSMSD)]
+    for gi, (model_name, tag, k_list) in enumerate(K_groups):
+        if gi > 0: lines.append(r"\addlinespace[3pt]")
+        n = len(k_list)
+        for ri, K in enumerate(k_list):
+            model_cell = rf"\multirow{{{n}}}{{*}}{{{model_name}}}" if ri == 0 else ""
+            lines.append(_row(model_cell, str(K), tag, K))
+
+    for model_name, tag in [("lm-SD", "lmSD"), ("adj-SD", "adjSD"), ("SS", "SS")]:
+        lines.append(r"\addlinespace[3pt]")
+        lines.append(_row(model_name, "", tag, None))
+
+    lines.append(r"\midrule")
+    lines.append(_row(r"lmSD$^\dagger$", "", "lmSD_oracle", None, is_bench=True))
+    lines += [
+        r"\bottomrule",
+        r"\end{tabular}",
+        rf"\caption{{Multi-horizon point forecast MSE on data simulated from the lmSD model, $T={T}$."
+        rf" Superscripts: $^{{\circ}}$10\%, $^{{\dagger}}$5\%, $^{{\ddagger}}$1\% DM test vs lmSD oracle.}}",
+        rf"\label{{tab:sim_h_lmSD_T{T}}}",
+        r"\end{table}",
+    ]
+    return "\n".join(lines)
+
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     params_base = load_params(PARAMS_PATH)
@@ -628,11 +837,13 @@ def main():
 
     key = jax.random.PRNGKey(42)
     results = load_results()
+    results_h = load_results_h()
     params_cache = load_params_cache()
 
     for T in HORIZONS:
         T_half = T // 2
         Z_cube = jnp.broadcast_to(Z_fixed[None], (T_half, Z_fixed.shape[0], Z_fixed.shape[1]))
+        Z_cube_ext = jnp.broadcast_to(Z_fixed[None], (T_half + _MAX_FCST_H, Z_fixed.shape[0], Z_fixed.shape[1]))
 
         for scale in SIGMA2_SCALES:
             needs_ff = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K), LR["ffSD"], SOLVER)}
@@ -643,19 +854,30 @@ def main():
             needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None), LR["lmSD"], SOLVER)
             needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None), LR["adjSD"], SOLVER)
             needs_ss = not _is_cached(results, (T, scale, "SS", None), LR["SS"], SOLVER)
+            needs_ff_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "ffSD", K))}
+            needs_ffSS_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "ffSS", K))}
+            needs_f_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "fSD", K))}
+            needs_msmsd_h = {K for K in K_VALUES_MSMSD if not _is_cached_h(results_h, (T, scale, "msmSD", K))}
+            needs_lmsd_h = not _is_cached_h(results_h, (T, scale, "lmSD", None))
+            needs_oracle_h = not _is_cached_h(results_h, (T, scale, "lmSD_oracle", None))
+            needs_adjsd_h = not _is_cached_h(results_h, (T, scale, "adjSD", None))
+            needs_ss_h = not _is_cached_h(results_h, (T, scale, "SS", None))
 
             if not (needs_ff or needs_ffSS or needs_f or needs_msmsd or needs_lmsd or
-                    needs_oracle or needs_adjsd or needs_ss):
+                    needs_oracle or needs_adjsd or needs_ss or
+                    needs_ff_h or needs_ffSS_h or needs_f_h or needs_msmsd_h or
+                    needs_lmsd_h or needs_oracle_h or needs_adjsd_h or needs_ss_h):
                 print(f"T={T:5d}  scale={scale:.1f}  all models cached, skipping simulation.", flush=True)
                 continue
 
             params = params_base | {"sigma2": sigma2_base * scale}
             key, subkey = jax.random.split(key)
-            y_sim, _ = _sim_jit(params, Z_fixed, horizon=T, key=subkey, score_buf_size=T)
+            y_sim, _ = _sim_jit(params, Z_fixed, horizon=T + _MAX_FCST_H, key=subkey, score_buf_size=T + _MAX_FCST_H)
             jax.effects_barrier()
 
             y_train = y_sim[:T_half]
-            y_test = y_sim[T_half:]
+            y_test = y_sim[T_half:T]
+            y_test_ext = y_sim[T_half:]
 
             print(f"T={T:5d}  scale={scale:.1f}  simulated, fitting...", flush=True)
 
@@ -679,6 +901,16 @@ def main():
                     stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                     print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
+                if K in needs_ff_h:
+                    pk = (T, scale, "ffSD", K)
+                    r_ff_use = r_ff if K in needs_ff else (
+                        _ff_refilter(y_train, Z_cube, params_cache[pk], K, LR["ffSD"]) if pk in params_cache else None)
+                    if r_ff_use is not None:
+                        preds_ff_h = _ff_SD_rh(r_ff_use, Z_cube_ext, y_test, K, FCST_HORIZONS)
+                        jax.effects_barrier()
+                        results_h[pk] = _metrics_h(y_test_ext, preds_ff_h, FCST_HORIZONS, T_half)
+                        save_results_h(results_h)
+
                 if K in needs_ffSS:
                     pk = (T, scale, "ffSS", K)
                     init = "warm" if pk in params_cache else "cold"
@@ -698,6 +930,16 @@ def main():
                     stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                     print(f"  ff-SS K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
+                if K in needs_ffSS_h:
+                    pk = (T, scale, "ffSS", K)
+                    r_ffSS_use = r_ffSS if K in needs_ffSS else (
+                        _ff_SS_refilter(y_train, Z_cube, params_cache[pk], K, LR["ffSS"]) if pk in params_cache else None)
+                    if r_ffSS_use is not None:
+                        preds_ffSS_h = _ff_SS_rh(r_ffSS_use, Z_cube_ext, y_test, FCST_HORIZONS)
+                        jax.effects_barrier()
+                        results_h[pk] = _metrics_h(y_test_ext, preds_ffSS_h, FCST_HORIZONS, T_half)
+                        save_results_h(results_h)
+
                 if K in needs_f:
                     pk = (T, scale, "fSD", K)
                     init = "warm" if pk in params_cache else "cold"
@@ -716,6 +958,16 @@ def main():
                     mse, mae, ll = v[0], v[1], v[2]
                     stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                     print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
+
+                if K in needs_f_h:
+                    pk = (T, scale, "fSD", K)
+                    r_f_use = r_f if K in needs_f else (
+                        _f_refilter(y_train, Z_cube, params_cache[pk], K, LR["fSD"]) if pk in params_cache else None)
+                    if r_f_use is not None:
+                        preds_f_h = _f_SD_rh(r_f_use, Z_cube_ext, y_test, K, SCORE_POWER, FCST_HORIZONS)
+                        jax.effects_barrier()
+                        results_h[pk] = _metrics_h(y_test_ext, preds_f_h, FCST_HORIZONS, T_half)
+                        save_results_h(results_h)
 
             for K in K_VALUES_MSMSD:
                 if K in needs_msmsd:
@@ -737,6 +989,16 @@ def main():
                     stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                     print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
+                if K in needs_msmsd_h:
+                    pk = (T, scale, "msmSD", K)
+                    r_msmsd_use = r_msmsd if K in needs_msmsd else (
+                        _msmsd_refilter(y_train, Z_cube, params_cache[pk], K, LR["msmSD"]) if pk in params_cache else None)
+                    if r_msmsd_use is not None:
+                        preds_msmsd_h = _msmsd_rh(r_msmsd_use, Z_cube_ext, y_test, K, SCORE_POWER, FCST_HORIZONS)
+                        jax.effects_barrier()
+                        results_h[pk] = _metrics_h(y_test_ext, preds_msmsd_h, FCST_HORIZONS, T_half)
+                        save_results_h(results_h)
+
             if needs_lmsd:
                 pk = (T, scale, "lmSD", None)
                 init = "warm" if pk in params_cache else "cold"
@@ -756,6 +1018,16 @@ def main():
                 stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                 print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
+            if needs_lmsd_h:
+                pk = (T, scale, "lmSD", None)
+                r_lmsd_use = r_lmsd if needs_lmsd else (
+                    _lmSD_refilter(y_train, Z_cube, params_cache[pk], LR["lmSD"]) if pk in params_cache else None)
+                if r_lmsd_use is not None:
+                    preds_lmsd_h = _lmSD_rh(r_lmsd_use, Z_cube_ext, y_test, FCST_HORIZONS)
+                    jax.effects_barrier()
+                    results_h[pk] = _metrics_h(y_test_ext, preds_lmsd_h, FCST_HORIZONS, T_half)
+                    save_results_h(results_h)
+
             if needs_oracle:
                 ig_oracle = true_lmSD(params)
                 r_oracle = _lmSD_oracle(y_train, Z_cube, ig_oracle, LR["lmSD"])
@@ -770,6 +1042,15 @@ def main():
                 mse, mae, ll = v[0], v[1], v[2]
                 stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                 print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
+
+            if needs_oracle_h:
+                pk_oracle = (T, scale, "lmSD_oracle", None)
+                ig_oracle_use = true_lmSD(params)
+                r_oracle_use = r_oracle if needs_oracle else _lmSD_oracle(y_train, Z_cube, ig_oracle_use, LR["lmSD"])
+                preds_oracle_h = _lmSD_rh(r_oracle_use, Z_cube_ext, y_test, FCST_HORIZONS)
+                jax.effects_barrier()
+                results_h[pk_oracle] = _metrics_h(y_test_ext, preds_oracle_h, FCST_HORIZONS, T_half)
+                save_results_h(results_h)
 
             if needs_adjsd:
                 pk = (T, scale, "adjSD", None)
@@ -789,6 +1070,16 @@ def main():
                 mse, mae, ll = v[0], v[1], v[2]
                 stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                 print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
+
+            if needs_adjsd_h:
+                pk = (T, scale, "adjSD", None)
+                r_adjsd_use = r_adjsd if needs_adjsd else (
+                    _adjSD_refilter(y_train, Z_cube, params_cache[pk], LR["adjSD"]) if pk in params_cache else None)
+                if r_adjsd_use is not None:
+                    preds_adjsd_h = _adjSD_rh(r_adjsd_use, Z_cube_ext, y_test, FCST_HORIZONS)
+                    jax.effects_barrier()
+                    results_h[pk] = _metrics_h(y_test_ext, preds_adjsd_h, FCST_HORIZONS, T_half)
+                    save_results_h(results_h)
 
             if needs_ss:
                 pk = (T, scale, "SS", None)
@@ -810,6 +1101,21 @@ def main():
                 stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
                 print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
 
+            if needs_ss_h:
+                pk = (T, scale, "SS", None)
+                if needs_ss:
+                    r_ss_use = r_ss
+                elif pk in params_cache:
+                    init_ss = cold_ss_init(y_train, Z_fixed)
+                    r_ss_use = _ss_refilter(y_train, Z_cube, params_cache[pk], init_ss, LR["SS"])
+                else:
+                    r_ss_use = None
+                if r_ss_use is not None:
+                    preds_ss_h = _ss_rh(r_ss_use, Z_cube_ext, y_test, FCST_HORIZONS)
+                    jax.effects_barrier()
+                    results_h[pk] = _metrics_h(y_test_ext, preds_ss_h, FCST_HORIZONS, T_half)
+                    save_results_h(results_h)
+
             save_results(results)
 
     tex = "\n\n".join(make_table(T, results) for T in HORIZONS)
@@ -817,6 +1123,12 @@ def main():
     with open(out_path, "w") as f:
         f.write(tex)
     print(f"\nLaTeX tables saved to {out_path}")
+
+    tex_h = "\n\n".join(make_table_h(T, results_h) for T in HORIZONS)
+    out_path_h = os.path.join(OUTPUT_DIR, "MC_lmSD_h.tex")
+    with open(out_path_h, "w") as f:
+        f.write(tex_h)
+    print(f"Multi-horizon tables saved to {out_path_h}")
 
     print("\nComputing Wald tests...", flush=True)
     p = int(params_base["d"].shape[0])

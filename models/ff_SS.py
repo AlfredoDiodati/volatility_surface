@@ -164,6 +164,67 @@ def forecast(fit_result, M, y_test, q_alpha):
     return predictions, P_means, VaR, log_liks
 
 
+def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
+    a0 = fit_result["att"][-1]
+    P0 = fit_result["Ptt"][-1]
+    T_aug = fit_result["T_aug"]
+    Q_aug = fit_result["Q_aug"]
+    sigma2 = fit_result["sigma2"]
+    omega = fit_result["omega"]
+    beta_bar = fit_result["beta_bar"]
+    ws = fit_result["ws"]
+
+    M = np.asarray(M, dtype=float)
+    y_test = np.asarray(y_test, dtype=float)
+    T_half = y_test.shape[0]
+    H_ext, N, _ = M.shape
+
+    M_base = _build_M_base(M, omega)
+    Z_all = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(H_ext, N, -1)
+    d_all = np.einsum("hnp,p->hn", M_base, beta_bar)
+
+    T_h_list = []
+    for h in eval_horizons:
+        Th = np.eye(T_aug.shape[0], dtype=float)
+        for _ in range(h):
+            Th = Th @ T_aug
+        T_h_list.append(Th)
+    T_h_stack = np.stack(T_h_list)
+
+    Z_h_stack = np.stack([Z_all[h - 1:T_half + h - 1] for h in eval_horizons])
+    d_h_stack = np.stack([d_all[h - 1:T_half + h - 1] for h in eval_horizons])
+    Z_h_scan = Z_h_stack.transpose(1, 0, 2, 3)
+    d_h_scan = d_h_stack.transpose(1, 0, 2)
+    Z_update = Z_all[:T_half]
+    d_update = d_all[:T_half]
+    h_inv = 1.0 / sigma2
+
+    def _step(carry, inputs):
+        a_t, P_t = carry
+        Z_h_t, d_h_t, Z_upd_t, d_upd_t, y_h = inputs
+
+        a_h_stack = np.einsum("hpq,q->hp", T_h_stack, a_t)
+        preds_h = np.einsum("hnp,hp->hn", Z_h_t, a_h_stack) + d_h_t
+
+        a_pred = T_aug @ a_t
+        P_pred = T_aug @ P_t @ T_aug.T + Q_aug
+        mask_h = ~np.isnan(y_h)
+        y_hat = Z_upd_t @ a_pred + d_upd_t
+        v = (y_h - y_hat) * mask_h
+        Z_masked = np.where(mask_h[:, None], Z_upd_t, 0.0)
+        ZtZ = np.einsum("ip,iq->pq", Z_masked, Z_masked)
+        ZtV = Z_masked.T @ v
+        Inner = np.eye(a_pred.shape[0]) + h_inv * P_pred @ ZtZ
+        c = np.linalg.solve(Inner, P_pred @ ZtV)
+        D = np.linalg.solve(Inner, P_pred @ ZtZ)
+        a_filtered = a_pred + h_inv * c
+        P_filtered = P_pred - h_inv * D @ P_pred
+        return (a_filtered, P_filtered), preds_h
+
+    _, preds_all = lax.scan(_step, (a0, P0), (Z_h_scan, d_h_scan, Z_update, d_update, y_test))
+    return preds_all.transpose(1, 0, 2)
+
+
 def forecast_h(fit_result, M):
     a0 = fit_result["att"][-1]
     T_aug = fit_result["T_aug"]

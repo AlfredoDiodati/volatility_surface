@@ -235,6 +235,65 @@ def forecast(fit_result, M, y_test, q_alpha):
 
     return predictions, P_means, VaR, log_liks
 
+def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
+    a0 = fit_result["att"][-1]
+    P0 = fit_result["Ptt"][-1]
+    B = fit_result["B"]
+    Q = fit_result["Q_param"]
+    ct = fit_result["ct"]
+    sigma2 = fit_result["H_param"][0, 0]
+    omega = fit_result["omega"]
+    mu = np.linalg.solve(np.eye(B.shape[0]) - B, ct)
+
+    M = np.asarray(M, dtype=float)
+    y_test = np.asarray(y_test, dtype=float)
+    T_half = y_test.shape[0]
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    omega_cols = omega[bucket_indices]
+    Z_all = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
+
+    B_h_list = []
+    for h in eval_horizons:
+        Bh = np.eye(B.shape[0], dtype=float)
+        for _ in range(h):
+            Bh = Bh @ B
+        B_h_list.append(Bh)
+    B_h_stack = np.stack(B_h_list)
+
+    Z_h_stack = np.stack([Z_all[h - 1:T_half + h - 1] for h in eval_horizons])
+    Z_h_scan = Z_h_stack.transpose(1, 0, 2, 3)
+    Z_update = Z_all[:T_half]
+    h_inv = 1.0 / sigma2
+
+    def _step(carry, inputs):
+        a_t, P_t = carry
+        Z_h_t, Z_upd_t, y_h = inputs
+
+        dev = a_t - mu
+        a_h_stack = mu + np.einsum("hpq,q->hp", B_h_stack, dev)
+        preds_h = np.einsum("hnp,hp->hn", Z_h_t, a_h_stack)
+
+        a_pred = B @ a_t + ct
+        P_pred = B @ P_t @ B.T + Q
+        mask_h = ~np.isnan(y_h)
+        y_m = np.where(mask_h, y_h, 0.0)
+        v = (y_m - Z_upd_t @ a_pred) * mask_h
+        Z_masked = np.where(mask_h[:, None], Z_upd_t, 0.0)
+        ZtZt = np.einsum("ip,iq->pq", Z_masked, Z_masked)
+        ZtV = Z_masked.T @ v
+        Inner = np.eye(a_pred.shape[0]) + h_inv * P_pred @ ZtZt
+        g = P_pred @ ZtV
+        c = np.linalg.solve(Inner, g)
+        D = np.linalg.solve(Inner, P_pred @ ZtZt)
+        a_filtered = a_pred + h_inv * c
+        P_filtered = P_pred - h_inv * D @ P_pred
+        return (a_filtered, P_filtered), preds_h
+
+    _, preds_all = jax.lax.scan(_step, (a0, P0), (Z_h_scan, Z_update, y_test))
+    return preds_all.transpose(1, 0, 2)
+
+
 def forecast_h(fit_result, M, q_alpha):
     a0 = fit_result["att"][-1]
     P0 = fit_result["Ptt"][-1]

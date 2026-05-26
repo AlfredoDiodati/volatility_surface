@@ -323,6 +323,89 @@ def forecast(fit_result, M, y_test, K, alpha):
 
     return predictions, P, VaR, log_liks
 
+def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
+    beta_bar = fit_result["beta_bar"]
+    omega_load = fit_result["omega_load"]
+    eta = fit_result["eta"]
+    alpha = fit_result["alpha"]
+
+    M = np.asarray(M, dtype=float)
+    y_test = np.asarray(y_test, dtype=float)
+    T_half = y_test.shape[0]
+    H_ext, N, _ = M.shape
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    omega_cols = omega_load[bucket_indices]
+    M_base = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
+
+    ws, lambdas = _solve_weights_ff(eta, alpha, K)
+
+    exp_neg_h_lambdas_list = []
+    for h in eval_horizons:
+        exp_neg_h_lambdas_list.append(np.exp(-(h - 1) * lambdas))
+    exp_neg_h_stack = np.stack(exp_neg_h_lambdas_list)
+
+    Z_all = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(H_ext, N, -1)
+    d_all = M_base @ beta_bar
+
+    Z_h_stack = np.stack([Z_all[h - 1:T_half + h - 1] for h in eval_horizons])
+    d_h_stack = np.stack([d_all[h - 1:T_half + h - 1] for h in eval_horizons])
+    Z_h_scan = Z_h_stack.transpose(1, 0, 2, 3)
+    d_h_scan = d_h_stack.transpose(1, 0, 2)
+
+    mask_bool = ~np.isnan(y_test)
+    y_masked = np.where(mask_bool, y_test, 0.0)
+    mask_f = mask_bool.astype(float)
+
+    p = beta_bar.shape[0]
+    h_inv = 1.0 / fit_result["sigma2"]
+    L_C = np.linalg.cholesky(fit_result["C"])
+
+    def _step(b_t, inputs):
+        Z_h_t, d_h_t, y_t, base_t, bidx_t, mask_t = inputs
+
+        beta_t = beta_bar + np.sum(ws * b_t, axis=0)
+        b_h_all = exp_neg_h_stack * b_t[None, :, :]
+        beta_h_all = beta_bar + np.sum(ws[None, :, :] * b_h_all, axis=1)
+        preds_h = np.einsum("hnp,hp->hn", Z_h_t, beta_h_all) + d_h_t
+
+        omega_col = omega_load[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        Z_mask = Z_t * mask_t[:, None]
+        N_t = np.sum(mask_t)
+        eps_t = (y_t - Z_t @ beta_t) * mask_t
+
+        ZtZ = Z_mask.T @ Z_mask
+        ZtHinvZ = h_inv * ZtZ
+        WLC = ZtHinvZ @ L_C
+        Inner_mat = np.eye(p) + L_C.T @ WLC
+        L_Inner = np.linalg.cholesky(Inner_mat)
+
+        V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
+        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
+        fisher_t = (fit_result["nu"] / (fit_result["nu"] - 2.0)) * ((fit_result["nu"] + N_t) / (fit_result["nu"] + N_t + 2.0)) * ZtSigmaInvZ
+
+        ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
+        woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
+        mahal_Sigma = h_inv * (eps_t @ eps_t) - (woodbury_eps @ woodbury_eps)
+        ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
+
+        score_weight = (fit_result["nu"] + N_t) / ((fit_result["nu"] - 2.0) + mahal_Sigma)
+        nabla_t = score_weight * ZtSigmaInv_eps
+
+        eigvals, eigvecs = np.linalg.eigh(fisher_t)
+        scaled_score = fit_result["A"] @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
+
+        b_next = b_t + np.expm1(-lambdas) * b_t + ws * scaled_score[None, :]
+        return b_next, preds_h
+
+    _, preds_all = lax.scan(
+        _step, fit_result["b_T"],
+        (Z_h_scan, d_h_scan, y_masked, base_covariates[:T_half], bucket_indices[:T_half], mask_f),
+    )
+    return preds_all.transpose(1, 0, 2)
+
+
 def forecast_h(fit_result, M, K):
     beta_bar = fit_result["beta_bar"]
     omega_load = fit_result["omega_load"]

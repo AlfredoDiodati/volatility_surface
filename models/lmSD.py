@@ -253,6 +253,45 @@ def simulate(params, M, horizon, key, beta_0=None, score_buf_size=None, score_bu
     )
     return y_sim, beta_sim
 
+def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
+    B = fit_result["B"]
+    beta_bar = fit_result["beta_bar"]
+    omega = fit_result["omega"]
+    p = beta_bar.shape[0]
+    M = np.asarray(M, dtype=float)
+    y_test = np.asarray(y_test, dtype=float)
+    T_half = y_test.shape[0]
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    mask_bool = ~np.isnan(y_test)
+    y_masked = np.where(mask_bool, y_test, 0.0)
+    mask_f = mask_bool.astype(float)
+
+    score_buf_ext = np.concatenate([fit_result["score_buf_T"], np.zeros((T_half, p))], axis=0)
+    T_train = fit_result["score_buf_T"].shape[0]
+    state0 = (fit_result["beta_T"], score_buf_ext, np.asarray(T_train, np.int32))
+
+    betas_origins, _, _, _, _ = _filter(
+        y_masked, base_covariates[:T_half], bucket_indices[:T_half],
+        mask_f, fit_result, state0,
+    )
+
+    B_h_list = []
+    for h in eval_horizons:
+        Bh = np.eye(B.shape[0], dtype=float)
+        for _ in range(h - 1):
+            Bh = Bh @ B
+        B_h_list.append(Bh)
+    B_h_stack = np.stack(B_h_list)
+    deviations = betas_origins - beta_bar
+    beta_h = beta_bar + np.einsum("hpq,tq->htp", B_h_stack, deviations)
+
+    omega_cols = omega[bucket_indices]
+    Z_all = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
+    Z_h_stack = np.stack([Z_all[h - 1:T_half + h - 1] for h in eval_horizons])
+    return np.einsum("htnp,htp->htn", Z_h_stack, beta_h)
+
+
 def forecast_h(fit_result, M):
     B = fit_result["B"]
     A = fit_result["A"]

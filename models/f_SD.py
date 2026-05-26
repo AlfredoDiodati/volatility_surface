@@ -336,6 +336,103 @@ def standard_errors(fit_result, data, M, K, score_power=1.0):
     return se, cov_eta
 
 
+def forecast_rolling_h(fit_result, M, y_test, K, score_power, eval_horizons):
+    B = fit_result["B"]
+    beta_bar = fit_result["beta_bar"]
+    sigma_0 = fit_result["sigma_0"]
+    omega_load = fit_result["omega_load"]
+    eta = fit_result["eta"]
+    alpha = fit_result["alpha"]
+    IminusB = np.eye(B.shape[0]) - B
+
+    M = np.asarray(M, dtype=float)
+    y_test = np.asarray(y_test, dtype=float)
+    T_half = y_test.shape[0]
+    H_ext, N, _ = M.shape
+    p_tilde = beta_bar.shape[0]
+    p_full = p_tilde + 1
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    omega_cols = omega_load[bucket_indices]
+    M_base = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
+    Z_all = M_base
+
+    weights, lambdas = _solve_weights(eta, alpha, K)
+
+    B_h_list = []
+    for h in eval_horizons:
+        Bh = np.eye(B.shape[0], dtype=float)
+        for _ in range(h - 1):
+            Bh = Bh @ B
+        B_h_list.append(Bh)
+    B_h_stack = np.stack(B_h_list)
+    exp_neg_h_lambdas_stack = np.stack([np.exp(-(h - 1) * lambdas) for h in eval_horizons])
+
+    Z_h_stack = np.stack([Z_all[h - 1:T_half + h - 1] for h in eval_horizons])
+    Z_h_scan = Z_h_stack.transpose(1, 0, 2, 3)
+
+    mask_bool = ~np.isnan(y_test)
+    y_masked = np.where(mask_bool, y_test, 0.0)
+    mask_f = mask_bool.astype(float)
+
+    h_inv = 1.0 / fit_result["sigma2"]
+    L_C = np.linalg.cholesky(fit_result["C"])
+
+    def _step(state, inputs):
+        b_t, beta_tilde_t = state
+        Z_h_t, y_t, base_t, bidx_t, mask_t = inputs
+
+        sigma_t = sigma_0 + weights @ b_t
+        beta_full_t = np.concatenate([beta_tilde_t, np.array([sigma_t])])
+
+        b_h_all = exp_neg_h_lambdas_stack * b_t[None, :]
+        sigma_h_all = sigma_0 + np.einsum("k,hk->h", weights, b_h_all)
+        dev_tilde = beta_tilde_t - beta_bar
+        beta_tilde_h_all = beta_bar + np.einsum("hpq,q->hp", B_h_stack, dev_tilde)
+        beta_full_h_all = np.concatenate([beta_tilde_h_all, sigma_h_all[:, None]], axis=-1)
+        preds_h = np.einsum("hnp,hp->hn", Z_h_t, beta_full_h_all)
+
+        omega_col = omega_load[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        Z_mask = Z_t * mask_t[:, None]
+        N_t = np.sum(mask_t)
+        eps_t = (y_t - Z_t @ beta_full_t) * mask_t
+
+        ZtZ = Z_mask.T @ Z_mask
+        ZtHinvZ = h_inv * ZtZ
+        WLC = ZtHinvZ @ L_C
+        Inner_mat = np.eye(p_full) + L_C.T @ WLC
+        L_Inner = np.linalg.cholesky(Inner_mat)
+        V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
+        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
+        fisher_t = (fit_result["nu"] / (fit_result["nu"] - 2.0)) * ((fit_result["nu"] + N_t) / (fit_result["nu"] + N_t + 2.0)) * ZtSigmaInvZ
+
+        ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
+        woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
+        mahal_Sigma = h_inv * (eps_t @ eps_t) - (woodbury_eps @ woodbury_eps)
+        ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
+
+        score_weight = (fit_result["nu"] + N_t) / ((fit_result["nu"] - 2.0) + mahal_Sigma)
+        nabla_t = score_weight * ZtSigmaInv_eps
+
+        eigvals, eigvecs = np.linalg.eigh(fisher_t)
+        scaling_matrix = (eigvecs * (eigvals ** (-score_power))) @ eigvecs.T
+        scaled_score = fit_result["A"] @ scaling_matrix @ nabla_t
+
+        xi_sigma = scaled_score[-1]
+        xi_tilde = scaled_score[:-1]
+        b_next = np.exp(-lambdas) * b_t + weights * xi_sigma
+        beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
+        return (b_next, beta_tilde_next), preds_h
+
+    state0 = (fit_result["b_T"], fit_result["beta_tilde_T"])
+    _, preds_all = lax.scan(
+        _step, state0,
+        (Z_h_scan, y_masked, base_covariates[:T_half], bucket_indices[:T_half], mask_f),
+    )
+    return preds_all.transpose(1, 0, 2)
+
+
 def forecast_h(fit_result, M, K):
     beta_bar = fit_result["beta_bar"]
     B = fit_result["B"]

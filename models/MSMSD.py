@@ -291,6 +291,139 @@ def forecast_h(fit_result, M, K):
     _, (predictions, P) = lax.scan(_step, state0, (base_covariates, bucket_indices))
     return predictions, P
 
+def forecast_rolling_h(fit_result, M, y_test, K, score_power, eval_horizons):
+    B = fit_result["B"]
+    beta_bar = fit_result["beta_bar"]
+    sigma_0 = fit_result["sigma_0"]
+    omega_load = fit_result["omega_load"]
+    m0 = fit_result["m0"]
+    gamma_k = fit_result["gamma_k"]
+    IminusB = np.eye(B.shape[0]) - B
+
+    M = np.asarray(M, dtype=float)
+    y_test = np.asarray(y_test, dtype=float)
+    T_half = y_test.shape[0]
+    H_ext, N, _ = M.shape
+    p_tilde = beta_bar.shape[0]
+    p_full = p_tilde + 1
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+    omega_cols = omega_load[bucket_indices]
+    M_base = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
+    Z_all = M_base
+
+    g_vals = _build_msm_states(K, m0)
+    log_P = _build_log_transition_tensor(gamma_k)
+    h_states = 2 ** K
+    j_range = np.arange(h_states, dtype=np.int32)
+    k_range = np.arange(K, dtype=np.int32)
+    masks = np.int32(1) << k_range
+    bits_matrix = ((j_range[None, :] >> k_range[:, None]) & 1)
+    idx0_all = j_range[None, :] & (~masks[:, None])
+    idx1_all = j_range[None, :] | masks[:, None]
+
+    B_h_list = []
+    for h in eval_horizons:
+        Bh = np.eye(B.shape[0], dtype=float)
+        for _ in range(h - 1):
+            Bh = Bh @ B
+        B_h_list.append(Bh)
+    B_h_stack = np.stack(B_h_list)
+
+    Z_h_stack = np.stack([Z_all[h - 1:T_half + h - 1] for h in eval_horizons])
+    Z_h_scan = Z_h_stack.transpose(1, 0, 2, 3)
+
+    mask_bool = ~np.isnan(y_test)
+    y_masked = np.where(mask_bool, y_test, 0.0)
+    mask_f = mask_bool.astype(float)
+
+    h_inv = 1.0 / fit_result["sigma2"]
+    L_C = np.linalg.cholesky(fit_result["C"])
+
+    def _markov_h_step(log_pi, _):
+        return _transition_step_log(log_P, idx0_all, idx1_all, bits_matrix, log_pi), None
+
+    def _step(state, inputs):
+        log_pi_t, beta_tilde_t = state
+        Z_h_t, y_t, base_t, bidx_t, mask_t = inputs
+
+        dev_tilde = beta_tilde_t - beta_bar
+        beta_tilde_h_all = beta_bar + np.einsum("hpq,q->hp", B_h_stack, dev_tilde)
+
+        def _project_one_h(h_idx):
+            log_pi_h, _ = lax.scan(_markov_h_step, log_pi_t, None, length=eval_horizons[h_idx] - 1)
+            sigma_h = sigma_0 * (np.exp(log_pi_h) * g_vals).sum()
+            return sigma_h
+
+        sigma_h_all = np.stack([_project_one_h(i) for i in range(len(eval_horizons))])
+        beta_full_h_all = np.concatenate([beta_tilde_h_all, sigma_h_all[:, None]], axis=-1)
+        preds_h = np.einsum("hnp,hp->hn", Z_h_t, beta_full_h_all)
+
+        log_pi_pred = _transition_step_log(log_P, idx0_all, idx1_all, bits_matrix, log_pi_t)
+
+        omega_col = omega_load[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        Z_mask = Z_t * mask_t[:, None]
+        N_t = np.sum(mask_t)
+
+        ZtHinvZ = h_inv * (Z_mask.T @ Z_mask)
+        WLC = ZtHinvZ @ L_C
+        Inner_mat = np.eye(p_full) + L_C.T @ WLC
+        L_Inner = np.linalg.cholesky(Inner_mat)
+        log_det_Sigma = N_t * np.log(fit_result["sigma2"]) + 2.0 * np.sum(np.log(np.diag(L_Inner)))
+        V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
+        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
+        fisher_t = (fit_result["nu"] / (fit_result["nu"] - 2.0)) * ((fit_result["nu"] + N_t) / (fit_result["nu"] + N_t + 2.0)) * ZtSigmaInvZ
+
+        beta_full_base = np.concatenate([beta_tilde_t, np.zeros(1)])
+        eps_base = (y_t - Z_t @ beta_full_base) * mask_t
+        omega_col_masked = omega_col * mask_t
+
+        ZtHinv_eps_base = h_inv * (Z_mask.T @ eps_base)
+        ZtHinv_omega = h_inv * (Z_mask.T @ omega_col_masked)
+        eps_base_sq = h_inv * (eps_base @ eps_base)
+        cross = h_inv * (eps_base @ omega_col_masked)
+        omega_sq = h_inv * (omega_col_masked @ omega_col_masked)
+        wb_base = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps_base, lower=True)
+        wb_omega = solve_triangular(L_Inner, L_C.T @ ZtHinv_omega, lower=True)
+
+        sigma_vals = sigma_0 * g_vals
+
+        def _state_score(sigma_j):
+            wb_j = wb_base - sigma_j * wb_omega
+            mahal_j = (eps_base_sq - 2.0 * sigma_j * cross + sigma_j ** 2 * omega_sq) - (wb_j @ wb_j)
+            ll_j = (
+                gammaln((fit_result["nu"] + N_t) / 2.0) - gammaln(fit_result["nu"] / 2.0)
+                - 0.5 * (N_t * np.log((fit_result["nu"] - 2.0) * np.pi) + log_det_Sigma
+                         + (fit_result["nu"] + N_t) * np.log1p(mahal_j / (fit_result["nu"] - 2.0)))
+            )
+            ZtSigmaInv_eps_j = (ZtHinv_eps_base - sigma_j * ZtHinv_omega) - V_fisher.T @ wb_j
+            nabla_j = ((fit_result["nu"] + N_t) / ((fit_result["nu"] - 2.0) + mahal_j)) * ZtSigmaInv_eps_j[:p_tilde]
+            return ll_j, nabla_j
+
+        ll_all, nabla_all = jax.vmap(_state_score)(sigma_vals)
+        log_weights = log_pi_pred + ll_all
+        log_marg = jax.scipy.special.logsumexp(log_weights)
+        log_pi_next = log_weights - log_marg
+
+        pi_next = np.exp(log_pi_next)
+        nabla_t = (pi_next[:, None] * nabla_all).sum(axis=0)
+        fisher_tilde = fisher_t[:p_tilde, :p_tilde]
+        eigvals, eigvecs = np.linalg.eigh(fisher_tilde)
+        scaling_matrix = (eigvecs * (eigvals ** (-score_power))) @ eigvecs.T
+        xi_tilde = fit_result["A"] @ scaling_matrix @ nabla_t
+        beta_tilde_next = IminusB @ beta_bar + B @ beta_tilde_t + xi_tilde
+
+        return (log_pi_next, beta_tilde_next), preds_h
+
+    state0 = (fit_result["log_pi_T"], fit_result["beta_tilde_T"])
+    _, preds_all = lax.scan(
+        _step, state0,
+        (Z_h_scan, y_masked, base_covariates[:T_half], bucket_indices[:T_half], mask_f),
+    )
+    return preds_all.transpose(1, 0, 2)
+
+
 def forecast(fit_result, M, y_test, K, score_power, alpha):
     M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
