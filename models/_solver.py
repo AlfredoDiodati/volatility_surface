@@ -235,7 +235,7 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
         newest = indices[memory - 1]
         sy = jnp.dot(s_hist[newest], y_hist[newest])
         yy = jnp.dot(y_hist[newest], y_hist[newest])
-        gamma = jnp.where(yy > 1e-10, sy / yy, jnp.ones((), dtype=theta0.dtype))
+        gamma = jnp.where(yy > 0, sy / yy, jnp.ones((), dtype=theta0.dtype))
         r = gamma * q
 
         def forward_body(r, k):
@@ -278,7 +278,8 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
         s_new = theta_new - theta
         y_new = g_new - g
         ys = jnp.dot(y_new, s_new)
-        rho_new = jnp.where(ys > 1e-10, 1.0 / ys, jnp.zeros((), dtype=theta0.dtype))
+        ys_min = float_info.eps * jnp.linalg.norm(y_new) * jnp.linalg.norm(s_new)
+        rho_new = jnp.where(ys > ys_min, 1.0 / ys, jnp.zeros((), dtype=theta0.dtype))
 
         s_hist_new = s_hist.at[write_idx].set(s_new)
         y_hist_new = y_hist.at[write_idx].set(y_new)
