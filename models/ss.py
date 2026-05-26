@@ -46,7 +46,6 @@ def fit(
     initial_guess: dict,
     initialization: tuple,
     opt_options: dict | None = None,
-    solver: str = "adam",
 ):
     data = np.asarray(data, dtype=float)
     M = np.asarray(M, dtype=float)
@@ -78,7 +77,6 @@ def fit(
         data, initial_guess, M, initialization,
         _dynamics, _link, _invlink, opt_options or {},
         _filter_fn=_filter_light_univariate,
-        solver=solver,
     )
 
 def fit_collapsed(
@@ -88,7 +86,6 @@ def fit_collapsed(
     initialization: tuple,
     opt_options: dict | None = None,
     maxiter: int = 5000,
-    solver: str = "adam",
 ):
     data = np.asarray(data, dtype=float)
     M = np.asarray(M, dtype=float)
@@ -176,7 +173,6 @@ def fit_collapsed(
         maxiter=maxiter,
         extra_loglikelihood_fn=_collapsed_correction,
         extra_ll_data=np.zeros(4),
-        solver=solver,
     )
     fitted_params = {k: result[k] for k in ["Q_param", "H_param", "B", "bar_beta", "ct", "omega"]}
     return fitted_params | {k: result[k] for k in ["logdetF", "quad", "a", "P", "att", "Ptt", "v", "F", "K"]} | {

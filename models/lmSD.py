@@ -2,9 +2,7 @@ import jax
 import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
-from models._solver import adam, adam_adj, sgn, lbfgs
-
-_SOLVERS = {"adam": adam, "adam_adj": adam_adj, "sgn": sgn, "lbfgs": lbfgs}
+from models._solver import lbfgs
 
 def _t_unit_var_ppf(alpha, nu):
     a = nu / 2.0
@@ -105,7 +103,6 @@ def fit(
     initial_guess: dict,
     opt_options: dict | None = None,
     maxiter: int = 5000,
-    solver: str = "adam",
 ):
     data = np.asarray(data, dtype=float)
     M = np.asarray(M, dtype=float)
@@ -166,7 +163,7 @@ def fit(
         return -np.sum(lls)
 
     theta0 = np.asarray(_invlink(initial_guess))
-    theta_opt, niter, final_loss, is_converged = _SOLVERS[solver](_criterion, theta0, opt_options, maxiter)
+    theta_opt, niter, final_loss, is_converged = lbfgs(_criterion, theta0, opt_options, maxiter)
     params_opt = _link(theta_opt)
     score_buf0 = np.zeros((T, p))
     betas, _, beta_T, score_buf_circ, write_idx_T = _filter(

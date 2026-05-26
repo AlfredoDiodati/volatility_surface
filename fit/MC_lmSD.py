@@ -30,6 +30,7 @@ OUTPUT_DIR = "out/SPX/mc/simulate_lmSD"
 SCORE_POWER = 1.0
 ALPHA = 0.05
 MAXITER = 5000
+TOL = 1e-4
 SOLVER = "lbfgs"
 K_VALUES = [1, 2, 3, 5, 10, 20, 30, 50]
 K_VALUES_MSMSD = [1, 2, 3, 5, 10]
@@ -242,63 +243,63 @@ _sim_jit = jax.jit(simulate, static_argnames=("horizon", "score_buf_size"))
 @functools.partial(jax.jit, static_argnames=("K",))
 def _ff_fit(data, cov, ig, K, lr):
     return ff_SD_fit(data, cov, ig, K=K,
-                     opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER, solver=SOLVER)
+                     opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER)
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _ff_SS_fit(data, cov, ig, K, lr):
     return ff_SS_fit(data, cov, ig, K=K,
-                     opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER, solver=SOLVER)
+                     opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER)
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _f_fit(data, cov, ig, K, lr):
     return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
-                    opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER, solver=SOLVER)
+                    opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER)
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _msmsd_fit(data, cov, ig, K, lr):
     return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
-                     opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER, solver=SOLVER)
+                     opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER)
 
 _lmSD_fit = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
-    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER, solver=SOLVER))
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER))
 
 _lmSD_oracle = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
-    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0, solver=SOLVER))
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0))
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _ff_refilter(data, cov, ig, K, lr):
     return ff_SD_fit(data, cov, ig, K=K,
-                     opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0, solver=SOLVER)
+                     opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0)
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _ff_SS_refilter(data, cov, ig, K, lr):
     return ff_SS_fit(data, cov, ig, K=K,
-                     opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0, solver=SOLVER)
+                     opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0)
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _f_refilter(data, cov, ig, K, lr):
     return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
-                    opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0, solver=SOLVER)
+                    opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0)
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _msmsd_refilter(data, cov, ig, K, lr):
     return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
-                     opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0, solver=SOLVER)
+                     opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0)
 
 _lmSD_refilter = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
-    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0, solver=SOLVER))
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0))
 
 _adjSD_refilter = jax.jit(lambda data, cov, ig, lr: adjSD_fit(
-    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0, solver=SOLVER))
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0))
 
 _ss_refilter = jax.jit(lambda data, cov, ig, init, lr: ss_fit(
-    data, cov, ig, init, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=0, solver=SOLVER))
+    data, cov, ig, init, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0))
 
 _adjSD_fit = jax.jit(lambda data, cov, ig, lr: adjSD_fit(
-    data, cov, ig, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER, solver=SOLVER))
+    data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER))
 
 _ss_fit = jax.jit(lambda data, cov, ig, init, lr: ss_fit(
-    data, cov, ig, init, opt_options={"learning_rate": lr, "tol": 1e-4}, maxiter=MAXITER, solver=SOLVER))
+    data, cov, ig, init, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER))
 
 def _metrics(y_test, preds, oos_ll, n_params):
     mask = jnp.ones(y_test.shape, dtype=bool)

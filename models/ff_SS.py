@@ -31,7 +31,6 @@ def fit(
     K: int,
     opt_options: dict | None = None,
     maxiter: int = 5000,
-    solver: str = "adam",
 ):
     data = np.asarray(data, dtype=float)
     M = np.asarray(M, dtype=float)
@@ -97,7 +96,6 @@ def fit(
         _dynamics, _link, _invlink, opt_options,
         maxiter=maxiter,
         _filter_fn=_filter_light_univariate,
-        solver=solver,
     )
 
     param_keys = ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha", "ws", "lambdas", "T_aug", "Q_aug"]

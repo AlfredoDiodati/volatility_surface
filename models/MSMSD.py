@@ -3,9 +3,7 @@ import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
 from jax.scipy.linalg import solve_triangular
-from models._solver import adam, adam_adj, sgn, lbfgs
-
-_SOLVERS = {"adam": adam, "adam_adj": adam_adj, "sgn": sgn, "lbfgs": lbfgs}
+from models._solver import lbfgs
 
 
 def _t_unit_var_ppf(alpha, nu):
@@ -169,7 +167,6 @@ def fit(
     score_power: float,
     opt_options: dict | None = None,
     maxiter: int = 5000,
-    solver: str = "adam",
 ):
     data = np.asarray(data, dtype=float)
     M = np.asarray(M, dtype=float)
@@ -232,7 +229,7 @@ def fit(
         return -np.sum(lls)
 
     theta0 = np.asarray(_invlink(initial_guess))
-    theta_opt, niter, final_loss, is_converged = _SOLVERS[solver](_criterion, theta0, opt_options, maxiter)
+    theta_opt, niter, final_loss, is_converged = lbfgs(_criterion, theta0, opt_options, maxiter)
     params_opt = _link(theta_opt)
     betas, _, (log_pi_T, beta_tilde_T) = _filter(
         y_masked, base_covariates, bucket_indices, mask_f,
