@@ -16,6 +16,7 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
 
     p = theta0.shape[0]
     float_info = jnp.finfo(theta0.dtype)
+    tol_sq = jnp.asarray(tol * tol * p, dtype=theta0.dtype)
     value_and_grad_fn = jax.value_and_grad(criterion)
 
     def two_loop_recursion(g, s_hist, y_hist, rho_hist, write_idx):
@@ -74,7 +75,9 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
         s_new = theta_new - theta
         y_new = g_new - g
         ys = jnp.dot(y_new, s_new)
-        ys_min = float_info.eps * jnp.linalg.norm(y_new) * jnp.linalg.norm(s_new)
+        yy = jnp.dot(y_new, y_new)
+        ss = jnp.dot(s_new, s_new)
+        ys_min = float_info.eps * jnp.sqrt(yy * ss)
         rho_new = jnp.where(ys > ys_min, 1.0 / ys, jnp.zeros((), dtype=theta0.dtype))
 
         s_hist_new = s_hist.at[write_idx].set(s_new)
@@ -82,11 +85,12 @@ def lbfgs(criterion, theta0, opt_options=None, maxiter=5000):
         rho_hist_new = rho_hist.at[write_idx].set(rho_new)
         write_idx_new = (write_idx + 1) % memory
 
-        loss_finite_new = jnp.isfinite(f_new) & jnp.all(jnp.isfinite(g_new))
+        g_sq = jnp.dot(g_new, g_new)
+        loss_finite_new = jnp.isfinite(f_new) & jnp.isfinite(g_sq)
         update_best = loss_finite_new & (f_new < best_loss)
         best_theta_new = jnp.where(update_best, theta_new, best_theta)
         best_loss_new = jnp.where(update_best, f_new, best_loss)
-        converged_new = jnp.linalg.norm(g_new) / jnp.sqrt(p) < tol
+        converged_new = g_sq < tol_sq
 
         return (
             theta_new, g_new, f_new, s_hist_new, y_hist_new, rho_hist_new, write_idx_new, i + 1,
