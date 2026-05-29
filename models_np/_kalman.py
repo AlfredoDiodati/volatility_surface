@@ -118,11 +118,12 @@ def _filter_light_univariate(data, dynamics, params, carry0):
             Z_j = Zt[j]
             PZ = Pt @ Z_j
             F_j = Z_j @ PZ + H_diag[j]
+            inv_F = 1.0 / F_j
             v_j = yt[j] - Z_j @ at - dt_arr[j]
-            at = at + PZ * (v_j / F_j)
-            Pt = Pt - np.outer(PZ, PZ) / F_j
+            at = at + PZ * (v_j * inv_F)
+            Pt = Pt - np.outer(PZ, PZ) * inv_F
             logdet_acc += np.log(F_j)
-            quad_acc += v_j * v_j / F_j
+            quad_acc += v_j * v_j * inv_F
 
         logdetF[t] = logdet_acc
         quad[t] = quad_acc
@@ -187,7 +188,7 @@ def _loglikelihood_correction(data, ystar, Z, H, Hstar, Hinv):
     _, logdet_H = np.linalg.slogdet(H)
     _, logdet_Hstar = np.linalg.slogdet(Hstar)
     et = data - ystar @ Z.T
-    quad = np.sum(np.einsum("ti,ij,tj->t", et, Hinv, et))
+    quad = np.sum((et @ Hinv) * et)
     return -n / 2 * (logdet_H - logdet_Hstar) - 0.5 * quad
 
 
