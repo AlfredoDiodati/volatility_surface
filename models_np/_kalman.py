@@ -10,6 +10,7 @@ from scipy.optimize import minimize
 
 def _filter(data, dynamics, params, carry0):
     at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry0
+    idx = int(idx)
     T = len(data)
     p, m = Zt.shape
 
@@ -67,6 +68,7 @@ def _filter(data, dynamics, params, carry0):
 
 def _filter_light(data, dynamics, params, carry0):
     at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry0
+    idx = int(idx)
     T = len(data)
 
     logdetF = np.zeros(T)
@@ -100,6 +102,7 @@ def _filter_light(data, dynamics, params, carry0):
 
 def _filter_light_univariate(data, dynamics, params, carry0):
     at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry0
+    idx = int(idx)
     T = len(data)
 
     logdetF = np.zeros(T)
