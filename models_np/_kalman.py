@@ -160,8 +160,12 @@ def _fit(
 
     def _criterion(params):
         constr_params = _link(params)
-        kf = _filter_fn(data, _dynamics, constr_params | {"covariates": covariates}, carry_initial)
-        return -(_loglikelihood(kf) + extra_loglikelihood_fn(constr_params, extra_ll_data))
+        try:
+            kf = _filter_fn(data, _dynamics, constr_params | {"covariates": covariates}, carry_initial)
+            val = -(_loglikelihood(kf) + extra_loglikelihood_fn(constr_params, extra_ll_data))
+            return val if np.isfinite(val) else 1e20
+        except (np.linalg.LinAlgError, ValueError):
+            return 1e20
 
     unc_params0 = np.asarray(_invlink(dict(initial_guess) | {"covariates": covariates}))
     result = minimize(_criterion, unc_params0, method="L-BFGS-B", options={"maxiter": maxiter, **opt_options})

@@ -32,14 +32,7 @@ HORIZONS = [400, 2000]
 SIGMA2_SCALES = [1.0, 10.0, 0.1]
 SCALE_TEX = {1.0: r"\boldsymbol H", 10.0: r"10\,\boldsymbol H", 0.1: r"\boldsymbol H/10"}
 
-LR = {
-    "ffSD":  1.0,
-    "ffSS":  1.0,
-    "msmSD": 1.0,
-    "lmSD":  1.0,
-    "adjSD": 1.0,
-    "SS":    1.0,
-}
+_FTOL = 0.0
 
 _P_FF = 4
 _P_TILDE = 3
@@ -236,17 +229,17 @@ def _metrics(y_test, preds, oos_ll, n_params):
 _N_METRICS = len(("mse", "mae", "tot_ll", "aic", "bic", "mse_seq", "mae_seq", "ll_seq"))
 
 
-def _is_cached(results, key, lr, solver):
+def _is_cached(results, key, solver, current_ftol):
     v = results.get(key)
     if v is None or len(v) <= _N_METRICS:
         return False
     mse = v[0]
     if mse != mse:
         return False
-    stored_lr = v[_N_METRICS]
     is_converged = v[_N_METRICS + 2] if len(v) > _N_METRICS + 2 else True
     stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else None
-    return abs(stored_lr - lr) < 1e-12 and stored_solver == solver and is_converged
+    stored_ftol = v[_N_METRICS + 5] if len(v) > _N_METRICS + 5 else float("inf")
+    return stored_solver == solver and is_converged and stored_ftol <= current_ftol
 
 
 def _metrics_h(y_test_ext, preds_h_all, eval_horizons, T_half):
@@ -779,13 +772,13 @@ def main():
         Z_cube_ext = np.broadcast_to(Z_fixed[None], (T_half + _MAX_FCST_H, Z_fixed.shape[0], Z_fixed.shape[1]))
 
         for scale in SIGMA2_SCALES:
-            needs_ff = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K), LR["ffSD"], SOLVER)}
-            needs_ffSS = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSS", K), LR["ffSS"], SOLVER)}
-            needs_msmsd = {K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K), LR["msmSD"], SOLVER)}
-            needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None), LR["lmSD"], SOLVER)
-            needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None), LR["lmSD"], SOLVER)
-            needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None), LR["adjSD"], SOLVER)
-            needs_ss = not _is_cached(results, (T, scale, "SS", None), LR["SS"], SOLVER)
+            needs_ff = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K), SOLVER, _FTOL)}
+            needs_ffSS = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSS", K), SOLVER, _FTOL)}
+            needs_msmsd = {K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K), SOLVER, _FTOL)}
+            needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None), SOLVER, _FTOL)
+            needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None), SOLVER, _FTOL)
+            needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None), SOLVER, _FTOL)
+            needs_ss = not _is_cached(results, (T, scale, "SS", None), SOLVER, _FTOL)
             needs_ff_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "ffSD", K))}
             needs_ffSS_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "ffSS", K))}
             needs_msmsd_h = {K for K in K_VALUES_MSMSD if not _is_cached_h(results_h, (T, scale, "msmSD", K))}
@@ -821,7 +814,7 @@ def main():
                     ig_ff = params_cache[pk] if pk in params_cache else cold_ffSD(y_train, Z_fixed)
                     r_ff = ff_SD_fit(y_train, Z_cube, ig_ff, K, opt_options=_OPT, maxiter=MAXITER)
                     preds_ff, _, _, oos_ll_ff = ff_SD_forecast(r_ff, Z_cube, y_test, K, ALPHA)
-                    results[pk] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF) + (LR["ffSD"], int(r_ff["niter"]), bool(r_ff["is_converged"]), MAXITER, SOLVER)
+                    results[pk] = _metrics(y_test, preds_ff, oos_ll_ff, NP_FF) + (1.0, int(r_ff["niter"]), bool(r_ff["is_converged"]), MAXITER, SOLVER, _FTOL)
                     params_cache[pk] = {k: np.asarray(r_ff[k]) for k in _IG_KEYS["ffSD"]}
                     mse, mae, ll, *_ = results[pk]
                     print(f"  ff-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ff['niter'])}  conv={bool(r_ff['is_converged'])}  init={init}", flush=True)
@@ -847,7 +840,7 @@ def main():
                     ig_ffSS = params_cache[pk] if pk in params_cache else cold_ffSS(y_train, Z_fixed)
                     r_ffSS = ff_SS_fit(y_train, Z_cube, ig_ffSS, K, opt_options=_OPT, maxiter=MAXITER)
                     preds_ffSS, _, _, oos_ll_ffSS = ff_SS_forecast(r_ffSS, Z_cube, y_test, ALPHA)
-                    results[pk] = _metrics(y_test, preds_ffSS, oos_ll_ffSS, NP_FFSS) + (LR["ffSS"], int(r_ffSS["niter"]), bool(r_ffSS["is_converged"]), MAXITER, SOLVER)
+                    results[pk] = _metrics(y_test, preds_ffSS, oos_ll_ffSS, NP_FFSS) + (1.0, int(r_ffSS["niter"]), bool(r_ffSS["is_converged"]), MAXITER, SOLVER, _FTOL)
                     params_cache[pk] = {k: np.asarray(r_ffSS[k]) for k in _IG_KEYS["ffSS"]}
                     mse, mae, ll, *_ = results[pk]
                     print(f"  ff-SS K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ffSS['niter'])}  conv={bool(r_ffSS['is_converged'])}  init={init}", flush=True)
@@ -876,7 +869,7 @@ def main():
                     ig_msmsd = params_cache[pk] if pk in params_cache else cold_msmSD(y_train, Z_fixed)
                     r_msmsd = msmsd_fit(y_train, Z_cube, ig_msmsd, K, score_power=1.0, opt_options=_OPT, maxiter=MAXITER)
                     preds_msmsd, _, _, oos_ll_msmsd = msmsd_forecast(r_msmsd, Z_cube, y_test, K, score_power=1.0, alpha=ALPHA)
-                    results[pk] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD) + (LR["msmSD"], int(r_msmsd["niter"]), bool(r_msmsd["is_converged"]), MAXITER, SOLVER)
+                    results[pk] = _metrics(y_test, preds_msmsd, oos_ll_msmsd, NP_MSMSD) + (1.0, int(r_msmsd["niter"]), bool(r_msmsd["is_converged"]), MAXITER, SOLVER, _FTOL)
                     params_cache[pk] = {k: np.asarray(r_msmsd[k]) for k in _IG_KEYS["msmSD"]}
                     mse, mae, ll, *_ = results[pk]
                     print(f"  msm-SD K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_msmsd['niter'])}  conv={bool(r_msmsd['is_converged'])}  init={init}", flush=True)
@@ -902,7 +895,7 @@ def main():
                 ig_lmsd = params_cache[pk] if pk in params_cache else warm_lmSD(y_train, Z_fixed, params_base)
                 r_lmsd = lmSD_fit(y_train, Z_cube, ig_lmsd, opt_options=_OPT, maxiter=MAXITER)
                 preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
-                results[pk] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD) + (LR["lmSD"], int(r_lmsd["niter"]), bool(r_lmsd["is_converged"]), MAXITER, SOLVER)
+                results[pk] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD) + (1.0, int(r_lmsd["niter"]), bool(r_lmsd["is_converged"]), MAXITER, SOLVER, _FTOL)
                 params_cache[pk] = {k: np.asarray(r_lmsd[k]) for k in _IG_KEYS["lmSD"]}
                 mse, mae, ll, *_ = results[pk]
                 print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_lmsd['niter'])}  conv={bool(r_lmsd['is_converged'])}  init={init}", flush=True)
@@ -927,7 +920,7 @@ def main():
                 ig_oracle = true_lmSD(params)
                 r_oracle = lmSD_fit(y_train, Z_cube, ig_oracle, opt_options=_OPT, maxiter=0)
                 preds_oracle, _, _, oos_ll_oracle = lmSD_forecast(r_oracle, Z_cube, y_test, ALPHA)
-                results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD) + (LR["lmSD"], int(r_oracle["niter"]), bool(r_oracle["is_converged"]), 0, SOLVER)
+                results[(T, scale, "lmSD_oracle", None)] = _metrics(y_test, preds_oracle, oos_ll_oracle, NP_LMSD) + (1.0, int(r_oracle["niter"]), bool(r_oracle["is_converged"]), 0, SOLVER, _FTOL)
                 mse, mae, ll, *_ = results[(T, scale, "lmSD_oracle", None)]
                 print(f"  lmSD†    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_oracle['niter'])}  conv={bool(r_oracle['is_converged'])}  init=oracle", flush=True)
                 save_results(results, (T, scale, "lmSD_oracle", None))
@@ -950,7 +943,7 @@ def main():
                 ig_adjsd = params_cache[pk] if pk in params_cache else cold_adjSD(y_train, Z_fixed)
                 r_adjsd = adjSD_fit(y_train, Z_cube, ig_adjsd, opt_options=_OPT, maxiter=MAXITER)
                 preds_adjsd, _, _, oos_ll_adjsd = adjSD_forecast(r_adjsd, Z_cube, y_test, ALPHA)
-                results[pk] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD) + (LR["adjSD"], int(r_adjsd["niter"]), bool(r_adjsd["is_converged"]), MAXITER, SOLVER)
+                results[pk] = _metrics(y_test, preds_adjsd, oos_ll_adjsd, NP_ADJSD) + (1.0, int(r_adjsd["niter"]), bool(r_adjsd["is_converged"]), MAXITER, SOLVER, _FTOL)
                 params_cache[pk] = {k: np.asarray(r_adjsd[k]) for k in _IG_KEYS["adjSD"]}
                 mse, mae, ll, *_ = results[pk]
                 print(f"  adjSD    MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_adjsd['niter'])}  conv={bool(r_adjsd['is_converged'])}  init={init}", flush=True)
@@ -978,7 +971,7 @@ def main():
                 init_ss = cold_ss_init(y_train, Z_fixed)
                 r_ss = ss_fit(y_train, Z_cube, ig_ss, init_ss, opt_options=_OPT, maxiter=MAXITER)
                 preds_ss, _, _, oos_ll_ss = ss_forecast(r_ss, Z_cube, y_test, ALPHA)
-                results[pk] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS) + (LR["SS"], int(r_ss["niter"]), bool(r_ss["is_converged"]), MAXITER, SOLVER)
+                results[pk] = _metrics(y_test, preds_ss, oos_ll_ss, NP_SS) + (1.0, int(r_ss["niter"]), bool(r_ss["is_converged"]), MAXITER, SOLVER, _FTOL)
                 params_cache[pk] = {k: np.asarray(r_ss[k]) for k in _IG_KEYS["SS"]}
                 mse, mae, ll, *_ = results[pk]
                 print(f"  SS       MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_ss['niter'])}  conv={bool(r_ss['is_converged'])}  init={init}", flush=True)

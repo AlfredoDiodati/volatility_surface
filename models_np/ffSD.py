@@ -151,8 +151,12 @@ def fit(data, M, initial_guess, K, opt_options=None, maxiter=5000):
 
     def _criterion(theta):
         params = _link(theta)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
-        return -np.sum(lls)
+        try:
+            _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
+            val = -np.sum(lls)
+            return val if np.isfinite(val) else 1e20
+        except (np.linalg.LinAlgError, ValueError):
+            return 1e20
 
     theta0 = np.asarray(_invlink(initial_guess))
     result = minimize(_criterion, theta0, method="L-BFGS-B", options={"maxiter": maxiter, **opt_options})

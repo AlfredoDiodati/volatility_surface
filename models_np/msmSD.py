@@ -57,8 +57,15 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, score_
 
     p_tilde = beta_bar.shape[0]
     p_full = p_tilde + 1
+    if not np.isfinite(sigma2) or sigma2 <= 0:
+        T = y_masked.shape[0]
+        return np.zeros((T, p_tilde)), np.full(T, -1e38), state0
     h_inv = 1.0 / sigma2
-    L_C = np.linalg.cholesky(params["C"])
+    try:
+        L_C = np.linalg.cholesky(params["C"])
+    except np.linalg.LinAlgError:
+        T = y_masked.shape[0]
+        return np.zeros((T, p_tilde)), np.full(T, -1e38), state0
     _eye_pfull = np.eye(p_full)
     _log_sigma2 = np.log(sigma2)
 
@@ -210,7 +217,8 @@ def fit(data, M, initial_guess, K, score_power, opt_options=None, maxiter=5000):
             y_masked, base_covariates, bucket_indices, mask_f,
             params, K, score_power, (log_pi_init, params["beta_bar"])
         )
-        return -np.sum(lls)
+        val = -np.sum(lls)
+        return val if np.isfinite(val) else 1e38
 
     theta0 = np.asarray(_invlink(initial_guess))
     result = minimize(_criterion, theta0, method="L-BFGS-B", options={"maxiter": maxiter, **opt_options})
