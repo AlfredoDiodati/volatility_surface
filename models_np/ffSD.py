@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.special import gammaln, ndtri, betainc
+from scipy.special import gammaln, ndtri, betainc, expit
 from scipy.linalg import solve_triangular
 from scipy.optimize import minimize, approx_fprime
 
@@ -129,7 +129,7 @@ def fit(data, M, initial_guess, K, opt_options=None, maxiter=5000):
         A = np.diag(theta[i:i + p]); i += p
         sigma2 = np.exp(theta[i]); i += 1
         omega_load = np.concatenate([np.zeros(1), theta[i:i + n_buckets - 1]]); i += n_buckets - 1
-        eta = np.exp(theta[i:i + p]); i += p
+        eta = 2.0 * expit(theta[i:i + p]); i += p
         alpha = np.full(p, np.logaddexp(0.0, theta[i]) + 1.0); i += 1
         C = np.diag(np.exp(theta[i:i + p])); i += p
         nu = np.exp(theta[i]) + 2.0
@@ -139,7 +139,8 @@ def fit(data, M, initial_guess, K, opt_options=None, maxiter=5000):
     def _invlink(params):
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
-        unc_eta = np.log(params["eta"])
+        eta = params["eta"]
+        unc_eta = np.log( eta / (2.0 - eta))
         unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
         unc_C = np.log(np.diag(params["C"]))
         unc_nu = np.log(params["nu"] - 2.0)

@@ -114,7 +114,7 @@ def fit(data, M, initial_guess, opt_options=None, maxiter=5000):
         beta_bar = theta[i:i + p]; i += p
         B = np.diag(np.tanh(theta[i:i + p])); i += p
         A = np.diag(theta[i:i + p]); i += p
-        d = expit(theta[i:i + p]); i += p
+        d = 0.5*np.tanh(theta[i:i + p]); i += p
         sigma2 = np.exp(theta[i]); i += 1
         omega = np.concatenate([np.zeros(1), theta[i:i + n_buckets - 1]]); i += n_buckets - 1
         C_diag = np.exp(theta[i:i + p]); i += p
@@ -126,8 +126,7 @@ def fit(data, M, initial_guess, opt_options=None, maxiter=5000):
         B_diag = np.diag(params["B"])
         unc_B = np.arctanh(np.clip(B_diag, -0.999999, 0.999999))
         unc_A = np.diag(params["A"])
-        d = params["d"]
-        unc_d = np.log(d / (1.0 - d))
+        unc_d = np.arctanh(2.0*params["d"])
         unc_s2 = np.log(params["sigma2"])
         unc_omega = params["omega"][1:]
         unc_C = np.log(params["C"])
