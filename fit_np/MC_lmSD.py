@@ -1,6 +1,5 @@
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import gc
 import json
 import numpy as np
@@ -13,6 +12,7 @@ from models_np.ffSD import fit as ff_SD_fit, forecast as ff_SD_forecast, standar
 from models_np.ffSS import fit as ff_SS_fit, forecast as ff_SS_forecast, forecast_rolling_h as ff_SS_forecast_rolling_h
 from models_np.msmSD import fit as msmsd_fit, forecast as msmsd_forecast, forecast_rolling_h as msmsd_forecast_rolling_h
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 PARAMS_PATH = "out/SPX/otm/params_lmSD.json"
 OUTPUT_DIR = "out/SPX/mc/simulate_lmSD_np"
