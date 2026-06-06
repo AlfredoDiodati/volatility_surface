@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.special import gammaln, ndtri, betainc, expit
 from scipy.linalg import solve_triangular
-from scipy.optimize import minimize, approx_fprime
+from scipy.optimize import minimize
 
 
 def _t_unit_var_ppf(alpha, nu):
@@ -230,10 +230,17 @@ def standard_errors(fit_result, data, M, K):
     n = len(theta_opt)
     eps = 1e-5
 
+    def _central_grad(theta):
+        g = np.zeros(n)
+        for j in range(n):
+            e_j = np.zeros(n); e_j[j] = eps
+            g[j] = (_criterion(theta + e_j) - _criterion(theta - e_j)) / (2 * eps)
+        return g
+
     H = np.zeros((n, n))
     for i in range(n):
         e = np.zeros(n); e[i] = eps
-        H[i] = (approx_fprime(theta_opt + e, _criterion, eps) - approx_fprime(theta_opt - e, _criterion, eps)) / (2 * eps)
+        H[i] = (_central_grad(theta_opt + e) - _central_grad(theta_opt - e)) / (2 * eps)
     H = (H + H.T) / 2
 
     eigvals, eigvecs = np.linalg.eigh(H)
