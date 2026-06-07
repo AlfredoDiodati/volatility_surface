@@ -35,7 +35,6 @@ def _compute_weights(d, T):
     return np.concatenate([np.ones((1, d.shape[0])), w_rest], axis=0)
 
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
-    B = params["B"]
     A = params["A"]
     d = params["d"]
     sigma2 = params["sigma2"]
@@ -82,7 +81,7 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, state0):
         positions = (write_idx - _k_range) % T_buf
         conv = A_diag * (weights * score_buf_new[positions]).sum(axis=0)
 
-        beta_next = beta_bar + B @ (beta_t - beta_bar) + conv
+        beta_next = beta_bar + conv
 
         log_det_F = N_t * np.log(sigma2) + np.sum(np.log(C)) + np.linalg.slogdet(S)[1]
         log_constants = (gammaln((nu + N_t) / 2.0) - gammaln(nu / 2.0)
@@ -121,9 +120,6 @@ def fit(
         idx = 0
         beta_bar = theta[idx:idx + p]
         idx += p
-        B_diag = np.tanh(theta[idx:idx + p])
-        B = np.diag(B_diag)
-        idx += p
         A = np.diag(theta[idx:idx + p])
         idx += p
         d = jax.nn.sigmoid(theta[idx:idx + p])
@@ -135,12 +131,10 @@ def fit(
         C_diag = np.exp(theta[idx:idx + p])
         idx += p
         nu = np.exp(theta[idx]) + 2.0
-        return {"beta_bar": beta_bar, "B": B, "A": A, "d": d, "sigma2": sigma2,
+        return {"beta_bar": beta_bar, "A": A, "d": d, "sigma2": sigma2,
                 "omega": omega, "C": C_diag, "nu": nu}
 
     def _invlink(params):
-        B_diag = np.diag(params["B"])
-        unc_B = np.arctanh(B_diag)
         unc_A = np.diag(params["A"])
         d = params["d"]
         unc_d = np.log(d / (1.0 - d))
@@ -149,7 +143,7 @@ def fit(
         unc_C = np.log(params["C"])
         unc_nu = np.log(params["nu"] - 2.0)
         return np.concatenate([
-            params["beta_bar"], unc_B, unc_A, unc_d,
+            params["beta_bar"], unc_A, unc_d,
             np.array([unc_s2]), unc_omega, unc_C, np.array([unc_nu]),
         ])
 
@@ -181,7 +175,6 @@ def fit(
     }
 
 def simulate(params, M, horizon, key, beta_0=None, score_buf_size=None, score_buf_0=None):
-    B = params["B"]
     A = params["A"]
     d = params["d"]
     sigma2 = params["sigma2"]
@@ -241,7 +234,7 @@ def simulate(params, M, horizon, key, beta_0=None, score_buf_size=None, score_bu
         write_idx_new = (write_idx + 1) % N_sim
         positions = (write_idx - _k_sim) % N_sim
         conv = A_diag * (weights * score_buf_new[positions]).sum(axis=0)
-        beta_next = beta_bar + B @ (beta_t - beta_bar) + conv
+        beta_next = beta_bar + conv
 
         return (beta_next, score_buf_new, write_idx_new), (y_t, beta_t)
 
@@ -251,7 +244,6 @@ def simulate(params, M, horizon, key, beta_0=None, score_buf_size=None, score_bu
     return y_sim, beta_sim
 
 def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
-    B = fit_result["B"]
     beta_bar = fit_result["beta_bar"]
     omega = fit_result["omega"]
     p = beta_bar.shape[0]
@@ -273,15 +265,9 @@ def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
         mask_f, fit_result, state0,
     )
 
-    B_h_list = []
-    for h in eval_horizons:
-        Bh = np.eye(B.shape[0], dtype=float)
-        for _ in range(h - 1):
-            Bh = Bh @ B
-        B_h_list.append(Bh)
-    B_h_stack = np.stack(B_h_list)
     deviations = betas_origins - beta_bar
-    beta_h = beta_bar + np.einsum("hpq,tq->htp", B_h_stack, deviations)
+    h_is_one = np.array([h == 1 for h in eval_horizons], dtype=float)
+    beta_h = beta_bar + h_is_one[:, None, None] * deviations[None, :, :]
 
     omega_cols = omega[bucket_indices]
     Z_all = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
@@ -290,7 +276,6 @@ def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
 
 
 def forecast_h(fit_result, M):
-    B = fit_result["B"]
     A = fit_result["A"]
     d = fit_result["d"]
     beta_bar = fit_result["beta_bar"]
@@ -318,7 +303,7 @@ def forecast_h(fit_result, M):
         read_idx_new = (read_idx + 1) % N_buf
         positions = (read_idx_new - _k_fh) % N_buf
         conv = A_diag * (weights * score_buf_init[positions]).sum(axis=0)
-        beta_next = beta_bar + B @ (beta_h - beta_bar) + conv
+        beta_next = beta_bar + conv
         omega_col = omega[bidx_t]
         Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
         predictions_t = Z_t @ beta_next
@@ -331,7 +316,6 @@ def forecast_h(fit_result, M):
     return predictions, P
 
 def simulate_panel(params, M, n, key, beta_0=None, score_buf_size=None, score_buf_0=None):
-    B = params["B"]
     A = params["A"]
     d = params["d"]
     sigma2 = params["sigma2"]
@@ -396,7 +380,7 @@ def simulate_panel(params, M, n, key, beta_0=None, score_buf_size=None, score_bu
             write_idx_new = (write_idx + 1) % N_pan
             positions = (write_idx - _k_pan) % N_pan
             conv = A_diag * (weights * score_buf_new[positions]).sum(axis=0)
-            beta_next = beta_bar + B @ (beta_t - beta_bar) + conv
+            beta_next = beta_bar + conv
 
             return (beta_next, score_buf_new, write_idx_new), (y_t, beta_t)
 

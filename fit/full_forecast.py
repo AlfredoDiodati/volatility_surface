@@ -184,15 +184,15 @@ def make_lmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
         y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
         Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
 
-        ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "d": carry[3],
-              "sigma2": carry[4], "omega": carry[5], "C": carry[6], "nu": carry[7]}
+        ig = {"beta_bar": carry[0], "A": carry[1], "d": carry[2],
+              "sigma2": carry[3], "omega": carry[4], "C": carry[5], "nu": carry[6]}
         r = lmSD_fit(y_win, Z_win, ig,
                      opt_options={"learning_rate": 1e-3, "tol": 1e-4},
                      maxiter=maxiter)
 
         preds, P_mean, VaR, oos_ll = lmSD_forecast(r, Z_test, y_test, alpha)
 
-        new_carry = (r["beta_bar"], r["B"], r["A"], r["d"], r["sigma2"],
+        new_carry = (r["beta_bar"], r["A"], r["d"], r["sigma2"],
                      r["omega"], r["C"], r["nu"])
         return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
 
@@ -314,7 +314,6 @@ def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
     omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
         jnp.append(beta_ols, 0.0),
-        0.95 * jnp.eye(P),
         0.05 * jnp.eye(P),
         jnp.full(P, 0.4),
         sig2,
@@ -349,7 +348,7 @@ def main():
 
     n_params_ss = 3 * P + n_buckets
     n_params_adjSD = 4 * P + n_buckets + 1
-    n_params_lmSD = 5 * P + n_buckets + 1
+    n_params_lmSD = 4 * P + n_buckets + 1
     n_params_fSD = 3 * P_BASE + P_FULL + n_buckets + 4
     n_params_ffSD = 4 * P + n_buckets + 1
     n_params_msmSD = n_params_fSD  # equal count: beta_bar,B,A,sigma2,sigma_0,omega[1:],C,nu,m0,gamma_K,b

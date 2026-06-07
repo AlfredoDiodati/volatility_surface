@@ -62,7 +62,7 @@ _P_FULL = 4
 NP_FF = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
 NP_FFSS = _P_FF + 1 + _P_FF + (N_BUCKETS - 1) + _P_FF + 1
 NP_F = _P_TILDE + _P_TILDE + _P_FULL + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
-NP_LMSD = 5 * _P_FF + N_BUCKETS + 1
+NP_LMSD = 4 * _P_FF + N_BUCKETS + 1
 NP_ADJSD = 4 * _P_FF + N_BUCKETS + 1
 NP_SS = 3 * _P_FF + N_BUCKETS
 NP_MSMSD = 3 * _P_TILDE + _P_FULL + (N_BUCKETS - 1) + 6
@@ -73,7 +73,6 @@ def load_params(path):
         raw = json.load(f)
     return {
         "beta_bar": jnp.array(raw["beta_bar"]),
-        "B": jnp.array(raw["B"]),
         "A": jnp.array(raw["A"]),
         "d": jnp.array(raw["d"]),
         "sigma2": jnp.array(raw["sigma2"]),
@@ -142,7 +141,6 @@ def cold_lmSD(y_train, Z_fixed):
     resid = y_train - (M @ beta3)
     return {
         "beta_bar": jnp.append(beta3, 0.0),
-        "B": jnp.diag(jnp.full(_P_FF, 0.95)),
         "A": jnp.diag(jnp.full(_P_FF, 0.05)),
         "d": jnp.full(_P_FF, 0.3),
         "sigma2": jnp.var(resid),
@@ -154,7 +152,6 @@ def cold_lmSD(y_train, Z_fixed):
 def true_lmSD(params_true):
     return {
         "beta_bar": params_true["beta_bar"],
-        "B": params_true["B"],
         "A": params_true["A"],
         "d": params_true["d"],
         "sigma2": params_true["sigma2"],
@@ -170,7 +167,6 @@ def warm_lmSD(y_train, Z_fixed, params_true):
     resid = y_train - (M @ beta3)
     return {
         "beta_bar": jnp.append(beta3, 0.0),
-        "B": params_true["B"],
         "A": params_true["A"],
         "d": params_true["d"],
         "sigma2": jnp.var(resid),
@@ -523,7 +519,7 @@ _IG_KEYS = {
     "ffSS":  ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha"],
     "fSD":   ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "eta", "alpha", "C", "nu"],
     "msmSD": ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "C", "nu", "m0", "gamma_K", "b"],
-    "lmSD":  ["beta_bar", "B", "A", "d", "sigma2", "omega", "C", "nu"],
+    "lmSD":  ["beta_bar", "A", "d", "sigma2", "omega", "C", "nu"],
     "adjSD": ["beta_bar", "B", "A", "sigma2", "omega", "C", "nu"],
     "SS":    ["Q_param", "H_param", "B", "bar_beta", "omega"],
 }
