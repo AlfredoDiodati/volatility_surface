@@ -122,7 +122,7 @@ def fit(
         idx += p
         A = np.diag(theta[idx:idx + p])
         idx += p
-        d = jax.nn.sigmoid(theta[idx:idx + p])
+        d = 0.5 * jax.nn.tanh(theta[idx:idx + p])
         idx += p
         sigma2 = np.exp(theta[idx])
         idx += 1
@@ -137,7 +137,7 @@ def fit(
     def _invlink(params):
         unc_A = np.diag(params["A"])
         d = params["d"]
-        unc_d = np.log(d / (1.0 - d))
+        unc_d = np.arctanh(2.0 * d)
         unc_s2 = np.log(params["sigma2"])
         unc_omega = params["omega"][1:]
         unc_C = np.log(params["C"])
@@ -245,7 +245,12 @@ def simulate(params, M, horizon, key, beta_0=None, score_buf_size=None, score_bu
 
 def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
     beta_bar = fit_result["beta_bar"]
+    A = fit_result["A"]
+    d = fit_result["d"]
+    sigma2 = fit_result["sigma2"]
     omega = fit_result["omega"]
+    C = fit_result["C"]
+    nu = fit_result["nu"]
     p = beta_bar.shape[0]
     M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
@@ -258,21 +263,69 @@ def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
 
     score_buf_ext = np.concatenate([fit_result["score_buf_T"], np.zeros((T_half, p))], axis=0)
     T_train = fit_result["score_buf_T"].shape[0]
+    T_buf = score_buf_ext.shape[0]
+
+    A_diag = np.diag(A)
+    h_inv = 1.0 / sigma2
+    C_inv = 1.0 / C
+    weights = _compute_weights(d, T_buf)
+
+    max_h = max(eval_horizons)
+    h_shifts = np.array(eval_horizons, dtype=int) - 1
+    k_idx = np.arange(T_buf)
+    weights_ext = np.concatenate([weights, np.zeros((max_h - 1, p))], axis=0)
+    weights_shifted = weights_ext[h_shifts[:, None] + k_idx[None, :]]
+
+    _k_range = np.arange(T_buf)
     state0 = (fit_result["beta_T"], score_buf_ext, np.asarray(T_train, np.int32))
 
-    betas_origins, _, _, _, _ = _filter(
-        y_masked, base_covariates[:T_half], bucket_indices[:T_half],
-        mask_f, fit_result, state0,
-    )
+    def _step(carry, inputs):
+        beta_t, score_buf, write_idx = carry
+        y_t, base_t, bidx_t, mask_t = inputs
 
-    deviations = betas_origins - beta_bar
-    h_is_one = np.array([h == 1 for h in eval_horizons], dtype=float)
-    beta_h = beta_bar + h_is_one[:, None, None] * deviations[None, :, :]
+        omega_col = omega[bidx_t]
+        Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
+        Z_mask = Z_t * mask_t[:, None]
+        eps_t = (y_t - Z_t @ beta_t) * mask_t
+        N_t = np.sum(mask_t)
+
+        V_t = h_inv * (Z_mask.T @ Z_mask)
+        G_t = h_inv * (Z_mask.T @ eps_t)
+        S = np.diag(C_inv) + V_t
+
+        mahal_H = h_inv * np.sum(eps_t ** 2)
+        S_inv = np.linalg.solve(S, np.concatenate([G_t[:, None], V_t], axis=1))
+        S_inv_G = S_inv[:, 0]
+        S_inv_V = S_inv[:, 1:]
+        mahal_F = mahal_H - G_t @ S_inv_G
+
+        weight = (1.0 + (N_t + 2.0) / nu) / (1.0 + mahal_F / (nu - 2.0))
+        g_tilde = G_t - V_t @ S_inv_G
+        V_tilde = V_t - V_t @ S_inv_V
+        s_t = weight * np.linalg.solve(V_tilde, g_tilde)
+
+        positions_prev = (write_idx - 1 - _k_range) % T_buf
+        scores_prev = score_buf[positions_prev]
+        betas_h = beta_bar + A_diag * (weights_shifted * scores_prev[None]).sum(axis=1)
+
+        score_buf_new = score_buf.at[write_idx].set(s_t)
+        write_idx_new = (write_idx + 1) % T_buf
+        positions = (write_idx - _k_range) % T_buf
+        scores_ordered = score_buf_new[positions]
+        conv = A_diag * (weights * scores_ordered).sum(axis=0)
+        beta_next = beta_bar + conv
+
+        return (beta_next, score_buf_new, write_idx_new), betas_h
+
+    _, betas_h_all = lax.scan(
+        _step, state0, (y_masked, base_covariates[:T_half], bucket_indices[:T_half], mask_f)
+    )
 
     omega_cols = omega[bucket_indices]
     Z_all = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
-    Z_h_stack = np.stack([Z_all[h - 1:T_half + h - 1] for h in eval_horizons])
-    return np.einsum("htnp,htp->htn", Z_h_stack, beta_h)
+    t_idx = np.arange(T_half)
+    Z_h_stack = Z_all[t_idx[None, :] + h_shifts[:, None]]
+    return np.einsum("htnp,htp->htn", Z_h_stack, np.transpose(betas_h_all, (1, 0, 2)))
 
 
 def forecast_h(fit_result, M):

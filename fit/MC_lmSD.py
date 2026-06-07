@@ -282,7 +282,6 @@ def _metrics(y_test, preds, oos_ll, n_params):
     return mse, mae, tot_ll, aic, bic, mse_seq, mae_seq, ll_seq
 
 _N_METRICS = len(("mse", "mae", "tot_ll", "aic", "bic", "mse_seq", "mae_seq", "ll_seq"))
-_DEFAULT_LR = 1e-3
 
 def _is_cached(results, key, lr, solver):
     v = results.get(key)
