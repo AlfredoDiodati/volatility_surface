@@ -47,7 +47,7 @@ def fit(
         sigma2 = np.exp(theta[i]); i += 1
         q_diag = np.exp(theta[i:i + p]); i += p
         omega = np.concatenate([np.zeros(1), theta[i:i + n_buckets - 1]]); i += n_buckets - 1
-        eta = np.exp(theta[i:i + p]); i += p
+        eta = 2.0 * jax.nn.sigmoid(theta[i:i + p]); i += p
         alpha = 1.0 + jax.nn.softplus(theta[i])
 
         ws, lambdas = _solve_weights_ff(eta, np.full(p, alpha), K)
@@ -75,7 +75,7 @@ def fit(
             np.array([np.log(params["sigma2"])]),
             np.log(np.diag(params["Q_param"])),
             params["omega"][1:],
-            np.log(params["eta"]),
+            np.log(params["eta"] / (2.0 - params["eta"])),
             np.array([np.log(np.exp(params["alpha"] - 1.0) - 1.0)]),
         ])
 

@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.special import expit
 from models_np._kalman import _filter_light_univariate, _fit
 
 
@@ -57,7 +58,7 @@ def fit(data, M, initial_guess, K, opt_options=None, maxiter=5000):
         sigma2 = np.exp(theta[i]); i += 1
         q_diag = np.exp(theta[i:i + p]); i += p
         omega = np.concatenate([np.zeros(1), theta[i:i + n_buckets - 1]]); i += n_buckets - 1
-        eta = np.exp(theta[i:i + p]); i += p
+        eta = 2.0 * expit(theta[i:i + p]); i += p
         alpha = 1.0 + np.logaddexp(0.0, theta[i])
         ws, lambdas = _solve_weights_ff(eta, np.full(p, alpha), K)
         T_aug = np.diag(np.exp(-lambdas).ravel())
@@ -83,7 +84,7 @@ def fit(data, M, initial_guess, K, opt_options=None, maxiter=5000):
             np.array([np.log(params["sigma2"])]),
             np.log(np.diag(params["Q_param"])),
             params["omega"][1:],
-            np.log(params["eta"]),
+            np.log(params["eta"] / (2.0 - params["eta"])),
             np.array([np.log(np.exp(params["alpha"] - 1.0) - 1.0)]),
         ])
 

@@ -159,7 +159,7 @@ def fit(
         idx += 1
         omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]])
         idx += n_buckets - 1
-        eta = np.exp(theta[idx:idx + p])
+        eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p])
         idx += p
         alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0)
         idx += 1
@@ -182,7 +182,7 @@ def fit(
         A_diag = np.diag(params["A"])
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
-        unc_eta = np.log(params["eta"])
+        unc_eta = np.log(params["eta"] / (2.0 - params["eta"]))
         unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
         C_diag = np.diag(params["C"])
         unc_C = np.log(C_diag)
@@ -233,7 +233,7 @@ def standard_errors(fit_result, data, M, K):
         A_diag = theta[idx:idx + p]; idx += p
         sigma2 = np.exp(theta[idx]); idx += 1
         omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]]); idx += n_buckets - 1
-        eta = np.exp(theta[idx:idx + p]); idx += p
+        eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
         alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
         C_diag = np.exp(theta[idx:idx + p]); idx += p
         nu = np.exp(theta[idx]) + 2.0
@@ -245,7 +245,7 @@ def standard_errors(fit_result, data, M, K):
         A_diag = np.diag(params["A"])
         unc_s2 = np.log(params["sigma2"])
         unc_omega_load = params["omega_load"][1:]
-        unc_eta = np.log(params["eta"])
+        unc_eta = np.log(params["eta"] / (2.0 - params["eta"]))
         unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
         unc_C = np.log(np.diag(params["C"]))
         unc_nu = np.log(params["nu"] - 2.0)
@@ -259,7 +259,7 @@ def standard_errors(fit_result, data, M, K):
         A = np.diag(theta[idx:idx + p]); idx += p
         sigma2 = np.exp(theta[idx]); idx += 1
         omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]]); idx += n_buckets - 1
-        eta = np.exp(theta[idx:idx + p]); idx += p
+        eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
         alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
         C = np.diag(np.exp(theta[idx:idx + p])); idx += p
         nu = np.exp(theta[idx]) + 2.0
