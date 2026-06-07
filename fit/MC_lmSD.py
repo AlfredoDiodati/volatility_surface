@@ -18,7 +18,6 @@ from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast, forecast_
 from models.ss import fit_collapsed as ss_fit, forecast as ss_forecast, forecast_rolling_h as ss_forecast_rolling_h
 from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast, standard_errors as ff_SD_se, forecast_rolling_h as ff_SD_forecast_rolling_h
 from models.ff_SS import fit as ff_SS_fit, forecast as ff_SS_forecast, forecast_rolling_h as ff_SS_forecast_rolling_h
-from models.f_SD import fit as f_SD_fit, forecast as f_SD_forecast, standard_errors as f_SD_se, forecast_rolling_h as f_SD_forecast_rolling_h
 from models.MSMSD import fit as msmsd_fit, forecast as msmsd_forecast, forecast_rolling_h as msmsd_forecast_rolling_h
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
@@ -30,7 +29,7 @@ OUTPUT_DIR = "out/SPX/mc/simulate_lmSD"
 SCORE_POWER = 1.0
 ALPHA = 0.05
 MAXITER = 5000
-TOL = 1e-4
+TOL = 1e-3
 SOLVER = "lbfgs"
 K_VALUES = [1, 2, 3, 5, 10, 20, 30, 50]
 K_VALUES_MSMSD = [1, 2, 3, 5, 10]
@@ -48,7 +47,6 @@ SCALE_TEX = {1.0: r"\boldsymbol H", 10.0: r"10\,\boldsymbol H", 0.1: r"\boldsymb
 LR = {
     "ffSD":  1.0,
     "ffSS":  1.0,
-    "fSD":   1.0,
     "msmSD": 1.0,
     "lmSD":  1.0,
     "adjSD": 1.0,
@@ -61,7 +59,6 @@ _P_FULL = 4
 
 NP_FF = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
 NP_FFSS = _P_FF + 1 + _P_FF + (N_BUCKETS - 1) + _P_FF + 1
-NP_F = _P_TILDE + _P_TILDE + _P_FULL + 1 + 1 + (N_BUCKETS - 1) + 1 + 1 + _P_FULL + 1
 NP_LMSD = 4 * _P_FF + N_BUCKETS + 1
 NP_ADJSD = 4 * _P_FF + N_BUCKETS + 1
 NP_SS = 3 * _P_FF + N_BUCKETS
@@ -116,23 +113,6 @@ def cold_ffSS(y_train, Z_fixed):
         "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
         "eta": jnp.full(_P_FF, 0.06),
         "alpha": jnp.array(1.5),
-    }
-
-def cold_fSD(y_train, Z_fixed):
-    M = Z_fixed[:, :3]
-    beta_bar = _ols(y_train, M)
-    resid = y_train - (M @ beta_bar)
-    return {
-        "beta_bar": beta_bar,
-        "B": jnp.diag(jnp.full(_P_TILDE, 0.95)),
-        "A": jnp.diag(jnp.full(_P_FULL, 0.1)),
-        "sigma2": jnp.var(resid),
-        "sigma_0": jnp.array(0.0),
-        "omega_load": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
-        "eta": jnp.array(0.06),
-        "alpha": jnp.array(1.5),
-        "C": jnp.diag(jnp.full(_P_FULL, 1e-3)),
-        "nu": jnp.array(10.0),
     }
 
 def cold_lmSD(y_train, Z_fixed):
@@ -247,11 +227,6 @@ def _ff_SS_fit(data, cov, ig, K, lr):
                      opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER)
 
 @functools.partial(jax.jit, static_argnames=("K",))
-def _f_fit(data, cov, ig, K, lr):
-    return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
-                    opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER)
-
-@functools.partial(jax.jit, static_argnames=("K",))
 def _msmsd_fit(data, cov, ig, K, lr):
     return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                      opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER)
@@ -271,11 +246,6 @@ def _ff_refilter(data, cov, ig, K, lr):
 def _ff_SS_refilter(data, cov, ig, K, lr):
     return ff_SS_fit(data, cov, ig, K=K,
                      opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0)
-
-@functools.partial(jax.jit, static_argnames=("K",))
-def _f_refilter(data, cov, ig, K, lr):
-    return f_SD_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
-                    opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0)
 
 @functools.partial(jax.jit, static_argnames=("K",))
 def _msmsd_refilter(data, cov, ig, K, lr):
@@ -331,7 +301,7 @@ def make_table(T, results):
 
     all_mse, all_mae = [], []
     all_keys = (
-        [(t, k) for t in ("ffSD", "ffSS", "fSD") for k in K_VALUES]
+        [(t, k) for t in ("ffSD", "ffSS") for k in K_VALUES]
         + [("msmSD", k) for k in K_VALUES_MSMSD]
         + [(t, None) for t in ("lmSD", "adjSD", "SS")]
     )
@@ -443,7 +413,7 @@ def make_table(T, results):
                 cells += [_fmt_mse(mse_v) + s_mse, f"{mae_v:.1f}" + s_mae, f"{ll_v/1000:.2f}" + s_ll]
         return "    " + " & ".join(cells) + r" \\"
 
-    K_groups = [("ff-SD", "ffSD", K_VALUES), ("ff-SS", "ffSS", K_VALUES), ("f-SD", "fSD", K_VALUES), ("msm-SD", "msmSD", K_VALUES_MSMSD)]
+    K_groups = [("ff-SD", "ffSD", K_VALUES), ("ff-SS", "ffSS", K_VALUES), ("msm-SD", "msmSD", K_VALUES_MSMSD)]
     for gi, (model_name, tag, k_list) in enumerate(K_groups):
         if gi > 0: lines.append(r"\addlinespace[3pt]")
         n = len(k_list)
@@ -490,9 +460,6 @@ def _ff_SS_rh(r, M, y, eval_horizons): return ff_SS_forecast_rolling_h(r, M, y, 
 def _ff_SD_rh(r, M, y, K, eval_horizons): return ff_SD_forecast_rolling_h(r, M, y, K, eval_horizons)
 
 @functools.partial(jax.jit, static_argnames=("K", "score_power", "eval_horizons"))
-def _f_SD_rh(r, M, y, K, score_power, eval_horizons): return f_SD_forecast_rolling_h(r, M, y, K, score_power, eval_horizons)
-
-@functools.partial(jax.jit, static_argnames=("K", "score_power", "eval_horizons"))
 def _msmsd_rh(r, M, y, K, score_power, eval_horizons): return msmsd_forecast_rolling_h(r, M, y, K, score_power, eval_horizons)
 
 def _metrics_h(y_test_ext, preds_h_all, eval_horizons, T_half):
@@ -517,7 +484,6 @@ PARAMS_CACHE_DIR = os.path.join(OUTPUT_DIR, "params_cache")
 _IG_KEYS = {
     "ffSD":  ["beta_bar", "A", "sigma2", "omega_load", "eta", "alpha", "C", "nu"],
     "ffSS":  ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha"],
-    "fSD":   ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "eta", "alpha", "C", "nu"],
     "msmSD": ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "C", "nu", "m0", "gamma_K", "b"],
     "lmSD":  ["beta_bar", "A", "d", "sigma2", "omega", "C", "nu"],
     "adjSD": ["beta_bar", "B", "A", "sigma2", "omega", "C", "nu"],
@@ -729,7 +695,7 @@ def make_table_h(T, results_h):
 
     n_h = len(FCST_HORIZONS)
     all_keys = (
-        [(t, k) for t in ("ffSD", "ffSS", "fSD") for k in K_VALUES]
+        [(t, k) for t in ("ffSD", "ffSS") for k in K_VALUES]
         + [("msmSD", k) for k in K_VALUES_MSMSD]
         + [(t, None) for t in ("lmSD", "adjSD", "SS")]
     )
@@ -824,7 +790,7 @@ def make_table_h(T, results_h):
         return "    " + " & ".join(cells) + r" \\"
 
     K_groups = [("ff-SD", "ffSD", K_VALUES), ("ff-SS", "ffSS", K_VALUES),
-                ("f-SD", "fSD", K_VALUES), ("msm-SD", "msmSD", K_VALUES_MSMSD)]
+                ("msm-SD", "msmSD", K_VALUES_MSMSD)]
     for gi, (model_name, tag, k_list) in enumerate(K_groups):
         if gi > 0: lines.append(r"\addlinespace[3pt]")
         n = len(k_list)
@@ -868,7 +834,6 @@ def main():
         for scale in SIGMA2_SCALES:
             needs_ff = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K), LR["ffSD"], SOLVER)}
             needs_ffSS = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSS", K), LR["ffSS"], SOLVER)}
-            needs_f = {K for K in K_VALUES if not _is_cached(results, (T, scale, "fSD", K), LR["fSD"], SOLVER)}
             needs_msmsd = {K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K), LR["msmSD"], SOLVER)}
             needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None), LR["lmSD"], SOLVER)
             needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None), LR["lmSD"], SOLVER)
@@ -876,16 +841,15 @@ def main():
             needs_ss = not _is_cached(results, (T, scale, "SS", None), LR["SS"], SOLVER)
             needs_ff_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "ffSD", K))}
             needs_ffSS_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "ffSS", K))}
-            needs_f_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "fSD", K))}
             needs_msmsd_h = {K for K in K_VALUES_MSMSD if not _is_cached_h(results_h, (T, scale, "msmSD", K))}
             needs_lmsd_h = not _is_cached_h(results_h, (T, scale, "lmSD", None))
             needs_oracle_h = not _is_cached_h(results_h, (T, scale, "lmSD_oracle", None))
             needs_adjsd_h = not _is_cached_h(results_h, (T, scale, "adjSD", None))
             needs_ss_h = not _is_cached_h(results_h, (T, scale, "SS", None))
 
-            if not (needs_ff or needs_ffSS or needs_f or needs_msmsd or needs_lmsd or
+            if not (needs_ff or needs_ffSS or needs_msmsd or needs_lmsd or
                     needs_oracle or needs_adjsd or needs_ss or
-                    needs_ff_h or needs_ffSS_h or needs_f_h or needs_msmsd_h or
+                    needs_ff_h or needs_ffSS_h or needs_msmsd_h or
                     needs_lmsd_h or needs_oracle_h or needs_adjsd_h or needs_ss_h):
                 print(f"T={T:5d}  scale={scale:.1f}  all models cached, skipping simulation.", flush=True)
                 continue
@@ -958,35 +922,6 @@ def main():
                         preds_ffSS_h = _ff_SS_rh(r_ffSS_use, Z_cube_ext, y_test, FCST_HORIZONS)
                         jax.effects_barrier()
                         results_h[pk] = _metrics_h(y_test_ext, preds_ffSS_h, FCST_HORIZONS, T_half)
-                        save_results_h(results_h, pk)
-
-                if K in needs_f:
-                    pk = (T, scale, "fSD", K)
-                    init = "warm" if pk in params_cache else "cold"
-                    ig_f = params_cache[pk] if pk in params_cache else cold_fSD(y_train, Z_fixed)
-                    r_f = _f_fit(y_train, Z_cube, ig_f, K, LR["fSD"])
-                    preds_f, _, _, oos_ll_f = f_SD_forecast(r_f, Z_cube, y_test, K, SCORE_POWER, ALPHA)
-                    jax.effects_barrier()
-                    results[pk] = _metrics(y_test, preds_f, oos_ll_f, NP_F) + (LR["fSD"], int(r_f["niter"]), bool(r_f["is_converged"]), MAXITER, SOLVER)
-                    params_cache[pk] = {k: np.asarray(r_f[k]) for k in _IG_KEYS["fSD"]}
-                    mse, mae, ll, *_ = results[pk]
-                    print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_f['niter'])}  conv={bool(r_f['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
-                    save_results(results, pk)
-                    save_params_cache(params_cache, pk)
-                else:
-                    v = results[(T, scale, "fSD", K)]
-                    mse, mae, ll = v[0], v[1], v[2]
-                    stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
-                    print(f"  f-SD  K={K}  MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
-
-                if K in needs_f_h:
-                    pk = (T, scale, "fSD", K)
-                    r_f_use = r_f if K in needs_f else (
-                        _f_refilter(y_train, Z_cube, params_cache[pk], K, LR["fSD"]) if pk in params_cache else None)
-                    if r_f_use is not None:
-                        preds_f_h = _f_SD_rh(r_f_use, Z_cube_ext, y_test, K, SCORE_POWER, FCST_HORIZONS)
-                        jax.effects_barrier()
-                        results_h[pk] = _metrics_h(y_test_ext, preds_f_h, FCST_HORIZONS, T_half)
                         save_results_h(results_h, pk)
 
             for K in K_VALUES_MSMSD:
