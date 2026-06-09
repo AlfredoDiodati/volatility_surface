@@ -40,8 +40,8 @@ def _solve_weights_ff(eta, alpha, K):
             diff = k - i_range
             terms = (
                 c_stack
-                * np.power(alpha_k, -eta_k * (k - 1))
-                * np.exp(eta_k * (1.0 - np.power(alpha_k, diff)))
+                * np.power(alpha_k, -eta_k * diff)
+                * np.exp(eta_k * (1.0 - np.power(alpha_k, -diff)))
             )
             c_next = 1.0 - np.sum(np.where(mask, terms, 0.0))
             return c_stack.at[k].set(c_next), None

@@ -140,20 +140,6 @@ def true_lmSD(params_true):
         "nu": params_true["nu"],
     }
 
-def warm_lmSD(y_train, Z_fixed, params_true):
-    """Warm start from the true DGP params; only beta_bar and sigma2 are data-driven."""
-    M = Z_fixed[:, :3]
-    beta3 = _ols(y_train, M)
-    resid = y_train - (M @ beta3)
-    return {
-        "beta_bar": jnp.append(beta3, 0.0),
-        "A": params_true["A"],
-        "d": params_true["d"],
-        "sigma2": jnp.var(resid),
-        "omega": params_true["omega"][:N_BUCKETS],
-        "C": params_true["C"],
-        "nu": params_true["nu"],
-    }
 
 def cold_msmSD(y_train, Z_fixed):
     M = Z_fixed[:, :3]
@@ -231,9 +217,6 @@ def _msmsd_fit(data, cov, ig, K, lr):
     return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                      opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER)
 
-_lmSD_fit = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
-    data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=MAXITER))
-
 _lmSD_oracle = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
     data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0))
 
@@ -251,9 +234,6 @@ def _ff_SS_refilter(data, cov, ig, K, lr):
 def _msmsd_refilter(data, cov, ig, K, lr):
     return msmsd_fit(data, cov, ig, K=K, score_power=SCORE_POWER,
                      opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0)
-
-_lmSD_refilter = jax.jit(lambda data, cov, ig, lr: lmSD_fit(
-    data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0))
 
 _adjSD_refilter = jax.jit(lambda data, cov, ig, lr: adjSD_fit(
     data, cov, ig, opt_options={"learning_rate": lr, "tol": TOL}, maxiter=0))
@@ -302,7 +282,7 @@ def make_table(T, results):
     all_keys = (
         [(t, k) for t in ("ffSD", "ffSS") for k in K_VALUES]
         + [("msmSD", k) for k in K_VALUES_MSMSD]
-        + [(t, None) for t in ("lmSD", "adjSD", "SS")]
+        + [(t, None) for t in ("adjSD", "SS")]
     )
     for scale in SIGMA2_SCALES:
         for tag, K in all_keys:
@@ -374,7 +354,7 @@ def make_table(T, results):
     lines = [
         r"\begin{table}[H]",
         r"\centering",
-        r"\small",
+        r"\resizebox{\textwidth}{!}{",
         rf"\begin{{tabular}}{{{col_spec}}}",
         r"\toprule",
     ]
@@ -432,6 +412,7 @@ def make_table(T, results):
     lines += [
         r"\bottomrule",
         r"\end{tabular}",
+        r"}",
         (
             rf"\caption{{One-step-ahead predictive performance on data simulated"
             rf" from the lmSD model, $T={T}$"
@@ -696,7 +677,7 @@ def make_table_h(T, results_h):
     all_keys = (
         [(t, k) for t in ("ffSD", "ffSS") for k in K_VALUES]
         + [("msmSD", k) for k in K_VALUES_MSMSD]
-        + [(t, None) for t in ("lmSD", "adjSD", "SS")]
+        + [(t, None) for t in ("adjSD", "SS")]
     )
 
     all_mse = []
@@ -764,7 +745,7 @@ def make_table_h(T, results_h):
     lines = [
         r"\begin{table}[H]",
         r"\centering",
-        r"\small",
+        r"\resizebox{\textwidth}{!}{",
         rf"\begin{{tabular}}{{{col_spec}}}",
         r"\toprule",
         rf"Model & $K$ & {grp_hdrs} \\",
@@ -797,17 +778,18 @@ def make_table_h(T, results_h):
             model_cell = rf"\multirow{{{n}}}{{*}}{{{model_name}}}" if ri == 0 else ""
             lines.append(_row(model_cell, str(K), tag, K))
 
-    for model_name, tag in [("lm-SD", "lmSD"), ("adj-SD", "adjSD"), ("SS", "SS")]:
+    for model_name, tag in [("adj-SD", "adjSD"), ("SS", "SS")]:
         lines.append(r"\addlinespace[3pt]")
         lines.append(_row(model_name, "", tag, None))
 
     lines.append(r"\midrule")
-    lines.append(_row(r"lmSD$^\dagger$", "", "lmSD_oracle", None, is_bench=True))
+    lines.append(_row("lmSD", "", "lmSD_oracle", None, is_bench=True))
     lines += [
         r"\bottomrule",
         r"\end{tabular}",
+        r"}",
         rf"\caption{{Multi-horizon point forecast MSE on data simulated from the lmSD model, $T={T}$."
-        rf" Superscripts: $^{{\circ}}$10\%, $^{{\dagger}}$5\%, $^{{\ddagger}}$1\% DM test vs lmSD oracle.}}",
+        rf" Superscripts: $^{{\circ}}$10\%, $^{{\dagger}}$5\%, $^{{\ddagger}}$1\% DM test vs lmSD.}}",
         rf"\label{{tab:sim_h_lmSD_T{T}}}",
         r"\end{table}",
     ]
@@ -834,22 +816,20 @@ def main():
             needs_ff = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSD", K), LR["ffSD"], SOLVER)}
             needs_ffSS = {K for K in K_VALUES if not _is_cached(results, (T, scale, "ffSS", K), LR["ffSS"], SOLVER)}
             needs_msmsd = {K for K in K_VALUES_MSMSD if not _is_cached(results, (T, scale, "msmSD", K), LR["msmSD"], SOLVER)}
-            needs_lmsd = not _is_cached(results, (T, scale, "lmSD", None), LR["lmSD"], SOLVER)
             needs_oracle = not _is_cached(results, (T, scale, "lmSD_oracle", None), LR["lmSD"], SOLVER)
             needs_adjsd = not _is_cached(results, (T, scale, "adjSD", None), LR["adjSD"], SOLVER)
             needs_ss = not _is_cached(results, (T, scale, "SS", None), LR["SS"], SOLVER)
             needs_ff_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "ffSD", K))}
             needs_ffSS_h = {K for K in K_VALUES if not _is_cached_h(results_h, (T, scale, "ffSS", K))}
             needs_msmsd_h = {K for K in K_VALUES_MSMSD if not _is_cached_h(results_h, (T, scale, "msmSD", K))}
-            needs_lmsd_h = not _is_cached_h(results_h, (T, scale, "lmSD", None))
             needs_oracle_h = not _is_cached_h(results_h, (T, scale, "lmSD_oracle", None))
             needs_adjsd_h = not _is_cached_h(results_h, (T, scale, "adjSD", None))
             needs_ss_h = not _is_cached_h(results_h, (T, scale, "SS", None))
 
-            if not (needs_ff or needs_ffSS or needs_msmsd or needs_lmsd or
+            if not (needs_ff or needs_ffSS or needs_msmsd or
                     needs_oracle or needs_adjsd or needs_ss or
                     needs_ff_h or needs_ffSS_h or needs_msmsd_h or
-                    needs_lmsd_h or needs_oracle_h or needs_adjsd_h or needs_ss_h):
+                    needs_oracle_h or needs_adjsd_h or needs_ss_h):
                 print(f"T={T:5d}  scale={scale:.1f}  all models cached, skipping simulation.", flush=True)
                 continue
 
@@ -953,34 +933,6 @@ def main():
                         results_h[pk] = _metrics_h(y_test_ext, preds_msmsd_h, FCST_HORIZONS, T_half)
                         save_results_h(results_h, pk)
 
-            if needs_lmsd:
-                pk = (T, scale, "lmSD", None)
-                init = "warm" if pk in params_cache else "cold"
-                ig_lmsd = params_cache[pk] if pk in params_cache else warm_lmSD(y_train, Z_fixed, params_base)
-                r_lmsd = _lmSD_fit(y_train, Z_cube, ig_lmsd, LR["lmSD"])
-                preds_lmsd, _, _, oos_ll_lmsd = lmSD_forecast(r_lmsd, Z_cube, y_test, ALPHA)
-                jax.effects_barrier()
-                results[pk] = _metrics(y_test, preds_lmsd, oos_ll_lmsd, NP_LMSD) + (LR["lmSD"], int(r_lmsd["niter"]), bool(r_lmsd["is_converged"]), MAXITER, SOLVER)
-                params_cache[pk] = {k: np.asarray(r_lmsd[k]) for k in _IG_KEYS["lmSD"]}
-                mse, mae, ll, *_ = results[pk]
-                print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  iter={int(r_lmsd['niter'])}  conv={bool(r_lmsd['is_converged'])}  solver={SOLVER}  init={init}", flush=True)
-                save_results(results, pk)
-                save_params_cache(params_cache, pk)
-            else:
-                v = results[(T, scale, "lmSD", None)]
-                mse, mae, ll = v[0], v[1], v[2]
-                stored_solver = v[_N_METRICS + 4] if len(v) > _N_METRICS + 4 else "adam"
-                print(f"  lmSD     MSE={mse:.3e}  MAE={mae:.3e}  LL={ll:.1f}  (cached, solver={stored_solver})", flush=True)
-
-            if needs_lmsd_h:
-                pk = (T, scale, "lmSD", None)
-                r_lmsd_use = r_lmsd if needs_lmsd else (
-                    _lmSD_refilter(y_train, Z_cube, params_cache[pk], LR["lmSD"]) if pk in params_cache else None)
-                if r_lmsd_use is not None:
-                    preds_lmsd_h = _lmSD_rh(r_lmsd_use, Z_cube_ext, y_test, FCST_HORIZONS)
-                    jax.effects_barrier()
-                    results_h[pk] = _metrics_h(y_test_ext, preds_lmsd_h, FCST_HORIZONS, T_half)
-                    save_results_h(results_h, pk)
 
             if needs_oracle:
                 ig_oracle = true_lmSD(params)

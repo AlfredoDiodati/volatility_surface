@@ -30,7 +30,9 @@ P_FULL = P
 
 TRAIN_SIZE = 500
 TEST_SIZE = 10_000
-MAXITER = 2000
+MAXITER = 200
+TOL = 1e-2
+LR = 1.0
 Q_ALPHA = -1.6448536269514722
 ALPHA = 0.05
 FSD_K_VALUES   = [1, 2, 3, 5, 10]
@@ -103,7 +105,7 @@ def make_ss_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter
         ig = {"Q_param": carry[0], "H_param": carry[1], "B": carry[2],
               "bar_beta": carry[3], "omega": carry[4]}
         r = fit_collapsed(y_win, Z_win, ig, init,
-                          opt_options={"learning_rate": 1e-3, "tol": 1e-4},
+                          opt_options={"learning_rate": LR, "tol": TOL},
                           maxiter=maxiter)
 
         preds, P_mean, VaR, oos_ll = ss_forecast(r, Z_test, y_test, q_alpha)
@@ -123,7 +125,7 @@ def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxite
         ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "sigma2": carry[3],
               "omega": carry[4], "C": carry[5], "nu": carry[6]}
         r = adjSD_fit(y_win, Z_win, ig,
-                      opt_options={"learning_rate": 1e-3, "tol": 1e-4},
+                      opt_options={"learning_rate": LR, "tol": TOL},
                       maxiter=maxiter)
 
         preds, P_mean, VaR, oos_ll = adjSD_forecast(r, Z_test, y_test, alpha)
@@ -144,7 +146,7 @@ def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter,
               "sigma_0": carry[4], "omega_load": carry[5], "eta": carry[6],
               "alpha": carry[7], "C": carry[8], "nu": carry[9]}
         r = fSD_fit(y_win, Z_win, ig, K=K, score_power=1.0,
-                    opt_options={"learning_rate": 1e-3, "tol": 1e-4},
+                    opt_options={"learning_rate": LR, "tol": TOL},
                     maxiter=maxiter)
 
         preds, P_mean, VaR, oos_ll = fSD_forecast(r, Z_test, y_test, K, 1.0, alpha)
@@ -166,7 +168,7 @@ def make_ffSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
               "omega_load": carry[3], "eta": carry[4], "alpha": carry[5],
               "C": carry[6], "nu": carry[7]}
         r = ffSD_fit(y_win, Z_win, ig, K=K,
-                     opt_options={"learning_rate": 1e-3, "tol": 1e-4},
+                     opt_options={"learning_rate": LR, "tol": TOL},
                      maxiter=maxiter)
 
         preds, P_mean, VaR, oos_ll = ffSD_forecast(r, Z_test, y_test, K, alpha)
@@ -187,7 +189,7 @@ def make_lmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter
         ig = {"beta_bar": carry[0], "A": carry[1], "d": carry[2],
               "sigma2": carry[3], "omega": carry[4], "C": carry[5], "nu": carry[6]}
         r = lmSD_fit(y_win, Z_win, ig,
-                     opt_options={"learning_rate": 1e-3, "tol": 1e-4},
+                     opt_options={"learning_rate": LR, "tol": TOL},
                      maxiter=maxiter)
 
         preds, P_mean, VaR, oos_ll = lmSD_forecast(r, Z_test, y_test, alpha)
@@ -209,7 +211,7 @@ def make_msmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxite
               "sigma_0": carry[4], "omega_load": carry[5], "C": carry[6], "nu": carry[7],
               "m0": carry[8], "gamma_K": carry[9], "b": carry[10]}
         r = msmSD_fit(y_win, Z_win, ig, K=K, score_power=1.0,
-                      opt_options={"learning_rate": 1e-3, "tol": 1e-4},
+                      opt_options={"learning_rate": LR, "tol": TOL},
                       maxiter=maxiter)
 
         preds, P_mean, VaR, oos_ll = msmSD_forecast(r, Z_test, y_test, K, 1.0, alpha)

@@ -1,6 +1,5 @@
 import json
 import os
-os.environ["JAX_PLATFORMS"] = "cpu"
 import numpy as np
 import jax.numpy as jnp
 import polars as pl
@@ -64,7 +63,6 @@ def build_initial_guess(beta_ols, sigma2, n_buckets):
     omega[1:] = 1e-2
     return {
         "beta_bar":jnp.array(np.append(beta_ols, 0.0)),
-        "B":jnp.array(0.95 * np.eye(P, dtype=np.float64)),
         "A":jnp.array(0.05 * np.eye(P, dtype=np.float64)),
         "d":jnp.array(0.3 * np.ones(P, dtype=np.float64)),
         "sigma2": jnp.array(sigma2),
@@ -104,7 +102,7 @@ def main():
 
         fit_output = fit(
             data=jnp.array(y_cube),
-            covariates=jnp.array(Z_cube),
+            M=jnp.array(Z_cube),
             initial_guess=initial_guess,
             opt_options={"learning_rate": 1e-3, "tol": 1e-6},
             maxiter=20_000,
