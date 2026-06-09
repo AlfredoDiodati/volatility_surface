@@ -27,7 +27,7 @@ def _t_unit_var_ppf(alpha, nu):
 
 def _compute_weights(d, T):
     def _step(w_prev, tau):
-        w_next = w_prev * (tau - 1.0 - d) / tau
+        w_next = w_prev * (tau - 1.0 + d) / tau
         return w_next, w_next
 
     taus = np.arange(1, T, dtype=float)

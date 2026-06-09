@@ -15,7 +15,7 @@ print(f"Running on: {jax.devices()}")
 
 from models.ss import fit_collapsed, forecast as ss_forecast
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast
-from models.f_SD import fit as fSD_fit, forecast as fSD_forecast
+from models.ff_SS import fit as ffSS_fit, forecast as ffSS_forecast, forecast_rolling_h as ffSS_forecast_rolling_h
 from models.ff_SD import fit as ffSD_fit, forecast as ffSD_forecast
 from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast
 from models.MSMSD import fit as msmSD_fit, forecast as msmSD_forecast
@@ -35,9 +35,11 @@ TOL = 1e-2
 LR = 1.0
 Q_ALPHA = -1.6448536269514722
 ALPHA = 0.05
-FSD_K_VALUES   = [1, 2, 3, 5, 10]
-FFSD_K_VALUES  = FSD_K_VALUES
-MSMSD_K_VALUES = FSD_K_VALUES
+FFSS_K_VALUES  = [1, 2, 3, 5, 10]
+FFSD_K_VALUES  = FFSS_K_VALUES
+MSMSD_K_VALUES = FFSS_K_VALUES
+FCST_HORIZONS  = (5, 22, 66, 260)
+_MAX_FCST_H    = max(FCST_HORIZONS)
 
 def load_and_reshape(path):
     raw = (
@@ -135,25 +137,25 @@ def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxite
 
     return step
 
-def make_fSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
+def make_ffSS_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter, K):
     def step(carry, i):
         y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
         Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
-        y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
-        Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
+        y_test_1 = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
+        Z_test_1 = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
 
-        ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "sigma2": carry[3],
-              "sigma_0": carry[4], "omega_load": carry[5], "eta": carry[6],
-              "alpha": carry[7], "C": carry[8], "nu": carry[9]}
-        r = fSD_fit(y_win, Z_win, ig, K=K, score_power=1.0,
-                    opt_options={"learning_rate": LR, "tol": TOL},
-                    maxiter=maxiter)
+        ig = {"beta_bar": carry[0], "sigma2": carry[1], "Q_param": carry[2],
+              "omega": carry[3], "eta": carry[4], "alpha": carry[5]}
+        r = ffSS_fit(y_win, Z_win, ig, K=K,
+                     opt_options={"learning_rate": LR, "tol": TOL},
+                     maxiter=maxiter)
 
-        preds, P_mean, VaR, oos_ll = fSD_forecast(r, Z_test, y_test, K, 1.0, alpha)
+        preds, P_mean, VaR, oos_ll = ffSS_forecast(r, Z_test_1, y_test_1, q_alpha)
 
-        new_carry = (r["beta_bar"], r["B"], r["A"], r["sigma2"], r["sigma_0"],
-                     r["omega_load"], r["eta"], r["alpha"], r["C"], r["nu"])
-        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"], r["b_T"], r["beta_tilde_T"])
+        new_carry = (r["beta_bar"], r["sigma2"], r["Q_param"],
+                     r["omega"], r["eta"], r["alpha"])
+        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0],
+                           r["loglikelihood"], r["niter"], r["is_converged"])
 
     return step
 
@@ -272,23 +274,19 @@ def _adjSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.array(10.0),
     )
 
-def _fSD_cold_carry(y_jax, Z_jax, n_buckets):
+def _ffSS_cold_carry(y_jax, Z_jax, n_buckets):
     y_win = y_jax[:TRAIN_SIZE]
     Z_win = Z_jax[:TRAIN_SIZE]
     beta_ols = _ols_beta(y_win, Z_win)
     sig2 = _sigma2(y_win, Z_win, beta_ols)
-    omega_load = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
+    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
     return (
-        beta_ols,
-        0.95 * jnp.eye(P_BASE),
-        0.05 * jnp.eye(P_FULL),
+        jnp.append(beta_ols, 0.0),
         sig2,
-        jnp.array(0.1),
-        omega_load,
-        jnp.array(0.06251277029514313),
-        jnp.array(1.4255056381225586),
-        1e-3 * jnp.eye(P_FULL),
-        jnp.array(10.0),
+        1e-3 * jnp.eye(P),
+        omega,
+        jnp.full(P, 0.06),
+        jnp.array(1.5),
     )
 
 def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
@@ -351,11 +349,11 @@ def main():
     n_params_ss = 3 * P + n_buckets
     n_params_adjSD = 4 * P + n_buckets + 1
     n_params_lmSD = 4 * P + n_buckets + 1
-    n_params_fSD = 3 * P_BASE + P_FULL + n_buckets + 4
+    n_params_ffSS = 3 * P + n_buckets + 1
     n_params_ffSD = 4 * P + n_buckets + 1
-    n_params_msmSD = n_params_fSD  # equal count: beta_bar,B,A,sigma2,sigma_0,omega[1:],C,nu,m0,gamma_K,b
+    n_params_msmSD = 3 * P_BASE + P_FULL + n_buckets + 4
     n_params_map = {"ss": n_params_ss, "adjSD": n_params_adjSD, "lmSD": n_params_lmSD}
-    n_params_map.update({f"fSD_K{k}": n_params_fSD for k in FSD_K_VALUES})
+    n_params_map.update({f"ffSS_K{k}": n_params_ffSS for k in FFSS_K_VALUES})
     n_params_map.update({f"ffSD_K{k}": n_params_ffSD for k in FFSD_K_VALUES})
     n_params_map.update({f"msmSD_K{k}": n_params_msmSD for k in MSMSD_K_VALUES})
 
@@ -377,11 +375,10 @@ def main():
         print(f"  {name}...", flush=True)
         _, out = jax.jit(lambda c, x: lax.scan(step_fn, c, x))(carry0, indices)
         jax.effects_barrier()
-        if b_is_type == "fSD":
-            y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged, b_T, beta_tilde_T = out
-        elif b_is_type == "ffSD":
+        if b_is_type == "ffSD":
             y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged, b_T = out
-        else: y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged = out
+        else:
+            y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged = out
 
         pl.DataFrame({
             "date": test_dates,
@@ -413,16 +410,7 @@ def main():
             "n_params": n_params, "n_test_steps": n_test, "total_oos_obs": total_obs,
         })
 
-        if b_is_type == "fSD":
-            n_k = b_T.shape[1]
-            n_p = beta_tilde_T.shape[1]
-            bis_df = pl.DataFrame({
-                "date": test_dates,
-                **{f"b_T_{i}": b_T[:, i].tolist() for i in range(n_k)},
-                **{f"beta_tilde_T_{j}": beta_tilde_T[:, j].tolist() for j in range(n_p)},
-            })
-            bis_df.write_parquet(os.path.join(OUTPUT_DIR, f"bis_{name}{suffix}.parquet"))
-        elif b_is_type == "ffSD":
+        if b_is_type == "ffSD":
             n_k, n_p = b_T.shape[1], b_T.shape[2]
             bis_df = pl.DataFrame({
                 "date": test_dates,
@@ -442,11 +430,42 @@ def main():
     run_and_save("lmSD",
         make_lmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER),
         _lmSD_cold_carry(y_jax, Z_jax, n_buckets))
-    for K in FSD_K_VALUES:
-        run_and_save(f"fSD_K{K}",
-        make_fSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
-        _fSD_cold_carry(y_jax, Z_jax, n_buckets),
-        b_is_type="fSD")
+    for K in FFSS_K_VALUES:
+        run_and_save(f"ffSS_K{K}",
+        make_ffSS_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, MAXITER, K),
+        _ffSS_cold_carry(y_jax, Z_jax, n_buckets))
+
+    print("Running ffSS multi-step ahead forecasts...")
+    _ffSS_rh_jit = jax.jit(ffSS_forecast_rolling_h, static_argnums=(3,))
+    Z_jax_padded = jnp.concatenate([Z_jax, jnp.tile(Z_jax[-1:], (_MAX_FCST_H, 1, 1))], axis=0)
+    y_test_period = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
+    M_ext = Z_jax_padded[TRAIN_SIZE:]
+    ig_keys = ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha"]
+
+    for K in FFSS_K_VALUES:
+        name = f"ffSS_K{K}"
+        if selected is not None and name not in selected:
+            continue
+        out_path = os.path.join(OUTPUT_DIR, f"predictions_h_{name}{suffix}.parquet")
+        if os.path.exists(out_path):
+            print(f"  {name} h-step: output exists, skipping.", flush=True)
+            continue
+        print(f"  {name} h-step...", flush=True)
+        ig = dict(zip(ig_keys, _ffSS_cold_carry(y_jax[:TRAIN_SIZE], Z_jax[:TRAIN_SIZE], n_buckets)))
+        r_h = ffSS_fit(y_jax[:TRAIN_SIZE], Z_jax[:TRAIN_SIZE], ig, K=K,
+                       opt_options={"learning_rate": LR, "tol": TOL}, maxiter=MAXITER)
+        jax.effects_barrier()
+        preds_rh = _ffSS_rh_jit(r_h, M_ext, y_test_period, FCST_HORIZONS)
+        jax.effects_barrier()
+        pl.concat([
+            pl.DataFrame({
+                "date": test_dates,
+                "horizon": pl.Series([h] * n_test, dtype=pl.Int32),
+                "predictions": preds_rh[h_idx].tolist(),
+            })
+            for h_idx, h in enumerate(FCST_HORIZONS)
+        ]).write_parquet(out_path)
+        jax.clear_caches()
     for K in FFSD_K_VALUES:
         run_and_save(f"ffSD_K{K}",
         make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
