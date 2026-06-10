@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as np
 from jax import lax
-from models._kalman import _filter_light_vec, _fit
+from models._kalman import _filter_light_vec, _filter_vec, _fit
 from models.ff_SD import _solve_weights_ff
 
 
@@ -53,8 +53,6 @@ def fit(
         ws, lambdas = _solve_weights_ff(eta, np.full(p, alpha), K)
         T_aug = np.diag(np.exp(-lambdas).ravel())
         Q_aug = np.diag(np.tile(q_diag, K + 1))
-        H_obs = sigma2 * np.eye(max_n, dtype=float)
-
         return {
             "beta_bar": beta_bar,
             "sigma2": sigma2,
@@ -66,7 +64,7 @@ def fit(
             "lambdas": lambdas,
             "T_aug": T_aug,
             "Q_aug": Q_aug,
-            "H_obs": H_obs,
+            "H_obs": np.array([[sigma2]]),
         }
 
     def _invlink(params):
@@ -85,7 +83,7 @@ def fit(
         10.0 * np.eye(state_dim, dtype=float),
         np.zeros((max_n, state_dim), dtype=float),
         init["T_aug"],
-        init["H_obs"],
+        np.ones((1, 1), dtype=float),
         np.eye(state_dim, dtype=float),
         init["Q_aug"],
         np.asarray(0, dtype=np.int32),
@@ -96,10 +94,11 @@ def fit(
         _dynamics, _link, _invlink, opt_options,
         maxiter=maxiter,
         _filter_fn=_filter_light_vec,
+        _filter_final_fn=_filter_vec,
     )
 
     param_keys = ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha", "ws", "lambdas", "T_aug", "Q_aug"]
-    kf_keys = ["logdetF", "quad", "a", "P", "att", "Ptt", "v", "F", "K"]
+    kf_keys = ["logdetF", "quad", "a", "P", "att", "Ptt", "v"]
     return (
         {k: result[k] for k in param_keys}
         | {k: result[k] for k in kf_keys}

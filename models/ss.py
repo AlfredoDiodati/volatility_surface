@@ -1,6 +1,6 @@
 import jax
 import jax.numpy as np
-from models._kalman import _filter_light_univariate, _fit
+from models._kalman import _filter_light_univariate, _filter_light_vec, _fit
 
 def _dynamics(y, _a, _P, params, _Z, bt, _H, identity_mat, _Q, idx):
     Q = params["Q_param"]
@@ -76,7 +76,7 @@ def fit(
     return _fit(
         data, initial_guess, M, initialization,
         _dynamics, _link, _invlink, opt_options or {},
-        _filter_fn=_filter_light_univariate,
+        _filter_fn=_filter_light_vec,
     )
 
 def fit_collapsed(
