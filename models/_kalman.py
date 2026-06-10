@@ -115,6 +115,44 @@ def _filter_light_univariate(data: np.ndarray, dynamics: callable, params: dict,
     _, (logdetF, quad) = lax.scan(_outer_step, carry0, data)
     return {"logdetF": logdetF, "quad": quad}
 
+def _filter_light_vec(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -> dict:
+    """Vectorized Kalman filter using Woodbury identity for H_obs = sigma2 * I_N.
+    Replaces the inner scan over N observations with state_dim x state_dim linear solves."""
+    def _step(carry, yt):
+        at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry
+        Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
+
+        sigma2 = Ht[0, 0]
+        h_inv = 1.0 / sigma2
+        dt_vec = np.zeros(Zt.shape[0], dtype=float) + np.asarray(dt, dtype=float)
+        state_dim = at.shape[0]
+
+        mask = ~np.isnan(yt)
+        n_t = np.sum(mask).astype(float)
+        Z_masked = np.where(mask[:, None], Zt, 0.0)
+        v = (yt - Zt @ at - dt_vec) * mask
+
+        ZtZ = np.einsum("ip,iq->pq", Z_masked, Z_masked)
+        ZtV = Z_masked.T @ v
+        Inner = np.eye(state_dim) + h_inv * Pt @ ZtZ
+        _, log_det_corr = np.linalg.slogdet(Inner)
+        logdet_t = n_t * np.log(sigma2) + log_det_corr
+
+        c = np.linalg.solve(Inner, Pt @ ZtV)
+        quad_t = h_inv * np.sum(v ** 2) - h_inv ** 2 * ZtV @ c
+
+        D = np.linalg.solve(Inner, Pt @ ZtZ)
+        att = at + h_inv * c
+        Ptt = Pt - h_inv * D @ Pt
+
+        atp1 = Tt @ att + ct
+        Ptp1 = Tt @ Ptt @ Tt.T + Rt @ Qt @ Rt.T
+
+        return (atp1, Ptp1, Zt, Tt, Ht, Rt, Qt, idx + 1), (logdet_t, quad_t)
+
+    _, (logdetF, quad) = lax.scan(_step, carry0, data)
+    return {"logdetF": logdetF, "quad": quad}
+
 def _loglikelihood(filter_output: dict):
     """Without constant term"""
     return -0.5 * np.sum(filter_output["logdetF"] + filter_output["quad"])

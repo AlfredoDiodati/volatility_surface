@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as np
 from jax import lax
-from models._kalman import _filter_light_univariate, _fit
+from models._kalman import _filter_light_vec, _fit
 from models.ff_SD import _solve_weights_ff
 
 
@@ -95,7 +95,7 @@ def fit(
         data, initial_guess, M, carry_initial,
         _dynamics, _link, _invlink, opt_options,
         maxiter=maxiter,
-        _filter_fn=_filter_light_univariate,
+        _filter_fn=_filter_light_vec,
     )
 
     param_keys = ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha", "ws", "lambdas", "T_aug", "Q_aug"]
