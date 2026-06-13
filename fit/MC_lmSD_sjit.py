@@ -26,7 +26,19 @@ from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute
 print(f"Running on: {jax.devices()}")
 
 
-PARAMS_PATH = "out/SPX/otm/params_lmSD.json"
+ORACLE_PARAMS = {
+    "beta_bar": jnp.array([-0.3638527989387512, -0.9022373557090759, -0.026239294558763504]),
+    "A": jnp.array([
+        [0.64, 0.0, 0.0],
+        [0.0, 0.61, 0.0],
+        [0.0, 0.0, 0.64],
+    ]),
+    "d": jnp.array([-0.40, -0.40, -0.40]),
+    "sigma2": jnp.array(1.0),
+    "C": jnp.array([0.008696974255144596, 1.0784275694675216e-08, 0.0037453104741871357]),
+    "nu": jnp.array(7.00),
+}
+
 OUTPUT_DIR = "out/SPX/mc/simulate_lmSD_sjit"
 SCORE_POWER = 1.0
 ALPHA = 0.05
@@ -41,8 +53,8 @@ MATURITY = jnp.array([10, 50, 100, 180]) / 255.0
 FCST_HORIZONS = (5, 22, 66, 260)
 _MAX_FCST_H = max(FCST_HORIZONS)
 
-HORIZONS = [400, 2000]
-SIGMA2_SCALES = [1.0, 10.0, 0.1]
+HORIZONS = [2000]
+SIGMA2_SCALES = [1.0]
 SCALE_TEX = {1.0: r"\boldsymbol H", 10.0: r"10\,\boldsymbol H", 0.1: r"\boldsymbol H/10"}
 
 LR = {
@@ -64,18 +76,6 @@ NP_ADJSD = 4 * _P_FF + 2
 NP_SS = 3 * _P_FF + 1
 NP_MSMSD = 4 * _P_TILDE + 6
 
-
-def load_params(path):
-    with open(path) as f:
-        raw = json.load(f)
-    return {
-        "beta_bar": jnp.array(raw["beta_bar"])[:3],
-        "A": jnp.array(raw["A"])[:3, :3],
-        "d": jnp.array(raw["d"])[:3],
-        "sigma2": jnp.array(raw["sigma2"]),
-        "C": jnp.array(raw["C"])[:3],
-        "nu": jnp.array(raw["nu"]),
-    }
 
 
 def make_Z_fixed():
@@ -830,7 +830,7 @@ def make_wald_table(T, test_results, p):
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    params_base = load_params(PARAMS_PATH)
+    params_base = ORACLE_PARAMS
     Z_fixed = make_Z_fixed()
     sigma2_base = params_base["sigma2"]
 
