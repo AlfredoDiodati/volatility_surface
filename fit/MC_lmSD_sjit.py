@@ -27,7 +27,7 @@ print(f"Running on: {jax.devices()}")
 
 
 ORACLE_PARAMS = {
-    "beta_bar": jnp.array([-0.3638527989387512, -0.9022373557090759, -0.026239294558763504]),
+    "beta_bar": jnp.array([-0.36, -0.90, -0.03]),
     "A": jnp.array([
         [0.64, 0.0, 0.0],
         [0.0, 0.61, 0.0],
