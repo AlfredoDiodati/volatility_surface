@@ -117,7 +117,8 @@ def _filter_light_univariate(data: np.ndarray, dynamics: callable, params: dict,
 
 def _filter_light_vec(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -> dict:
     """Vectorized Kalman filter using Woodbury identity for H_obs = sigma2 * I_N.
-    Replaces the inner scan over N observations with state_dim x state_dim linear solves."""
+    Efficient when state_dim << N. Replaces the inner scan over N observations with
+    state_dim x state_dim linear solves."""
     def _step(carry, yt):
         at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry
         Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
@@ -182,6 +183,80 @@ def _filter_vec(data: np.ndarray, dynamics: callable, params: dict, carry0: tupl
         D = np.linalg.solve(Inner, Pt @ ZtZ)
         att = at + h_inv * c
         Ptt = Pt - h_inv * D @ Pt
+
+        atp1 = Tt @ att + ct
+        Ptp1 = Tt @ Ptt @ Tt.T + Rt @ Qt @ Rt.T
+
+        return (atp1, Ptp1, Zt, Tt, Ht, Rt, Qt, idx + 1), (logdet_t, quad_t, at, Pt, att, Ptt, v)
+
+    _, (logdetF, quad, a, P, att, Ptt, v) = lax.scan(_step, carry0, data)
+    return {"logdetF": logdetF, "quad": quad, "a": a, "P": P, "att": att, "Ptt": Ptt, "v": v}
+
+def _filter_light_chol(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -> dict:
+    """Kalman filter using direct N×N Cholesky for H_obs = sigma2 * I_N.
+    Numerically stable for any parameter values; efficient when state_dim >= N."""
+    def _step(carry, yt):
+        at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry
+        Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
+
+        sigma2 = Ht[0, 0]
+        N_obs = Zt.shape[0]
+        dt_vec = np.zeros(N_obs, dtype=float) + np.asarray(dt, dtype=float)
+
+        mask = ~np.isnan(yt)
+        n_t = np.sum(mask).astype(float)
+        Z_masked = np.where(mask[:, None], Zt, 0.0)
+        v = (yt - Zt @ at - dt_vec) * mask
+
+        ZP = Z_masked @ Pt
+        F = ZP @ Z_masked.T + sigma2 * np.eye(N_obs)
+        L_F = np.linalg.cholesky(F)
+        Linv_v = solve_triangular(L_F, v, lower=True)
+        quad_t = np.sum(Linv_v ** 2)
+        logdet_F = 2.0 * np.sum(np.log(np.diag(L_F)))
+        logdet_t = logdet_F - (N_obs - n_t) * np.log(sigma2)
+
+        tmp = solve_triangular(L_F, ZP, lower=True)
+        KtT = solve_triangular(L_F.T, tmp, lower=False)
+        att = at + KtT.T @ v
+        Ptt = Pt - KtT.T @ ZP
+
+        atp1 = Tt @ att + ct
+        Ptp1 = Tt @ Ptt @ Tt.T + Rt @ Qt @ Rt.T
+
+        return (atp1, Ptp1, Zt, Tt, Ht, Rt, Qt, idx + 1), (logdet_t, quad_t)
+
+    _, (logdetF, quad) = lax.scan(_step, carry0, data)
+    return {"logdetF": logdetF, "quad": quad}
+
+def _filter_chol(data: np.ndarray, dynamics: callable, params: dict, carry0: tuple) -> dict:
+    """Full Kalman filter with direct N×N Cholesky for H_obs = sigma2 * I_N.
+    Numerically stable for any parameter values; efficient when state_dim >= N."""
+    def _step(carry, yt):
+        at, Pt, Zt, Tt, Ht, Rt, Qt, idx = carry
+        Zt, Tt, Ht, Rt, Qt, dt, ct = dynamics(yt, at, Pt, params, Zt, Tt, Ht, Rt, Qt, idx)
+
+        sigma2 = Ht[0, 0]
+        N_obs = Zt.shape[0]
+        dt_vec = np.zeros(N_obs, dtype=float) + np.asarray(dt, dtype=float)
+
+        mask = ~np.isnan(yt)
+        n_t = np.sum(mask).astype(float)
+        Z_masked = np.where(mask[:, None], Zt, 0.0)
+        v = (yt - Zt @ at - dt_vec) * mask
+
+        ZP = Z_masked @ Pt
+        F = ZP @ Z_masked.T + sigma2 * np.eye(N_obs)
+        L_F = np.linalg.cholesky(F)
+        Linv_v = solve_triangular(L_F, v, lower=True)
+        quad_t = np.sum(Linv_v ** 2)
+        logdet_F = 2.0 * np.sum(np.log(np.diag(L_F)))
+        logdet_t = logdet_F - (N_obs - n_t) * np.log(sigma2)
+
+        tmp = solve_triangular(L_F, ZP, lower=True)
+        KtT = solve_triangular(L_F.T, tmp, lower=False)
+        att = at + KtT.T @ v
+        Ptt = Pt - KtT.T @ ZP
 
         atp1 = Tt @ att + ct
         Ptp1 = Tt @ Ptt @ Tt.T + Rt @ Qt @ Rt.T

@@ -1,7 +1,8 @@
 import jax
 import jax.numpy as np
 from jax import lax
-from models._kalman import _filter_light_vec, _filter_vec, _fit
+from jax.scipy.linalg import solve_triangular
+from models._kalman import _filter_light_chol, _filter_chol, _fit
 from models.ff_SD import _solve_weights_ff
 
 
@@ -81,8 +82,8 @@ def fit(
         data, initial_guess, M, carry_initial,
         _dynamics, _link, _invlink, opt_options,
         maxiter=maxiter,
-        _filter_fn=_filter_light_vec,
-        _filter_final_fn=_filter_vec,
+        _filter_fn=_filter_light_chol,
+        _filter_final_fn=_filter_chol,
     )
 
     param_keys = ["beta_bar", "sigma2", "Q_param", "eta", "alpha", "ws", "lambdas", "T_aug", "Q_aug"]
@@ -117,7 +118,7 @@ def forecast(fit_result, M, y_test, q_alpha):
         a_pred = T_aug @ a_t
         P_pred = T_aug @ P_t @ T_aug.T + Q_aug
         mask_h = ~np.isnan(y_h)
-        n_h = np.sum(mask_h)
+        n_h = np.sum(mask_h).astype(float)
         y_hat = Z_h @ a_pred + d_h
         P_mean = y_hat.sum() / n_h
         z_sum = Z_h.sum(axis=0)
@@ -126,19 +127,18 @@ def forecast(fit_result, M, y_test, q_alpha):
 
         v = (y_h - y_hat) * mask_h
         Z_masked = np.where(mask_h[:, None], Z_h, 0.0)
-        h_inv = 1.0 / sigma2
-        ZtZ = np.einsum("ip,iq->pq", Z_masked, Z_masked)
-        ZtV = Z_masked.T @ v
-        Inner = np.eye(a_pred.shape[0]) + h_inv * P_pred @ ZtZ
-        _, log_det_corr = np.linalg.slogdet(Inner)
-        log_det_F = n_h * np.log(sigma2) + log_det_corr
-        c = np.linalg.solve(Inner, P_pred @ ZtV)
-        quad = h_inv * np.sum(v ** 2) - h_inv ** 2 * ZtV @ c
-        oos_ll = -0.5 * (n_h * np.log(2.0 * np.pi) + log_det_F + quad)
+        ZP = Z_masked @ P_pred
+        F = ZP @ Z_masked.T + sigma2 * np.eye(N)
+        L_F = np.linalg.cholesky(F)
+        Linv_v = solve_triangular(L_F, v, lower=True)
+        quad = np.sum(Linv_v ** 2)
+        logdet_F = 2.0 * np.sum(np.log(np.diag(L_F))) - (N - n_h) * np.log(sigma2)
+        oos_ll = -0.5 * (n_h * np.log(2.0 * np.pi) + logdet_F + quad)
 
-        D = np.linalg.solve(Inner, P_pred @ ZtZ)
-        a_filtered = a_pred + h_inv * c
-        P_filtered = P_pred - h_inv * D @ P_pred
+        tmp = solve_triangular(L_F, ZP, lower=True)
+        KtT = solve_triangular(L_F.T, tmp, lower=False)
+        a_filtered = a_pred + KtT.T @ v
+        P_filtered = P_pred - KtT.T @ ZP
 
         return (a_filtered, P_filtered), (y_hat, P_mean, VaR_h, oos_ll)
 
@@ -174,7 +174,6 @@ def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
     d_h_scan = d_h_stack.transpose(1, 0, 2)
     Z_update = Z_all[:T_half]
     d_update = d_all[:T_half]
-    h_inv = 1.0 / sigma2
 
     def _T_power(Tk, _):
         return Tk @ T_aug, Tk @ T_aug
@@ -194,13 +193,13 @@ def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
         y_hat = Z_upd_t @ a_pred + d_upd_t
         v = (y_h - y_hat) * mask_h
         Z_masked = np.where(mask_h[:, None], Z_upd_t, 0.0)
-        ZtZ = np.einsum("ip,iq->pq", Z_masked, Z_masked)
-        ZtV = Z_masked.T @ v
-        Inner = np.eye(a_pred.shape[0]) + h_inv * P_pred @ ZtZ
-        c = np.linalg.solve(Inner, P_pred @ ZtV)
-        D = np.linalg.solve(Inner, P_pred @ ZtZ)
-        a_filtered = a_pred + h_inv * c
-        P_filtered = P_pred - h_inv * D @ P_pred
+        ZP = Z_masked @ P_pred
+        F = ZP @ Z_masked.T + sigma2 * np.eye(N)
+        L_F = np.linalg.cholesky(F)
+        tmp = solve_triangular(L_F, ZP, lower=True)
+        KtT = solve_triangular(L_F.T, tmp, lower=False)
+        a_filtered = a_pred + KtT.T @ v
+        P_filtered = P_pred - KtT.T @ ZP
         return (a_filtered, P_filtered), preds_h
 
     _, preds_all = lax.scan(_step, (a0, P0), (Z_h_scan, d_h_scan, Z_update, d_update, y_test))

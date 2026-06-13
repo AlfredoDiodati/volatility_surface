@@ -60,7 +60,7 @@ def fit(
     def _invlink(constrained_params: dict):
         uncH = np.array([np.log(constrained_params["H_param"][0, 0])])
         uncQ = np.log(np.diag(constrained_params["Q_param"]))
-        uncB = np.arctanh(np.clip(np.diag(constrained_params["B"]), -0.999999, 0.999999))
+        uncB = np.arctanh(np.diag(constrained_params["B"]))
         return np.concatenate([uncH, uncQ, uncB, constrained_params["bar_beta"]])
 
     return _fit(
@@ -121,7 +121,7 @@ def fit_collapsed(
     def _invlink(constrained_params: dict):
         uncH = np.array([np.log(constrained_params["H_param"][0, 0])])
         uncQ = np.log(np.diag(constrained_params["Q_param"]))
-        uncB = np.arctanh(np.clip(np.diag(constrained_params["B"]), -0.999999, 0.999999))
+        uncB = np.arctanh(np.diag(constrained_params["B"]))
         return np.concatenate([uncH, uncQ, uncB, constrained_params["bar_beta"]])
 
     initial_Zt_cube = _build_Zt_cube()
