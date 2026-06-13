@@ -14,13 +14,13 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from models.lmSD import simulate
-from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast, forecast_rolling_h as lmSD_forecast_rolling_h
-from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast, forecast_rolling_h as adjSD_forecast_rolling_h
-from models.ss import fit_collapsed as ss_fit, forecast as ss_forecast, forecast_rolling_h as ss_forecast_rolling_h
-from models.ff_SD import fit as ff_SD_fit, forecast as ff_SD_forecast, standard_errors as ff_SD_se, forecast_rolling_h as ff_SD_forecast_rolling_h
-from models.ff_SS import fit as ff_SS_fit, forecast as ff_SS_forecast, forecast_rolling_h as ff_SS_forecast_rolling_h
-from models.MSMSD import fit as msmsd_fit, forecast as msmsd_forecast, forecast_rolling_h as msmsd_forecast_rolling_h
+from models._lmSD_nobucket import simulate
+from models._lmSD_nobucket import fit as lmSD_fit, forecast as lmSD_forecast, forecast_rolling_h as lmSD_forecast_rolling_h
+from models._adjSD_nobucket import fit as adjSD_fit, forecast as adjSD_forecast, forecast_rolling_h as adjSD_forecast_rolling_h
+from models._ss_nobucket import fit_collapsed as ss_fit, forecast as ss_forecast, forecast_rolling_h as ss_forecast_rolling_h
+from models._ff_SD_nobucket import fit as ff_SD_fit, forecast as ff_SD_forecast, standard_errors as ff_SD_se, forecast_rolling_h as ff_SD_forecast_rolling_h
+from models._ff_SS_nobucket import fit as ff_SS_fit, forecast as ff_SS_forecast, forecast_rolling_h as ff_SS_forecast_rolling_h
+from models._MSMSD_nobucket import fit as msmsd_fit, forecast as msmsd_forecast, forecast_rolling_h as msmsd_forecast_rolling_h
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 print(f"Running on: {jax.devices()}")
@@ -37,7 +37,6 @@ K_VALUES = [1, 2, 3, 5, 10, 20, 30, 50]
 K_VALUES_MSMSD = [1, 2, 3, 5, 10]
 MONEYNESS = jnp.array([0.9, 0.98, 1.05, 1.15, 1.3, 1.5])
 MATURITY = jnp.array([10, 50, 100, 180]) / 255.0
-N_BUCKETS = len(MONEYNESS) * len(MATURITY)
 
 FCST_HORIZONS = (5, 22, 66, 260)
 _MAX_FCST_H = max(FCST_HORIZONS)
@@ -55,28 +54,26 @@ LR = {
     "SS":    1.0,
 }
 
-_P_FF = 4
+_P_FF = 3
 _P_TILDE = 3
-_P_FULL = 4
 
-NP_FF = _P_FF + _P_FF + 1 + (N_BUCKETS - 1) + _P_FF + 1 + _P_FF + 1
-NP_FFSS = _P_FF + 1 + _P_FF + (N_BUCKETS - 1) + _P_FF + 1
-NP_LMSD = 4 * _P_FF + N_BUCKETS + 1
-NP_ADJSD = 4 * _P_FF + N_BUCKETS + 1
-NP_SS = 3 * _P_FF + N_BUCKETS
-NP_MSMSD = 3 * _P_TILDE + _P_FULL + (N_BUCKETS - 1) + 6
+NP_FF = 4 * _P_FF + 3
+NP_FFSS = 3 * _P_FF + 2
+NP_LMSD = 4 * _P_FF + 2
+NP_ADJSD = 4 * _P_FF + 2
+NP_SS = 3 * _P_FF + 1
+NP_MSMSD = 4 * _P_TILDE + 6
 
 
 def load_params(path):
     with open(path) as f:
         raw = json.load(f)
     return {
-        "beta_bar": jnp.array(raw["beta_bar"]),
-        "A": jnp.array(raw["A"]),
-        "d": jnp.array(raw["d"]),
+        "beta_bar": jnp.array(raw["beta_bar"])[:3],
+        "A": jnp.array(raw["A"])[:3, :3],
+        "d": jnp.array(raw["d"])[:3],
         "sigma2": jnp.array(raw["sigma2"]),
-        "omega": jnp.array(raw["omega"]),
-        "C": jnp.array(raw["C"]),
+        "C": jnp.array(raw["C"])[:3],
         "nu": jnp.array(raw["nu"]),
     }
 
@@ -94,10 +91,9 @@ def cold_ffSD(y_train, Z_fixed):
     beta3 = _ols(y_train, M)
     resid = y_train - (M @ beta3)
     return {
-        "beta_bar": jnp.append(beta3, 0.0),
+        "beta_bar": beta3,
         "A": jnp.diag(jnp.full(_P_FF, 0.1)),
         "sigma2": jnp.var(resid),
-        "omega_load": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
         "eta": jnp.full(_P_FF, 0.06),
         "alpha": jnp.full(_P_FF, 1.5),
         "C": jnp.diag(jnp.full(_P_FF, 1e-3)),
@@ -109,10 +105,9 @@ def cold_ffSS(y_train, Z_fixed):
     beta3 = _ols(y_train, M)
     resid = y_train - (M @ beta3)
     return {
-        "beta_bar": jnp.append(beta3, 0.0),
+        "beta_bar": beta3,
         "sigma2": jnp.var(resid),
         "Q_param": jnp.diag(jnp.full(_P_FF, 1e-3)),
-        "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
         "eta": jnp.full(_P_FF, 0.06),
         "alpha": jnp.array(1.5),
     }
@@ -122,11 +117,10 @@ def cold_lmSD(y_train, Z_fixed):
     beta3 = _ols(y_train, M)
     resid = y_train - (M @ beta3)
     return {
-        "beta_bar": jnp.append(beta3, 0.0),
+        "beta_bar": beta3,
         "A": jnp.diag(jnp.full(_P_FF, 0.05)),
         "d": jnp.full(_P_FF, 0.3),
         "sigma2": jnp.var(resid),
-        "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
         "C": jnp.full(_P_FF, 1e-3),
         "nu": jnp.array(10.0),
     }
@@ -137,7 +131,6 @@ def true_lmSD(params_true):
         "A": params_true["A"],
         "d": params_true["d"],
         "sigma2": params_true["sigma2"],
-        "omega": params_true["omega"][:N_BUCKETS],
         "C": params_true["C"],
         "nu": params_true["nu"],
     }
@@ -152,8 +145,7 @@ def cold_msmSD(y_train, Z_fixed):
         "A": jnp.diag(jnp.full(_P_TILDE, 0.05)),
         "sigma2": jnp.var(resid),
         "sigma_0": jnp.array(0.1),
-        "omega_load": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
-        "C": jnp.diag(jnp.full(_P_FULL, 1e-3)),
+        "C": jnp.diag(jnp.full(_P_TILDE, 1e-3)),
         "nu": jnp.array(10.0),
         "m0": jnp.array(1.5),
         "gamma_K": jnp.array(0.5),
@@ -165,11 +157,10 @@ def cold_adjSD(y_train, Z_fixed):
     beta3 = _ols(y_train, M)
     resid = y_train - (M @ beta3)
     return {
-        "beta_bar": jnp.append(beta3, 0.0),
+        "beta_bar": beta3,
         "B": jnp.diag(jnp.full(_P_FF, 0.95)),
         "A": jnp.diag(jnp.full(_P_FF, 0.05)),
         "sigma2": jnp.var(resid),
-        "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
         "C": jnp.full(_P_FF, 1e-3),
         "nu": jnp.array(10.0),
     }
@@ -182,8 +173,7 @@ def cold_ss(y_train, Z_fixed):
         "Q_param": jnp.diag(jnp.full(_P_FF, 1e-3)),
         "H_param": jnp.var(resid) * jnp.eye(1),
         "B": jnp.diag(jnp.full(_P_FF, 0.95)),
-        "bar_beta": jnp.append(beta3, 0.0),
-        "omega": jnp.concatenate([jnp.zeros(1), jnp.full(N_BUCKETS - 1, 1e-2)]),
+        "bar_beta": beta3,
     }
 
 def cold_ss_init(y_train, Z_fixed):
@@ -191,7 +181,7 @@ def cold_ss_init(y_train, Z_fixed):
     beta3 = _ols(y_train, M)
     resid = y_train - (M @ beta3)
     sigma2 = jnp.var(resid)
-    a1 = jnp.append(beta3, 0.0)
+    a1 = beta3
     P1 = 10.0 * jnp.eye(_P_FF)
     Z0 = jnp.zeros((_P_FF, _P_FF))
     T0 = 0.95 * jnp.eye(_P_FF)
@@ -335,12 +325,12 @@ def _metrics_h(y_test_ext, preds_h_all, eval_horizons, T_half):
 
 
 _IG_KEYS = {
-    "ffSD":  ["beta_bar", "A", "sigma2", "omega_load", "eta", "alpha", "C", "nu"],
-    "ffSS":  ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha"],
-    "msmSD": ["beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "C", "nu", "m0", "gamma_K", "b"],
-    "lmSD":  ["beta_bar", "A", "d", "sigma2", "omega", "C", "nu"],
-    "adjSD": ["beta_bar", "B", "A", "sigma2", "omega", "C", "nu"],
-    "SS":    ["Q_param", "H_param", "B", "bar_beta", "omega"],
+    "ffSD":  ["beta_bar", "A", "sigma2", "eta", "alpha", "C", "nu"],
+    "ffSS":  ["beta_bar", "sigma2", "Q_param", "eta", "alpha"],
+    "msmSD": ["beta_bar", "B", "A", "sigma2", "sigma_0", "C", "nu", "m0", "gamma_K", "b"],
+    "lmSD":  ["beta_bar", "A", "d", "sigma2", "C", "nu"],
+    "adjSD": ["beta_bar", "B", "A", "sigma2", "C", "nu"],
+    "SS":    ["Q_param", "H_param", "B", "bar_beta"],
 }
 
 def _results_key(T, scale, tag, K):
