@@ -27,6 +27,7 @@ def _t_unit_var_ppf(alpha, nu):
     q_std = np.where(alpha <= 0.5, x_star, -x_star)
     return q_std * np.sqrt((nu - 2.0) / nu)
 
+
 def _solve_weights_ff(eta, alpha, K):
     def _single(ea):
         eta_k = ea[0]
@@ -55,12 +56,44 @@ def _solve_weights_ff(eta, alpha, K):
     ws, lambdas = jax.vmap(_single)(np.stack([eta, alpha], axis=-1))
     return ws.T, lambdas.T
 
+
+def _link(theta, p, n_buckets):
+    idx = 0
+    beta_bar = theta[idx:idx + p]; idx += p
+    A = np.diag(theta[idx:idx + p]); idx += p
+    sigma2 = np.exp(theta[idx]); idx += 1
+    omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]]); idx += n_buckets - 1
+    eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
+    alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
+    C = np.diag(np.exp(theta[idx:idx + p])); idx += p
+    nu = np.exp(theta[idx]) + 2.0
+    return {"beta_bar": beta_bar, "A": A, "sigma2": sigma2,
+            "omega_load": omega_load, "eta": eta, "alpha": alpha, "C": C, "nu": nu}
+
+
+def _invlink(params):
+    unc_s2 = np.log(params["sigma2"])
+    unc_omega_load = params["omega_load"][1:]
+    unc_eta = np.log(params["eta"] / (2.0 - params["eta"]))
+    unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
+    unc_C = np.log(np.diag(params["C"]))
+    unc_nu = np.log(params["nu"] - 2.0)
+    return np.concatenate([
+        params["beta_bar"],
+        np.diag(params["A"]),
+        np.array([unc_s2]),
+        unc_omega_load,
+        unc_eta,
+        np.array([unc_alpha]),
+        unc_C,
+        np.array([unc_nu]),
+    ])
+
+
 def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0):
     A = params["A"]
     sigma2 = params["sigma2"]
     omega_load = params["omega_load"]
-    eta = params["eta"]
-    alpha = params["alpha"]
     C = params["C"]
     nu = params["nu"]
     beta_bar = params["beta_bar"]
@@ -68,23 +101,20 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
     p = beta_bar.shape[0]
     h_inv = 1.0 / sigma2
     L_C = np.linalg.cholesky(C)
+    ws, lambdas = _solve_weights_ff(params["eta"], params["alpha"], K)
+    expm1_neg_lambdas = np.expm1(-lambdas)
 
-    ws, lambdas = _solve_weights_ff(eta, alpha, K)
-
-    def _step(state, inputs):
-        b_t = state
+    def _step(b_t, inputs):
         y_t, base_t, bidx_t, mask_t = inputs
 
         beta_t = beta_bar + np.sum(ws * b_t, axis=0)
-
         omega_col = omega_load[bidx_t]
         Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
         Z_mask = Z_t * mask_t[:, None]
         N_t = np.sum(mask_t)
         eps_t = (y_t - Z_t @ beta_t) * mask_t
 
-        ZtZ = Z_mask.T @ Z_mask
-        ZtHinvZ = h_inv * ZtZ
+        ZtHinvZ = h_inv * (Z_mask.T @ Z_mask)
         WLC = ZtHinvZ @ L_C
         Inner_mat = np.eye(p) + L_C.T @ WLC
         L_Inner = np.linalg.cholesky(Inner_mat)
@@ -111,21 +141,19 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
         nabla_t = score_weight * ZtSigmaInv_eps
 
         eigvals, eigvecs = np.linalg.eigh(fisher_t)
-        scaled_score = A @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
+        scaled_score = A @ (eigvecs * (1.0 / eigvals)) @ eigvecs.T @ nabla_t
 
-        b_next = b_t + np.expm1(-lambdas) * b_t + ws * scaled_score[None, :]
-
+        b_next = b_t + expm1_neg_lambdas * b_t + ws * scaled_score[None, :]
         return b_next, (ll_t, beta_t)
 
-    init = state0
-
     b_T, (lls, betas_prev) = lax.scan(
-        _step, init,
+        _step, state0,
         (y_masked, base_covariates, bucket_indices, mask_f),
     )
     beta_T = beta_bar + np.sum(ws * b_T, axis=0)
     betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
     return betas, lls, b_T
+
 
 def fit(
     data: np.ndarray,
@@ -147,64 +175,14 @@ def fit(
     base_covariates = M[:, :, :-1]
     bucket_indices = M[:, :, -1].astype(np.int32)
 
-    def _link(theta):
-        idx = 0
-        beta_bar = theta[idx:idx + p]
-        idx += p
-        A_diag = theta[idx:idx + p]
-        idx += p
-        A = np.diag(A_diag)
-        sigma2 = np.exp(theta[idx])
-        idx += 1
-        omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]])
-        idx += n_buckets - 1
-        eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p])
-        idx += p
-        alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0)
-        idx += 1
-        C_diag = np.exp(theta[idx:idx + p])
-        idx += p
-        C = np.diag(C_diag)
-        nu = np.exp(theta[idx]) + 2.0
-        return {
-            "beta_bar": beta_bar,
-            "A": A,
-            "sigma2": sigma2,
-            "omega_load": omega_load,
-            "eta": eta,
-            "alpha": alpha,
-            "C": C,
-            "nu": nu,
-        }
-
-    def _invlink(params):
-        A_diag = np.diag(params["A"])
-        unc_s2 = np.log(params["sigma2"])
-        unc_omega_load = params["omega_load"][1:]
-        unc_eta = np.log(params["eta"] / (2.0 - params["eta"]))
-        unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
-        C_diag = np.diag(params["C"])
-        unc_C = np.log(C_diag)
-        unc_nu = np.log(params["nu"] - 2.0)
-        return np.concatenate([
-            params["beta_bar"],
-            A_diag,
-            np.array([unc_s2]),
-            unc_omega_load,
-            unc_eta,
-            np.array([unc_alpha]),
-            unc_C,
-            np.array([unc_nu]),
-        ])
-
     def _criterion(theta):
-        params = _link(theta)
+        params = _link(theta, p, n_buckets)
         _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
         return -np.sum(lls)
 
     theta0 = np.asarray(_invlink(initial_guess))
     theta_opt, niter, final_loss, is_converged = lbfgs(_criterion, theta0, opt_options, maxiter)
-    params_opt = _link(theta_opt)
+    params_opt = _link(theta_opt, p, n_buckets)
     betas, _, b_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, np.zeros((K + 1, p)))
     return params_opt | {
         "betas": betas,
@@ -213,6 +191,7 @@ def fit(
         "niter": niter,
         "is_converged": is_converged,
     }
+
 
 def standard_errors(fit_result, data, M, K):
     data = np.asarray(data, dtype=float)
@@ -226,44 +205,16 @@ def standard_errors(fit_result, data, M, K):
     base_covariates = M[:, :, :-1]
     bucket_indices = M[:, :, -1].astype(np.int32)
 
-    def _link(theta):
-        idx = 0
-        beta_bar = theta[idx:idx + p]; idx += p
-        A_diag = theta[idx:idx + p]; idx += p
-        sigma2 = np.exp(theta[idx]); idx += 1
-        omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]]); idx += n_buckets - 1
-        eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
-        alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
-        C_diag = np.exp(theta[idx:idx + p]); idx += p
-        nu = np.exp(theta[idx]) + 2.0
-        return np.concatenate([beta_bar, A_diag, np.array([sigma2]),
-                                omega_load[1:], eta, np.array([alpha[0]]),
-                                C_diag, np.array([nu])])
-
-    def _invlink(params):
-        A_diag = np.diag(params["A"])
-        unc_s2 = np.log(params["sigma2"])
-        unc_omega_load = params["omega_load"][1:]
-        unc_eta = np.log(params["eta"] / (2.0 - params["eta"]))
-        unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
-        unc_C = np.log(np.diag(params["C"]))
-        unc_nu = np.log(params["nu"] - 2.0)
-        return np.concatenate([params["beta_bar"], A_diag, np.array([unc_s2]),
-                                unc_omega_load, unc_eta, np.array([unc_alpha]),
-                                unc_C, np.array([unc_nu])])
+    def _link_flat(theta):
+        d = _link(theta, p, n_buckets)
+        return np.concatenate([
+            d["beta_bar"], np.diag(d["A"]), np.array([d["sigma2"]]),
+            d["omega_load"][1:], d["eta"], np.array([d["alpha"][0]]),
+            np.diag(d["C"]), np.array([d["nu"]]),
+        ])
 
     def _criterion(theta):
-        idx = 0
-        beta_bar = theta[idx:idx + p]; idx += p
-        A = np.diag(theta[idx:idx + p]); idx += p
-        sigma2 = np.exp(theta[idx]); idx += 1
-        omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]]); idx += n_buckets - 1
-        eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
-        alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
-        C = np.diag(np.exp(theta[idx:idx + p])); idx += p
-        nu = np.exp(theta[idx]) + 2.0
-        params = {"beta_bar": beta_bar, "A": A, "sigma2": sigma2,
-                  "omega_load": omega_load, "eta": eta, "alpha": alpha, "C": C, "nu": nu}
+        params = _link(theta, p, n_buckets)
         _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
         return -np.sum(lls)
 
@@ -272,29 +223,27 @@ def standard_errors(fit_result, data, M, K):
     eigvals, eigvecs = np.linalg.eigh(H)
     H_pd = eigvecs @ np.diag(np.maximum(eigvals, 1e-8)) @ eigvecs.T
     cov_theta = np.linalg.inv(H_pd)
-    J = jax.jacobian(_link)(theta_opt)
+    J = jax.jacobian(_link_flat)(theta_opt)
     cov_natural = J @ cov_theta @ J.T
     se_flat = np.sqrt(np.abs(np.diag(cov_natural)))
 
     idx = 0
     se = {}
-    se["beta_bar"]   = se_flat[idx:idx + p];             idx += p
-    se["A_diag"]     = se_flat[idx:idx + p];             idx += p
-    se["sigma2"]     = se_flat[idx];                     idx += 1
+    se["beta_bar"] = se_flat[idx:idx + p]; idx += p
+    se["A_diag"] = se_flat[idx:idx + p]; idx += p
+    se["sigma2"] = se_flat[idx]; idx += 1
     se["omega_load"] = se_flat[idx:idx + n_buckets - 1]; idx += n_buckets - 1
     eta_idx = idx
-    se["eta"]        = se_flat[idx:idx + p];             idx += p
-    se["alpha"]      = se_flat[idx:idx + 1];             idx += 1
-    se["C_diag"]     = se_flat[idx:idx + p];             idx += p
-    se["nu"]         = se_flat[idx]
+    se["eta"] = se_flat[idx:idx + p]; idx += p
+    se["alpha"] = se_flat[idx:idx + 1]; idx += 1
+    se["C_diag"] = se_flat[idx:idx + p]; idx += p
+    se["nu"] = se_flat[idx]
 
     cov_eta = cov_natural[eta_idx:eta_idx + p, eta_idx:eta_idx + p]
     return se, cov_eta
 
 
 def forecast(fit_result, M, y_test, K, alpha):
-    state0 = fit_result["b_T"]
-
     M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
     H = M.shape[0]
@@ -304,7 +253,7 @@ def forecast(fit_result, M, y_test, K, alpha):
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
 
-    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, K, state0=state0)
+    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, K, state0=fit_result["b_T"])
 
     omega_cols = fit_result["omega_load"][bucket_indices]
     Z = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
@@ -319,11 +268,12 @@ def forecast(fit_result, M, y_test, K, alpha):
 
     return predictions, P, VaR, log_liks
 
+
 def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
     beta_bar = fit_result["beta_bar"]
     omega_load = fit_result["omega_load"]
-    eta = fit_result["eta"]
-    alpha = fit_result["alpha"]
+    nu = fit_result["nu"]
+    A = fit_result["A"]
 
     M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
@@ -334,12 +284,11 @@ def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
     omega_cols = omega_load[bucket_indices]
     M_base = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
 
-    ws, lambdas = _solve_weights_ff(eta, alpha, K)
+    ws, lambdas = _solve_weights_ff(fit_result["eta"], fit_result["alpha"], K)
+    expm1_neg_lambdas = np.expm1(-lambdas)
 
-    exp_neg_h_lambdas_list = []
-    for h in eval_horizons:
-        exp_neg_h_lambdas_list.append(np.exp(-(h - 1) * lambdas))
-    exp_neg_h_stack = np.stack(exp_neg_h_lambdas_list)
+    eval_h_arr = np.array(eval_horizons, dtype=float) - 1.0
+    exp_neg_h_stack = np.exp(-eval_h_arr[:, None, None] * lambdas[None])
 
     Z_all = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(H_ext, N, -1)
     d_all = M_base @ beta_bar
@@ -370,28 +319,27 @@ def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
         N_t = np.sum(mask_t)
         eps_t = (y_t - Z_t @ beta_t) * mask_t
 
-        ZtZ = Z_mask.T @ Z_mask
-        ZtHinvZ = h_inv * ZtZ
+        ZtHinvZ = h_inv * (Z_mask.T @ Z_mask)
         WLC = ZtHinvZ @ L_C
         Inner_mat = np.eye(p) + L_C.T @ WLC
         L_Inner = np.linalg.cholesky(Inner_mat)
 
         V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
         ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
-        fisher_t = (fit_result["nu"] / (fit_result["nu"] - 2.0)) * ((fit_result["nu"] + N_t) / (fit_result["nu"] + N_t + 2.0)) * ZtSigmaInvZ
+        fisher_t = (nu / (nu - 2.0)) * ((nu + N_t) / (nu + N_t + 2.0)) * ZtSigmaInvZ
 
         ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
         woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
         mahal_Sigma = h_inv * (eps_t @ eps_t) - (woodbury_eps @ woodbury_eps)
         ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
 
-        score_weight = (fit_result["nu"] + N_t) / ((fit_result["nu"] - 2.0) + mahal_Sigma)
+        score_weight = (nu + N_t) / ((nu - 2.0) + mahal_Sigma)
         nabla_t = score_weight * ZtSigmaInv_eps
 
         eigvals, eigvecs = np.linalg.eigh(fisher_t)
-        scaled_score = fit_result["A"] @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
+        scaled_score = A @ (eigvecs * (1.0 / eigvals)) @ eigvecs.T @ nabla_t
 
-        b_next = b_t + np.expm1(-lambdas) * b_t + ws * scaled_score[None, :]
+        b_next = b_t + expm1_neg_lambdas * b_t + ws * scaled_score[None, :]
         return b_next, preds_h
 
     _, preds_all = lax.scan(
@@ -404,21 +352,19 @@ def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
 def forecast_h(fit_result, M, K):
     beta_bar = fit_result["beta_bar"]
     omega_load = fit_result["omega_load"]
-    eta = fit_result["eta"]
-    alpha = fit_result["alpha"]
 
     M = np.asarray(M, dtype=float)
     base_covariates = M[:, :, :-1]
     bucket_indices = M[:, :, -1].astype(np.int32)
     n_h = base_covariates.shape[1]
 
-    ws, lambdas = _solve_weights_ff(eta, alpha, K)
-    exp_neg_lambdas = np.exp(-lambdas)
+    ws, lambdas = _solve_weights_ff(fit_result["eta"], fit_result["alpha"], K)
+    expm1_neg_lambdas = np.expm1(-lambdas)
 
     def _step(b_t, inputs):
         base_t, bidx_t = inputs
         beta_t = beta_bar + np.sum(ws * b_t, axis=0)
-        b_next = exp_neg_lambdas * b_t
+        b_next = b_t + expm1_neg_lambdas * b_t
         omega_col = omega_load[bidx_t]
         Z_t = np.concatenate([base_t, omega_col[:, None]], axis=-1)
         predictions_t = Z_t @ beta_t
@@ -428,12 +374,11 @@ def forecast_h(fit_result, M, K):
     _, (predictions, P) = lax.scan(_step, fit_result["b_T"], (base_covariates, bucket_indices))
     return predictions, P
 
+
 def simulate_panel(params, M, n, key, K, b_0=None):
     A = params["A"]
     sigma2 = params["sigma2"]
     omega_load = params["omega_load"]
-    eta = params["eta"]
-    alpha = params["alpha"]
     C = params["C"]
     nu = params["nu"]
     beta_bar = params["beta_bar"]
@@ -445,13 +390,14 @@ def simulate_panel(params, M, n, key, K, b_0=None):
     bidx = M[:, :, -1].astype(np.int32)
     design = np.concatenate([base, omega_load[bidx][:, :, None]], axis=-1)
 
-    if b_0 is None: b_0 = np.zeros((K + 1, p))
+    if b_0 is None:
+        b_0 = np.zeros((K + 1, p))
 
     h_inv = 1.0 / sigma2
     sqrt_sigma = np.sqrt(sigma2)
     L_C = np.linalg.cholesky(C)
-    ws, lambdas = _solve_weights_ff(eta, alpha, K)
-    exp_neg_lambdas = np.exp(-lambdas)
+    ws, lambdas = _solve_weights_ff(params["eta"], params["alpha"], K)
+    expm1_neg_lambdas = np.expm1(-lambdas)
 
     keys = jax.random.split(key, n)
 
@@ -465,7 +411,6 @@ def simulate_panel(params, M, n, key, K, b_0=None):
             g, w, z, design_t = inputs
 
             beta_t = beta_bar + np.sum(ws * b_t, axis=0)
-
             scale = np.sqrt((nu - 2.0) / g)
             eps_t = scale * (design_t @ L_C @ w + sqrt_sigma * z)
             y_t = design_t @ beta_t + eps_t
@@ -488,9 +433,9 @@ def simulate_panel(params, M, n, key, K, b_0=None):
             nabla_t = score_weight * ZtSigmaInv_eps
 
             eigvals, eigvecs = np.linalg.eigh(fisher_t)
-            scaled_score = A @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
+            scaled_score = A @ (eigvecs * (1.0 / eigvals)) @ eigvecs.T @ nabla_t
 
-            b_next = exp_neg_lambdas * b_t + ws * scaled_score[None, :]
+            b_next = b_t + expm1_neg_lambdas * b_t + ws * scaled_score[None, :]
             return b_next, (y_t, beta_t)
 
         _, (y_path, beta_path) = lax.scan(step, b_0, (g_samp, w_samp, z_samp, design))
