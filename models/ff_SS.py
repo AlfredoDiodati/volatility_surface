@@ -10,10 +10,10 @@ def _dynamics(y, _a, _P, params, _Z, _T, _H, _R, _Q, idx):
     base_cols = raw[:, :-1]
     bucket_indices = raw[:, -1].astype(int)
     omega_col = params["omega"][bucket_indices]
-    M_t = np.concatenate([base_cols, omega_col[:, None]], axis=-1) # (max_n, p)
-    ws = params["ws"] # (K+1, p)
-    Z_t = (M_t[:, None, :] * ws[None, :, :]).reshape(M_t.shape[0], -1) # (max_n, (K+1)*p)
-    d_t = M_t @ params["beta_bar"] # (max_n,)
+    M_t = np.concatenate([base_cols, omega_col[:, None]], axis=-1)
+    ws = params["ws"]
+    Z_t = (M_t[:, None, :] * ws[None, :, :]).reshape(M_t.shape[0], -1)
+    d_t = M_t @ params["beta_bar"]
     return Z_t, params["T_aug"], params["H_obs"], _R, params["Q_aug"], d_t, 0.0
 
 
@@ -21,7 +21,7 @@ def _build_M_base(M, omega):
     base_cols = M[:, :, :-1]
     bucket_indices = M[:, :, -1].astype(np.int32)
     omega_cube = omega[bucket_indices]
-    return np.concatenate([base_cols, omega_cube[:, :, None]], axis=-1) # (H, N, p)
+    return np.concatenate([base_cols, omega_cube[:, :, None]], axis=-1)
 
 
 def fit(
@@ -97,13 +97,12 @@ def fit(
         _filter_final_fn=_filter_vec,
     )
 
-    param_keys = ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha", "ws", "lambdas", "T_aug", "Q_aug"]
-    kf_keys = ["logdetF", "quad", "a", "P", "att", "Ptt", "v"]
-    return (
-        {k: result[k] for k in param_keys}
-        | {k: result[k] for k in kf_keys}
-        | {"loglikelihood": result["loglikelihood"], "niter": result["niter"], "is_converged": result["is_converged"]}
-    )
+    return_keys = [
+        "beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha", "ws", "lambdas", "T_aug", "Q_aug",
+        "logdetF", "quad", "a", "P", "att", "Ptt", "v",
+        "loglikelihood", "niter", "is_converged",
+    ]
+    return {k: result[k] for k in return_keys}
 
 
 def forecast(fit_result, M, y_test, q_alpha):
@@ -120,9 +119,9 @@ def forecast(fit_result, M, y_test, q_alpha):
     y_test = np.asarray(y_test, dtype=float)
     H, N, _ = M.shape
 
-    M_base = _build_M_base(M, omega) # (H, N, p)
-    Z_all = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(H, N, -1) # (H, N, (K+1)*p)
-    d_all = np.einsum("hnp,p->hn", M_base, beta_bar) # (H, N)
+    M_base = _build_M_base(M, omega)
+    Z_all = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(H, N, -1)
+    d_all = np.einsum("hnp,p->hn", M_base, beta_bar)
 
     def _step(carry, inputs):
         Z_h, d_h, y_h = inputs
@@ -143,16 +142,14 @@ def forecast(fit_result, M, y_test, q_alpha):
         ZtZ = np.einsum("ip,iq->pq", Z_masked, Z_masked)
         ZtV = Z_masked.T @ v
         Inner = np.eye(a_pred.shape[0]) + h_inv * P_pred @ ZtZ
-        _, log_det_corr = np.linalg.slogdet(Inner)
-        log_det_F = n_h * np.log(sigma2) + log_det_corr
-        c = np.linalg.solve(Inner, P_pred @ ZtV)
+        rhs = np.concatenate([(P_pred @ ZtV)[:, None], P_pred @ ZtZ], axis=1)
+        sol = np.linalg.solve(Inner, rhs)
+        c, D = sol[:, 0], sol[:, 1:]
+        log_det_F = n_h * np.log(sigma2) + np.linalg.slogdet(Inner)[1]
         quad = h_inv * np.sum(v ** 2) - h_inv ** 2 * ZtV @ c
         oos_ll = -0.5 * (n_h * np.log(2.0 * np.pi) + log_det_F + quad)
-
-        D = np.linalg.solve(Inner, P_pred @ ZtZ)
         a_filtered = a_pred + h_inv * c
         P_filtered = P_pred - h_inv * D @ P_pred
-
         return (a_filtered, P_filtered), (y_hat, P_mean, VaR_h, oos_ll)
 
     _, (predictions, P_means, VaR, log_liks) = lax.scan(
@@ -170,6 +167,7 @@ def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
     omega = fit_result["omega"]
     beta_bar = fit_result["beta_bar"]
     ws = fit_result["ws"]
+    lambdas = fit_result["lambdas"].ravel()
 
     M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
@@ -180,13 +178,7 @@ def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
     Z_all = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(H_ext, N, -1)
     d_all = np.einsum("hnp,p->hn", M_base, beta_bar)
 
-    T_h_list = []
-    for h in eval_horizons:
-        Th = np.eye(T_aug.shape[0], dtype=float)
-        for _ in range(h):
-            Th = Th @ T_aug
-        T_h_list.append(Th)
-    T_h_stack = np.stack(T_h_list)
+    T_h_stack = np.stack([np.diag(np.exp(-lambdas * h)) for h in eval_horizons])
 
     Z_h_stack = np.stack([Z_all[h - 1:T_half + h - 1] for h in eval_horizons])
     d_h_stack = np.stack([d_all[h - 1:T_half + h - 1] for h in eval_horizons])
@@ -212,8 +204,9 @@ def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
         ZtZ = np.einsum("ip,iq->pq", Z_masked, Z_masked)
         ZtV = Z_masked.T @ v
         Inner = np.eye(a_pred.shape[0]) + h_inv * P_pred @ ZtZ
-        c = np.linalg.solve(Inner, P_pred @ ZtV)
-        D = np.linalg.solve(Inner, P_pred @ ZtZ)
+        rhs = np.concatenate([(P_pred @ ZtV)[:, None], P_pred @ ZtZ], axis=1)
+        sol = np.linalg.solve(Inner, rhs)
+        c, D = sol[:, 0], sol[:, 1:]
         a_filtered = a_pred + h_inv * c
         P_filtered = P_pred - h_inv * D @ P_pred
         return (a_filtered, P_filtered), preds_h
@@ -259,9 +252,9 @@ def simulate_panel(params, M, n, key, b_0=None):
     M = np.asarray(M, dtype=float)
     T_obs, N_obs, _ = M.shape
 
-    M_base = _build_M_base(M, omega)                                                     # (T, N, p)
-    Z = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(T_obs, N_obs, -1)        # (T, N, (K+1)*p)
-    d = np.einsum("tnp,p->tn", M_base, beta_bar)                                        # (T, N)
+    M_base = _build_M_base(M, omega)
+    Z = (M_base[:, :, None, :] * ws[None, None, :, :]).reshape(T_obs, N_obs, -1)
+    d = np.einsum("tnp,p->tn", M_base, beta_bar)
 
     if b_0 is None:
         b_0 = np.zeros(state_dim, dtype=float)
