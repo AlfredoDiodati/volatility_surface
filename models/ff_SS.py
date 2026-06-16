@@ -2,8 +2,34 @@ import jax
 import jax.numpy as np
 from jax import lax
 from models._kalman import _filter_light_vec, _filter_vec, _fit
-from models.ff_SD import _solve_weights_ff
 
+def _solve_weights_ff(eta, alpha, K):
+    def _single(ea):
+        eta_k = ea[0]
+        alpha_k = ea[1]
+        indices = np.arange(K + 1)
+        lambdas_k = eta_k * np.power(alpha_k, -indices)
+
+        def _rec_step(c_stack, k):
+            i_range = np.arange(K + 1)
+            mask = i_range < k
+            diff = k - i_range
+            terms = (
+                c_stack
+                * np.power(alpha_k, -eta_k * diff)
+                * np.exp(eta_k * (1.0 - np.power(alpha_k, -diff)))
+            )
+            c_next = 1.0 - np.sum(np.where(mask, terms, 0.0))
+            return c_stack.at[k].set(c_next), None
+
+        c_init = np.zeros(K + 1).at[0].set(1.0)
+        c_final, _ = lax.scan(_rec_step, c_init, np.arange(1, K + 1))
+        c_ordered = np.flip(c_final)
+        w = np.exp(eta_k) * c_ordered * np.power(alpha_k, -indices * eta_k)
+        return w, lambdas_k
+
+    ws, lambdas = jax.vmap(_single)(np.stack([eta, alpha], axis=-1))
+    return ws.T, lambdas.T
 
 def _dynamics(y, _a, _P, params, _Z, _T, _H, _R, _Q, idx):
     raw = jax.lax.dynamic_index_in_dim(params["covariates"], idx, axis=0, keepdims=False)

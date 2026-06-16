@@ -50,8 +50,8 @@ def _solve_weights_ff(eta, alpha, K):
         c_init = np.zeros(K + 1).at[0].set(1.0)
         c_final, _ = lax.scan(_rec_step, c_init, np.arange(1, K + 1))
         c_ordered = np.flip(c_final)
-        w_tilde = c_ordered * np.power(alpha_k, -indices * eta_k)
-        return w_tilde, lambdas_k
+        w = np.exp(eta_k) * c_ordered * np.power(alpha_k, -indices * eta_k)
+        return w, lambdas_k
 
     ws, lambdas = jax.vmap(_single)(np.stack([eta, alpha], axis=-1))
     return ws.T, lambdas.T
