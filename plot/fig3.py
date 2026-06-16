@@ -102,7 +102,7 @@ def render_panels(K_values, J_values, output_path):
         gamma = sd_autocovariance(tau, K, J)
         eps, eps_cumulative = errors(gamma)
         in_band = (tau >= 1.0) & (tau <= phi ** K)
-        label = f"$K={K},\\ J={J}$"
+        label = f"$K={K}$" if len(J_values) == 1 else f"$K={K},\\ J={J}$"
         axes[0, 0].plot(tau, np.where(in_band, eps, np.nan), color=color, lw=0.9, label=label)
         axes[0, 1].plot(tau, np.where(in_band, eps_cumulative, np.nan), color=color, lw=0.9, label=label)
         axes[1, 0].plot(tau, eps, color=color, lw=0.9, label=label)
@@ -178,6 +178,6 @@ def render_K50_vary_J(J_values, output_path):
     plt.close(figure)
 
 
-render_panels(K_list, [0], "sd_panels_unadjusted_corrected.pdf")
-render_panels(K_list, [300], "sd_panels_adjusted_corrected.pdf")
-render_K50_vary_J([0, 1, 2, 3, 5, 10], "sd_panels_K50_vary_J_corrected.pdf")
+render_panels(K_list, [0], "out/test/sd_panels_unadjusted_corrected.pdf")
+render_panels(K_list, [300], "out/test/sd_panels_adjusted_corrected.pdf")
+render_K50_vary_J([0, 1, 2, 3, 5, 10], "out/test/sd_panels_K50_vary_J_corrected.pdf")
