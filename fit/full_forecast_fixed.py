@@ -6,6 +6,7 @@ if shutil.which("nvidia-smi") is not None:
     os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
     os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 import polars as pl
@@ -73,20 +74,20 @@ def load_and_reshape(path):
 
 
 def _ols_beta(y_win, Z_win):
-    X = Z_win[:, :, :P_BASE].reshape(-1, P_BASE)
-    y = y_win.reshape(-1)
-    mask = ~jnp.isnan(y)
-    X_m = jnp.where(mask[:, None], X, 0.0)
-    y_m = jnp.where(mask, y, 0.0)
-    return jnp.linalg.solve(X_m.T @ X_m, X_m.T @ y_m)
+    X = np.asarray(Z_win[:, :, :P_BASE]).reshape(-1, P_BASE)
+    y = np.asarray(y_win).reshape(-1)
+    mask = ~np.isnan(y)
+    X_m = np.where(mask[:, None], X, 0.0)
+    y_m = np.where(mask, y, 0.0)
+    return np.linalg.solve(X_m.T @ X_m, X_m.T @ y_m)
 
 
 def _sigma2(y_win, Z_win, beta):
-    X = Z_win[:, :, :P_BASE].reshape(-1, P_BASE)
-    y = y_win.reshape(-1)
-    mask = ~jnp.isnan(y)
-    resid = jnp.where(mask, y - X @ beta, 0.0)
-    return jnp.sum(resid ** 2) / jnp.sum(mask)
+    X = np.asarray(Z_win[:, :, :P_BASE]).reshape(-1, P_BASE)
+    y = np.asarray(y_win).reshape(-1)
+    mask = ~np.isnan(y)
+    resid = np.where(mask, y - X @ beta, 0.0)
+    return float(np.sum(resid ** 2) / np.sum(mask))
 
 
 def _base_init(y_train, Z_train, n_buckets):
@@ -96,8 +97,7 @@ def _base_init(y_train, Z_train, n_buckets):
     return beta_ols, sig2, omega
 
 
-def _ss_ig(y_train, Z_train, n_buckets):
-    beta_ols, sig2, omega = _base_init(y_train, Z_train, n_buckets)
+def _ss_ig(beta_ols, sig2, omega):
     beta_bar = jnp.append(beta_ols, 0.0)
     ig = {
         "Q_param": jnp.diag(jnp.full(P, 1e-3)),
@@ -112,8 +112,7 @@ def _ss_ig(y_train, Z_train, n_buckets):
     return ig, init
 
 
-def _adjSD_ig(y_train, Z_train, n_buckets):
-    beta_ols, sig2, omega = _base_init(y_train, Z_train, n_buckets)
+def _adjSD_ig(beta_ols, sig2, omega):
     return {
         "beta_bar": jnp.append(beta_ols, 0.0),
         "B": 0.95 * jnp.eye(P),
@@ -125,8 +124,7 @@ def _adjSD_ig(y_train, Z_train, n_buckets):
     }
 
 
-def _ffSS_ig(y_train, Z_train, n_buckets):
-    beta_ols, sig2, omega = _base_init(y_train, Z_train, n_buckets)
+def _ffSS_ig(beta_ols, sig2, omega):
     return {
         "beta_bar": jnp.append(beta_ols, 0.0),
         "sigma2": sig2,
@@ -137,8 +135,7 @@ def _ffSS_ig(y_train, Z_train, n_buckets):
     }
 
 
-def _ffSD_ig(y_train, Z_train, n_buckets):
-    beta_ols, sig2, omega = _base_init(y_train, Z_train, n_buckets)
+def _ffSD_ig(beta_ols, sig2, omega):
     return {
         "beta_bar": jnp.append(beta_ols, 0.0),
         "A": 0.05 * jnp.eye(P),
@@ -151,8 +148,7 @@ def _ffSD_ig(y_train, Z_train, n_buckets):
     }
 
 
-def _lmSD_ig(y_train, Z_train, n_buckets):
-    beta_ols, sig2, omega = _base_init(y_train, Z_train, n_buckets)
+def _lmSD_ig(beta_ols, sig2, omega):
     return {
         "beta_bar": jnp.append(beta_ols, 0.0),
         "A": 0.05 * jnp.eye(P),
@@ -164,8 +160,7 @@ def _lmSD_ig(y_train, Z_train, n_buckets):
     }
 
 
-def _msmSD_ig(y_train, Z_train, n_buckets):
-    beta_ols, sig2, omega = _base_init(y_train, Z_train, n_buckets)
+def _msmSD_ig(beta_ols, sig2, omega):
     return {
         "beta_bar": beta_ols,
         "B": 0.95 * jnp.eye(P_BASE),
@@ -203,6 +198,8 @@ def main():
     y_test = y_jax[train_size:]
     Z_test = Z_jax[train_size:]
     test_dates = dates[train_size:]
+
+    beta_ols, sig2, omega = _base_init(y_train, Z_train, n_buckets)
 
     Z_padded = jnp.concatenate([Z_jax, jnp.tile(Z_jax[-1:], (_MAX_FCST_H, 1, 1))], axis=0)
     Z_test_ext = Z_padded[train_size:]
@@ -283,7 +280,7 @@ def main():
 
     if not _skip("ss"):
         print("  ss...", flush=True)
-        ig, init = _ss_ig(y_train, Z_train, n_buckets)
+        ig, init = _ss_ig(beta_ols, sig2, omega)
         r = fit_collapsed(y_train, Z_train, ig, init, opt_options=OPT, maxiter=MAXITER)
         jax.effects_barrier()
         y_hat, P_mean, VaR, oos_ll = ss_forecast(r, Z_test, y_test, Q_ALPHA)
@@ -295,7 +292,7 @@ def main():
 
     if not _skip("adjSD"):
         print("  adjSD...", flush=True)
-        r = adjSD_fit(y_train, Z_train, _adjSD_ig(y_train, Z_train, n_buckets),
+        r = adjSD_fit(y_train, Z_train, _adjSD_ig(beta_ols, sig2, omega),
                       opt_options=OPT, maxiter=MAXITER)
         jax.effects_barrier()
         y_hat, P_mean, VaR, oos_ll = adjSD_forecast(r, Z_test, y_test, ALPHA)
@@ -307,7 +304,7 @@ def main():
 
     if not _skip("lmSD"):
         print("  lmSD...", flush=True)
-        r = lmSD_fit(y_train, Z_train, _lmSD_ig(y_train, Z_train, n_buckets),
+        r = lmSD_fit(y_train, Z_train, _lmSD_ig(beta_ols, sig2, omega),
                      opt_options=OPT, maxiter=MAXITER)
         jax.effects_barrier()
         y_hat, P_mean, VaR, oos_ll = lmSD_forecast(r, Z_test, y_test, ALPHA)
@@ -322,7 +319,7 @@ def main():
         if _skip(name):
             continue
         print(f"  {name}...", flush=True)
-        r = ffSS_fit(y_train, Z_train, _ffSS_ig(y_train, Z_train, n_buckets),
+        r = ffSS_fit(y_train, Z_train, _ffSS_ig(beta_ols, sig2, omega),
                      K=K, opt_options=OPT, maxiter=MAXITER)
         jax.effects_barrier()
         y_hat, P_mean, VaR, oos_ll = ffSS_forecast(r, Z_test, y_test, Q_ALPHA)
@@ -337,7 +334,7 @@ def main():
         if _skip(name):
             continue
         print(f"  {name}...", flush=True)
-        r = ffSD_fit(y_train, Z_train, _ffSD_ig(y_train, Z_train, n_buckets),
+        r = ffSD_fit(y_train, Z_train, _ffSD_ig(beta_ols, sig2, omega),
                      K=K, opt_options=OPT, maxiter=MAXITER)
         jax.effects_barrier()
         y_hat, P_mean, VaR, oos_ll = ffSD_forecast(r, Z_test, y_test, K, ALPHA)
@@ -352,7 +349,7 @@ def main():
         if _skip(name):
             continue
         print(f"  {name}...", flush=True)
-        r = msmSD_fit(y_train, Z_train, _msmSD_ig(y_train, Z_train, n_buckets),
+        r = msmSD_fit(y_train, Z_train, _msmSD_ig(beta_ols, sig2, omega),
                       K=K, score_power=1.0, opt_options=OPT, maxiter=MAXITER)
         jax.effects_barrier()
         y_hat, P_mean, VaR, oos_ll = msmSD_forecast(r, Z_test, y_test, K, 1.0, ALPHA)
