@@ -35,11 +35,19 @@ TOL = 1e-2
 LR = 1.0
 Q_ALPHA = -1.6448536269514722
 ALPHA = 0.05
-FFSS_K_VALUES  = [1, 2, 3, 5, 10]
-FFSD_K_VALUES  = FFSS_K_VALUES
+FFSS_K_VALUES = [1, 2, 3, 5, 10]
+FFSD_K_VALUES = FFSS_K_VALUES
 MSMSD_K_VALUES = FFSS_K_VALUES
-FCST_HORIZONS  = (5, 22, 66, 260)
-_MAX_FCST_H    = max(FCST_HORIZONS)
+FCST_HORIZONS = (5, 22, 66, 260)
+_MAX_FCST_H = max(FCST_HORIZONS)
+
+_SS_KEYS = ("Q_param", "H_param", "B", "bar_beta", "omega")
+_ADJSD_KEYS = ("beta_bar", "B", "A", "sigma2", "omega", "C", "nu")
+_FFSS_KEYS = ("beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha")
+_FFSD_KEYS = ("beta_bar", "A", "sigma2", "omega_load", "eta", "alpha", "C", "nu")
+_LMSD_KEYS = ("beta_bar", "A", "d", "sigma2", "omega", "C", "nu")
+_MSMSD_KEYS = ("beta_bar", "B", "A", "sigma2", "sigma_0", "omega_load", "C", "nu", "m0", "gamma_K", "b")
+
 
 def load_and_reshape(path):
     raw = (
@@ -74,6 +82,7 @@ def load_and_reshape(path):
     )
     return y_cube, Z_cube, n_buckets, dates
 
+
 def _ols_beta(y_win, Z_win):
     X = Z_win[:, :, :P_BASE].reshape(-1, P_BASE)
     y = y_win.reshape(-1)
@@ -82,6 +91,7 @@ def _ols_beta(y_win, Z_win):
     y_m = jnp.where(mask, y, 0.0)
     return jnp.linalg.solve(X_m.T @ X_m, X_m.T @ y_m)
 
+
 def _sigma2(y_win, Z_win, beta):
     X = Z_win[:, :, :P_BASE].reshape(-1, P_BASE)
     y = y_win.reshape(-1)
@@ -89,147 +99,152 @@ def _sigma2(y_win, Z_win, beta):
     resid = jnp.where(mask, y - X @ beta, 0.0)
     return jnp.sum(resid ** 2) / jnp.sum(mask)
 
+
+def _base_estimates(y_jax, Z_jax, n_buckets):
+    beta_ols = _ols_beta(y_jax[:TRAIN_SIZE], Z_jax[:TRAIN_SIZE])
+    sig2 = _sigma2(y_jax[:TRAIN_SIZE], Z_jax[:TRAIN_SIZE], beta_ols)
+    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
+    return beta_ols, sig2, omega
+
+
+def _slice_window(y, Z, i, train_size, max_n):
+    y_win = lax.dynamic_slice(y, (i, 0), (train_size, max_n))
+    Z_win = lax.dynamic_slice(Z, (i, 0, 0), (train_size, max_n, P_BASE + 1))
+    y_test = lax.dynamic_slice(y, (i + train_size, 0), (1, max_n))
+    Z_test = lax.dynamic_slice(Z, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
+    return y_win, Z_win, y_test, Z_test
+
+
 def make_ss_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter):
     def step(carry, i):
-        y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
-        Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
-        y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
-        Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
-
+        y_win, Z_win, y_test, Z_test = _slice_window(y_jax, Z_jax, i, train_size, max_n)
         beta_ols = _ols_beta(y_win, Z_win)
         sig2 = _sigma2(y_win, Z_win, beta_ols)
-
         a1 = jnp.append(beta_ols, 0.0)
-        P1 = 10.0 * jnp.eye(P)
-        init = (a1, P1, jnp.zeros((P, P)), 0.95 * jnp.eye(P), sig2 * jnp.eye(P),
+        init = (a1, 10.0 * jnp.eye(P), jnp.zeros((P, P)), 0.95 * jnp.eye(P), sig2 * jnp.eye(P),
                 jnp.eye(P), jnp.diag(jnp.full(P, 1e-3)), jnp.asarray(0, jnp.int32))
-
-        ig = {"Q_param": carry[0], "H_param": carry[1], "B": carry[2],
-              "bar_beta": carry[3], "omega": carry[4]}
-        r = fit_collapsed(y_win, Z_win, ig, init,
-                          opt_options={"learning_rate": LR, "tol": TOL},
-                          maxiter=maxiter)
-
+        r = fit_collapsed(y_win, Z_win, dict(zip(_SS_KEYS, carry)), init,
+                          opt_options={"learning_rate": LR, "tol": TOL}, maxiter=maxiter)
         preds, P_mean, VaR, oos_ll = ss_forecast(r, Z_test, y_test, q_alpha)
-
-        new_carry = (r["Q_param"], r["H_param"], r["B"], r["bar_beta"], r["omega"])
-        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["loglikelihood"], r["niter"], r["is_converged"])
-
+        return tuple(r[k] for k in _SS_KEYS), (preds[0], P_mean[0], VaR[0], oos_ll[0], r["loglikelihood"], r["niter"], r["is_converged"])
     return step
+
 
 def make_adjSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter):
     def step(carry, i):
-        y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
-        Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
-        y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
-        Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
-
-        ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "sigma2": carry[3],
-              "omega": carry[4], "C": carry[5], "nu": carry[6]}
-        r = adjSD_fit(y_win, Z_win, ig,
-                      opt_options={"learning_rate": LR, "tol": TOL},
-                      maxiter=maxiter)
-
+        y_win, Z_win, y_test, Z_test = _slice_window(y_jax, Z_jax, i, train_size, max_n)
+        r = adjSD_fit(y_win, Z_win, dict(zip(_ADJSD_KEYS, carry)),
+                      opt_options={"learning_rate": LR, "tol": TOL}, maxiter=maxiter)
         preds, P_mean, VaR, oos_ll = adjSD_forecast(r, Z_test, y_test, alpha)
-
-        new_carry = (r["beta_bar"], r["B"], r["A"], r["sigma2"], r["omega"], r["C"], r["nu"])
-        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
-
+        return tuple(r[k] for k in _ADJSD_KEYS), (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
     return step
+
 
 def make_ffSS_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, q_alpha, maxiter, K):
     def step(carry, i):
-        y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
-        Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
-        y_test_1 = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
-        Z_test_1 = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
-
-        ig = {"beta_bar": carry[0], "sigma2": carry[1], "Q_param": carry[2],
-              "omega": carry[3], "eta": carry[4], "alpha": carry[5]}
-        r = ffSS_fit(y_win, Z_win, ig, K=K,
-                     opt_options={"learning_rate": LR, "tol": TOL},
-                     maxiter=maxiter)
-
-        preds, P_mean, VaR, oos_ll = ffSS_forecast(r, Z_test_1, y_test_1, q_alpha)
-
-        new_carry = (r["beta_bar"], r["sigma2"], r["Q_param"],
-                     r["omega"], r["eta"], r["alpha"])
-        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0],
-                           r["loglikelihood"], r["niter"], r["is_converged"])
-
+        y_win, Z_win, y_test, Z_test = _slice_window(y_jax, Z_jax, i, train_size, max_n)
+        r = ffSS_fit(y_win, Z_win, dict(zip(_FFSS_KEYS, carry)), K=K,
+                     opt_options={"learning_rate": LR, "tol": TOL}, maxiter=maxiter)
+        preds, P_mean, VaR, oos_ll = ffSS_forecast(r, Z_test, y_test, q_alpha)
+        return tuple(r[k] for k in _FFSS_KEYS), (preds[0], P_mean[0], VaR[0], oos_ll[0], r["loglikelihood"], r["niter"], r["is_converged"])
     return step
+
 
 def make_ffSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
     def step(carry, i):
-        y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
-        Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
-        y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
-        Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
-
-        ig = {"beta_bar": carry[0], "A": carry[1], "sigma2": carry[2],
-              "omega_load": carry[3], "eta": carry[4], "alpha": carry[5],
-              "C": carry[6], "nu": carry[7]}
-        r = ffSD_fit(y_win, Z_win, ig, K=K,
-                     opt_options={"learning_rate": LR, "tol": TOL},
-                     maxiter=maxiter)
-
+        y_win, Z_win, y_test, Z_test = _slice_window(y_jax, Z_jax, i, train_size, max_n)
+        r = ffSD_fit(y_win, Z_win, dict(zip(_FFSD_KEYS, carry)), K=K,
+                     opt_options={"learning_rate": LR, "tol": TOL}, maxiter=maxiter)
         preds, P_mean, VaR, oos_ll = ffSD_forecast(r, Z_test, y_test, K, alpha)
-
-        new_carry = (r["beta_bar"], r["A"], r["sigma2"], r["omega_load"],
-                     r["eta"], r["alpha"], r["C"], r["nu"])
-        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"], r["b_T"])
-
+        return tuple(r[k] for k in _FFSD_KEYS), (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"], r["b_T"])
     return step
+
 
 def make_lmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter):
     def step(carry, i):
-        y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
-        Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
-        y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
-        Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
-
-        ig = {"beta_bar": carry[0], "A": carry[1], "d": carry[2],
-              "sigma2": carry[3], "omega": carry[4], "C": carry[5], "nu": carry[6]}
-        r = lmSD_fit(y_win, Z_win, ig,
-                     opt_options={"learning_rate": LR, "tol": TOL},
-                     maxiter=maxiter)
-
+        y_win, Z_win, y_test, Z_test = _slice_window(y_jax, Z_jax, i, train_size, max_n)
+        r = lmSD_fit(y_win, Z_win, dict(zip(_LMSD_KEYS, carry)),
+                     opt_options={"learning_rate": LR, "tol": TOL}, maxiter=maxiter)
         preds, P_mean, VaR, oos_ll = lmSD_forecast(r, Z_test, y_test, alpha)
-
-        new_carry = (r["beta_bar"], r["A"], r["d"], r["sigma2"],
-                     r["omega"], r["C"], r["nu"])
-        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
-
+        return tuple(r[k] for k in _LMSD_KEYS), (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
     return step
+
 
 def make_msmSD_rolling(y_jax, Z_jax, n_buckets, train_size, max_n, alpha, maxiter, K):
     def step(carry, i):
-        y_win = lax.dynamic_slice(y_jax, (i, 0), (train_size, max_n))
-        Z_win = lax.dynamic_slice(Z_jax, (i, 0, 0), (train_size, max_n, P_BASE + 1))
-        y_test = lax.dynamic_slice(y_jax, (i + train_size, 0), (1, max_n))
-        Z_test = lax.dynamic_slice(Z_jax, (i + train_size, 0, 0), (1, max_n, P_BASE + 1))
-
-        ig = {"beta_bar": carry[0], "B": carry[1], "A": carry[2], "sigma2": carry[3],
-              "sigma_0": carry[4], "omega_load": carry[5], "C": carry[6], "nu": carry[7],
-              "m0": carry[8], "gamma_K": carry[9], "b": carry[10]}
-        r = msmSD_fit(y_win, Z_win, ig, K=K, score_power=1.0,
-                      opt_options={"learning_rate": LR, "tol": TOL},
-                      maxiter=maxiter)
-
+        y_win, Z_win, y_test, Z_test = _slice_window(y_jax, Z_jax, i, train_size, max_n)
+        r = msmSD_fit(y_win, Z_win, dict(zip(_MSMSD_KEYS, carry)), K=K, score_power=1.0,
+                      opt_options={"learning_rate": LR, "tol": TOL}, maxiter=maxiter)
         preds, P_mean, VaR, oos_ll = msmSD_forecast(r, Z_test, y_test, K, 1.0, alpha)
-
-        new_carry = (r["beta_bar"], r["B"], r["A"], r["sigma2"], r["sigma_0"],
-                     r["omega_load"], r["C"], r["nu"], r["m0"], r["gamma_K"], r["b"])
-        return new_carry, (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
-
+        return tuple(r[k] for k in _MSMSD_KEYS), (preds[0], P_mean[0], VaR[0], oos_ll[0], r["log_likelihood"], r["niter"], r["is_converged"])
     return step
 
+
+def _ss_cold_carry(y_jax, Z_jax, n_buckets):
+    beta_ols, sig2, omega = _base_estimates(y_jax, Z_jax, n_buckets)
+    return (
+        jnp.diag(jnp.full(P, 1e-3)),
+        sig2 * jnp.eye(1),
+        0.95 * jnp.eye(P),
+        jnp.append(beta_ols, 0.0),
+        omega,
+    )
+
+
+def _adjSD_cold_carry(y_jax, Z_jax, n_buckets):
+    beta_ols, sig2, omega = _base_estimates(y_jax, Z_jax, n_buckets)
+    return (
+        jnp.append(beta_ols, 0.0),
+        0.95 * jnp.eye(P),
+        0.05 * jnp.eye(P),
+        sig2,
+        omega,
+        jnp.full(P, 1e-3),
+        jnp.array(10.0),
+    )
+
+
+def _ffSS_cold_carry(y_jax, Z_jax, n_buckets):
+    beta_ols, sig2, omega = _base_estimates(y_jax, Z_jax, n_buckets)
+    return (
+        jnp.append(beta_ols, 0.0),
+        sig2,
+        1e-3 * jnp.eye(P),
+        omega,
+        jnp.full(P, 0.06),
+        jnp.array(1.5),
+    )
+
+
+def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
+    beta_ols, sig2, omega_load = _base_estimates(y_jax, Z_jax, n_buckets)
+    return (
+        jnp.append(beta_ols, 0.0),
+        0.05 * jnp.eye(P_FULL),
+        sig2,
+        omega_load,
+        jnp.full(P_FULL, 0.4),
+        jnp.full(P_FULL, 1.4255056381225586),
+        1e-3 * jnp.eye(P_FULL),
+        jnp.array(10.0),
+    )
+
+
+def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
+    beta_ols, sig2, omega = _base_estimates(y_jax, Z_jax, n_buckets)
+    return (
+        jnp.append(beta_ols, 0.0),
+        0.05 * jnp.eye(P),
+        jnp.full(P, 0.4),
+        sig2,
+        omega,
+        jnp.full(P, 1e-3),
+        jnp.array(10.0),
+    )
+
+
 def _msmSD_cold_carry(y_jax, Z_jax, n_buckets):
-    y_win = y_jax[:TRAIN_SIZE]
-    Z_win = Z_jax[:TRAIN_SIZE]
-    beta_ols = _ols_beta(y_win, Z_win)
-    sig2 = _sigma2(y_win, Z_win, beta_ols)
-    omega_load = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
+    beta_ols, sig2, omega_load = _base_estimates(y_jax, Z_jax, n_buckets)
     return (
         beta_ols,
         0.95 * jnp.eye(P_BASE),
@@ -244,83 +259,6 @@ def _msmSD_cold_carry(y_jax, Z_jax, n_buckets):
         jnp.array(2.0),
     )
 
-def _ss_cold_carry(y_jax, Z_jax, n_buckets):
-    y_win = y_jax[:TRAIN_SIZE]
-    Z_win = Z_jax[:TRAIN_SIZE]
-    beta_ols = _ols_beta(y_win, Z_win)
-    sig2 = _sigma2(y_win, Z_win, beta_ols)
-    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
-    return (
-        jnp.diag(jnp.full(P, 1e-3)),
-        sig2 * jnp.eye(1),
-        0.95 * jnp.eye(P),
-        jnp.append(beta_ols, 0.0),
-        omega,
-    )
-
-def _adjSD_cold_carry(y_jax, Z_jax, n_buckets):
-    y_win = y_jax[:TRAIN_SIZE]
-    Z_win = Z_jax[:TRAIN_SIZE]
-    beta_ols = _ols_beta(y_win, Z_win)
-    sig2 = _sigma2(y_win, Z_win, beta_ols)
-    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
-    return (
-        jnp.append(beta_ols, 0.0),
-        0.95 * jnp.eye(P),
-        0.05 * jnp.eye(P),
-        sig2,
-        omega,
-        jnp.full(P, 1e-3),
-        jnp.array(10.0),
-    )
-
-def _ffSS_cold_carry(y_jax, Z_jax, n_buckets):
-    y_win = y_jax[:TRAIN_SIZE]
-    Z_win = Z_jax[:TRAIN_SIZE]
-    beta_ols = _ols_beta(y_win, Z_win)
-    sig2 = _sigma2(y_win, Z_win, beta_ols)
-    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
-    return (
-        jnp.append(beta_ols, 0.0),
-        sig2,
-        1e-3 * jnp.eye(P),
-        omega,
-        jnp.full(P, 0.06),
-        jnp.array(1.5),
-    )
-
-def _ffSD_cold_carry(y_jax, Z_jax, n_buckets):
-    y_win = y_jax[:TRAIN_SIZE]
-    Z_win = Z_jax[:TRAIN_SIZE]
-    beta_ols = _ols_beta(y_win, Z_win)
-    sig2 = _sigma2(y_win, Z_win, beta_ols)
-    omega_load = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
-    return (
-        jnp.append(beta_ols, 0.0),
-        0.05 * jnp.eye(P_FULL),
-        sig2,
-        omega_load,
-        jnp.full(P_FULL, 0.4),
-        jnp.full(P_FULL, 1.4255056381225586),
-        1e-3 * jnp.eye(P_FULL),
-        jnp.array(10.0),
-    )
-
-def _lmSD_cold_carry(y_jax, Z_jax, n_buckets):
-    y_win = y_jax[:TRAIN_SIZE]
-    Z_win = Z_jax[:TRAIN_SIZE]
-    beta_ols = _ols_beta(y_win, Z_win)
-    sig2 = _sigma2(y_win, Z_win, beta_ols)
-    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
-    return (
-        jnp.append(beta_ols, 0.0),
-        0.05 * jnp.eye(P),
-        jnp.full(P, 0.4),
-        sig2,
-        omega,
-        jnp.full(P, 1e-3),
-        jnp.array(10.0),
-    )
 
 def main():
     parser = argparse.ArgumentParser()
@@ -334,7 +272,7 @@ def main():
     )
     args = parser.parse_args()
     selected = set(args.models) if args.models else None
-    suffix   = args.suffix
+    suffix = args.suffix
 
     print("Loading data...")
     y_jax, Z_jax, n_buckets, dates = load_and_reshape(PARQUET_PATH)
@@ -365,7 +303,7 @@ def main():
     step_frames = []
     agg_rows = []
 
-    def run_and_save(name, step_fn, carry0, b_is_type=None):
+    def run_and_save(name, step_fn, carry0, save_b_T=False):
         if selected is not None and name not in selected:
             return
         out_path = os.path.join(OUTPUT_DIR, f"predictions_{name}{suffix}.parquet")
@@ -375,7 +313,7 @@ def main():
         print(f"  {name}...", flush=True)
         _, out = jax.jit(lambda c, x: lax.scan(step_fn, c, x))(carry0, indices)
         jax.effects_barrier()
-        if b_is_type == "ffSD":
+        if save_b_T:
             y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged, b_T = out
         else:
             y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged = out
@@ -383,9 +321,9 @@ def main():
         pl.DataFrame({
             "date": test_dates,
             "predictions": y_hat.tolist(),
-        }).write_parquet(os.path.join(OUTPUT_DIR, f"predictions_{name}{suffix}.parquet"))
+        }).write_parquet(out_path)
 
-        n_params     = n_params_map[name]
+        n_params = n_params_map[name]
         total_oos_ll = float(jnp.sum(oos_ll))
         mse = float(compute_mse(y_test_all, y_hat, mask_test_all))
         mae = float(compute_mae(y_test_all, y_hat, mask_test_all))
@@ -410,7 +348,7 @@ def main():
             "n_params": n_params, "n_test_steps": n_test, "total_oos_obs": total_obs,
         })
 
-        if b_is_type == "ffSD":
+        if save_b_T:
             n_k, n_p = b_T.shape[1], b_T.shape[2]
             bis_df = pl.DataFrame({
                 "date": test_dates,
@@ -432,15 +370,14 @@ def main():
         _lmSD_cold_carry(y_jax, Z_jax, n_buckets))
     for K in FFSS_K_VALUES:
         run_and_save(f"ffSS_K{K}",
-        make_ffSS_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, MAXITER, K),
-        _ffSS_cold_carry(y_jax, Z_jax, n_buckets))
+            make_ffSS_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, Q_ALPHA, MAXITER, K),
+            _ffSS_cold_carry(y_jax, Z_jax, n_buckets))
 
     print("Running ffSS multi-step ahead forecasts...")
     _ffSS_rh_jit = jax.jit(ffSS_forecast_rolling_h, static_argnums=(3,))
     Z_jax_padded = jnp.concatenate([Z_jax, jnp.tile(Z_jax[-1:], (_MAX_FCST_H, 1, 1))], axis=0)
     y_test_period = y_jax[TRAIN_SIZE:TRAIN_SIZE + n_test]
     M_ext = Z_jax_padded[TRAIN_SIZE:]
-    ig_keys = ["beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha"]
 
     for K in FFSS_K_VALUES:
         name = f"ffSS_K{K}"
@@ -451,7 +388,7 @@ def main():
             print(f"  {name} h-step: output exists, skipping.", flush=True)
             continue
         print(f"  {name} h-step...", flush=True)
-        ig = dict(zip(ig_keys, _ffSS_cold_carry(y_jax[:TRAIN_SIZE], Z_jax[:TRAIN_SIZE], n_buckets)))
+        ig = dict(zip(_FFSS_KEYS, _ffSS_cold_carry(y_jax, Z_jax, n_buckets)))
         r_h = ffSS_fit(y_jax[:TRAIN_SIZE], Z_jax[:TRAIN_SIZE], ig, K=K,
                        opt_options={"learning_rate": LR, "tol": TOL}, maxiter=MAXITER)
         jax.effects_barrier()
@@ -466,15 +403,16 @@ def main():
             for h_idx, h in enumerate(FCST_HORIZONS)
         ]).write_parquet(out_path)
         jax.clear_caches()
+
     for K in FFSD_K_VALUES:
         run_and_save(f"ffSD_K{K}",
-        make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
-        _ffSD_cold_carry(y_jax, Z_jax, n_buckets),
-        b_is_type="ffSD")
+            make_ffSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
+            _ffSD_cold_carry(y_jax, Z_jax, n_buckets),
+            save_b_T=True)
     for K in MSMSD_K_VALUES:
         run_and_save(f"msmSD_K{K}",
-        make_msmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
-        _msmSD_cold_carry(y_jax, Z_jax, n_buckets))
+            make_msmSD_rolling(y_jax, Z_jax, n_buckets, TRAIN_SIZE, max_n, ALPHA, MAXITER, K),
+            _msmSD_cold_carry(y_jax, Z_jax, n_buckets))
 
     if not step_frames:
         print("No models ran (check --models argument).")
@@ -500,6 +438,7 @@ def main():
     print("\nAggregate metrics:")
     print(new_agg)
     print(f"\nSaved to {OUTPUT_DIR}")
+
 
 if __name__ == "__main__":
     main()
