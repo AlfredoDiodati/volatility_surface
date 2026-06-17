@@ -2,9 +2,8 @@ import jax
 import jax.numpy as np
 from jax import lax
 from jax.scipy.special import gammaln
-from jax.scipy.linalg import solve_triangular
 from models._solver import lbfgs
-from models.ff_SD import _solve_weights_ff
+from models.ff_SD import _solve_weights_ff, _solve_kappas_ff, _score_step
 
 
 def _t_unit_var_ppf(alpha, nu):
@@ -28,69 +27,47 @@ def _t_unit_var_ppf(alpha, nu):
     q_std = np.where(alpha <= 0.5, x_star, -x_star)
     return q_std * np.sqrt((nu - 2.0) / nu)
 
+
 def _filter(y_masked, base_covariates, mask_f, params, K, state0):
     A = params["A"]
     sigma2 = params["sigma2"]
-    eta = params["eta"]
-    alpha = params["alpha"]
     C = params["C"]
     nu = params["nu"]
     beta_bar = params["beta_bar"]
 
-    p = beta_bar.shape[0]
     h_inv = 1.0 / sigma2
     L_C = np.linalg.cholesky(C)
 
-    ws, lambdas = _solve_weights_ff(eta, alpha, K)
+    ws, lambdas = _solve_weights_ff(params["eta"], params["phi"], K)
+    rhos = np.exp(-lambdas)
+    mus = _solve_kappas_ff(ws, lambdas)
+    innovation_scale = mus * np.sqrt((1.0 - rhos ** 2) / ws)
 
     def _step(state, inputs):
         b_t = state
         y_t, Z_t, mask_t = inputs
 
         beta_t = beta_bar + np.sum(ws * b_t, axis=0)
-
         Z_mask = Z_t * mask_t[:, None]
         N_t = np.sum(mask_t)
         eps_t = (y_t - Z_t @ beta_t) * mask_t
 
-        ZtZ = Z_mask.T @ Z_mask
-        ZtHinvZ = h_inv * ZtZ
-        WLC = ZtHinvZ @ L_C
-        Inner_mat = np.eye(p) + L_C.T @ WLC
-        L_Inner = np.linalg.cholesky(Inner_mat)
-        log_det_Sigma = N_t * np.log(sigma2) + 2.0 * np.sum(np.log(np.diag(L_Inner)))
-
-        V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
-        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
-        fisher_t = (nu / (nu - 2.0)) * ((nu + N_t) / (nu + N_t + 2.0)) * ZtSigmaInvZ
-
-        ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
-        woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
-        mahal_Sigma = h_inv * (eps_t @ eps_t) - (woodbury_eps @ woodbury_eps)
-        ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
-
+        scaled_score, mahal, log_det = _score_step(Z_mask, eps_t, N_t, h_inv, L_C, nu, A)
         ll_t = (
             gammaln((nu + N_t) / 2.0)
             - gammaln(nu / 2.0)
             - 0.5 * N_t * np.log((nu - 2.0) * np.pi)
-            - 0.5 * log_det_Sigma
-            - 0.5 * (nu + N_t) * np.log(1.0 + mahal_Sigma / (nu - 2.0))
+            - 0.5 * log_det
+            - 0.5 * (nu + N_t) * np.log(1.0 + mahal / (nu - 2.0))
         )
-
-        score_weight = (nu + N_t) / ((nu - 2.0) + mahal_Sigma)
-        nabla_t = score_weight * ZtSigmaInv_eps
-
-        eigvals, eigvecs = np.linalg.eigh(fisher_t)
-        scaled_score = A @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
-
-        b_next = b_t + np.expm1(-lambdas) * b_t + ws * scaled_score[None, :]
-
+        b_next = b_t * rhos + innovation_scale * scaled_score[None, :]
         return b_next, (ll_t, beta_t)
 
     b_T, (lls, betas_prev) = lax.scan(_step, state0, (y_masked, base_covariates, mask_f))
     beta_T = beta_bar + np.sum(ws * b_T, axis=0)
     betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
     return betas, lls, b_T
+
 
 def fit(
     data: np.ndarray,
@@ -112,32 +89,25 @@ def fit(
 
     def _link(theta):
         idx = 0
-        beta_bar = theta[idx:idx + p]
-        idx += p
-        A_diag = theta[idx:idx + p]
-        idx += p
-        A = np.diag(A_diag)
-        sigma2 = np.exp(theta[idx])
-        idx += 1
-        eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p])
-        idx += p
-        alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0)
-        idx += 1
-        C_diag = np.exp(theta[idx:idx + p])
-        idx += p
-        C = np.diag(C_diag)
+        beta_bar = theta[idx:idx + p]; idx += p
+        A = np.diag(theta[idx:idx + p]); idx += p
+        sigma2 = np.exp(theta[idx]); idx += 1
+        eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
+        phi = np.full(p, jax.nn.softplus(theta[idx]) + 7.5); idx += 1
+        C = np.diag(np.exp(theta[idx:idx + p])); idx += p
         nu = np.exp(theta[idx]) + 2.0
-        return {"beta_bar": beta_bar, "A": A, "sigma2": sigma2, "eta": eta, "alpha": alpha, "C": C, "nu": nu}
+        return {"beta_bar": beta_bar, "A": A, "sigma2": sigma2, "eta": eta, "phi": phi, "C": C, "nu": nu}
 
     def _invlink(params):
-        A_diag = np.diag(params["A"])
         unc_s2 = np.log(params["sigma2"])
         unc_eta = np.log(params["eta"] / (2.0 - params["eta"]))
-        unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
-        C_diag = np.diag(params["C"])
-        unc_C = np.log(C_diag)
+        unc_phi = np.log(np.exp(params["phi"][0] - 7.5) - 1.0)
+        unc_C = np.log(np.diag(params["C"]))
         unc_nu = np.log(params["nu"] - 2.0)
-        return np.concatenate([params["beta_bar"], A_diag, np.array([unc_s2]), unc_eta, np.array([unc_alpha]), unc_C, np.array([unc_nu])])
+        return np.concatenate([
+            params["beta_bar"], np.diag(params["A"]), np.array([unc_s2]),
+            unc_eta, np.array([unc_phi]), unc_C, np.array([unc_nu]),
+        ])
 
     def _criterion(theta):
         params = _link(theta)
@@ -156,6 +126,7 @@ def fit(
         "is_converged": is_converged,
     }
 
+
 def standard_errors(fit_result, data, M, K):
     data = np.asarray(data, dtype=float)
     M = np.asarray(M, dtype=float)
@@ -166,25 +137,27 @@ def standard_errors(fit_result, data, M, K):
     mask_f = mask_bool.astype(float)
     base_covariates = M[:, :, :-1]
 
-    def _link(theta):
+    def _link_flat(theta):
         idx = 0
         beta_bar = theta[idx:idx + p]; idx += p
         A_diag = theta[idx:idx + p]; idx += p
         sigma2 = np.exp(theta[idx]); idx += 1
         eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
-        alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
+        phi = np.full(p, jax.nn.softplus(theta[idx]) + 7.5); idx += 1
         C_diag = np.exp(theta[idx:idx + p]); idx += p
         nu = np.exp(theta[idx]) + 2.0
-        return np.concatenate([beta_bar, A_diag, np.array([sigma2]), eta, np.array([alpha[0]]), C_diag, np.array([nu])])
+        return np.concatenate([beta_bar, A_diag, np.array([sigma2]), eta, np.array([phi[0]]), C_diag, np.array([nu])])
 
     def _invlink(params):
-        A_diag = np.diag(params["A"])
         unc_s2 = np.log(params["sigma2"])
         unc_eta = np.log(params["eta"] / (2.0 - params["eta"]))
-        unc_alpha = np.log(np.exp(params["alpha"][0] - 1.0) - 1.0)
+        unc_phi = np.log(np.exp(params["phi"][0] - 7.5) - 1.0)
         unc_C = np.log(np.diag(params["C"]))
         unc_nu = np.log(params["nu"] - 2.0)
-        return np.concatenate([params["beta_bar"], A_diag, np.array([unc_s2]), unc_eta, np.array([unc_alpha]), unc_C, np.array([unc_nu])])
+        return np.concatenate([
+            params["beta_bar"], np.diag(params["A"]), np.array([unc_s2]),
+            unc_eta, np.array([unc_phi]), unc_C, np.array([unc_nu]),
+        ])
 
     def _criterion(theta):
         idx = 0
@@ -192,10 +165,10 @@ def standard_errors(fit_result, data, M, K):
         A = np.diag(theta[idx:idx + p]); idx += p
         sigma2 = np.exp(theta[idx]); idx += 1
         eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
-        alpha = np.full(p, jax.nn.softplus(theta[idx]) + 1.0); idx += 1
+        phi = np.full(p, jax.nn.softplus(theta[idx]) + 7.5); idx += 1
         C = np.diag(np.exp(theta[idx:idx + p])); idx += p
         nu = np.exp(theta[idx]) + 2.0
-        params = {"beta_bar": beta_bar, "A": A, "sigma2": sigma2, "eta": eta, "alpha": alpha, "C": C, "nu": nu}
+        params = {"beta_bar": beta_bar, "A": A, "sigma2": sigma2, "eta": eta, "phi": phi, "C": C, "nu": nu}
         _, lls, _ = _filter(y_masked, base_covariates, mask_f, params, K, np.zeros((K + 1, p)))
         return -np.sum(lls)
 
@@ -204,7 +177,7 @@ def standard_errors(fit_result, data, M, K):
     eigvals, eigvecs = np.linalg.eigh(H)
     H_pd = eigvecs @ np.diag(np.maximum(eigvals, 1e-8)) @ eigvecs.T
     cov_theta = np.linalg.inv(H_pd)
-    J = jax.jacobian(_link)(theta_opt)
+    J = jax.jacobian(_link_flat)(theta_opt)
     cov_natural = J @ cov_theta @ J.T
     se_flat = np.sqrt(np.abs(np.diag(cov_natural)))
 
@@ -215,7 +188,7 @@ def standard_errors(fit_result, data, M, K):
     se["sigma2"] = se_flat[idx]; idx += 1
     eta_idx = idx
     se["eta"] = se_flat[idx:idx + p]; idx += p
-    se["alpha"] = se_flat[idx:idx + 1]; idx += 1
+    se["phi"] = se_flat[idx:idx + 1]; idx += 1
     se["C_diag"] = se_flat[idx:idx + p]; idx += p
     se["nu"] = se_flat[idx]
 
@@ -248,10 +221,9 @@ def forecast(fit_result, M, y_test, K, alpha):
 
     return predictions, P, VaR, log_liks
 
+
 def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
     beta_bar = fit_result["beta_bar"]
-    eta = fit_result["eta"]
-    alpha = fit_result["alpha"]
 
     M = np.asarray(M, dtype=float)
     y_test = np.asarray(y_test, dtype=float)
@@ -259,7 +231,10 @@ def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
     H_ext, N, _ = M.shape
     base_covariates = M[:, :, :-1]
 
-    ws, lambdas = _solve_weights_ff(eta, alpha, K)
+    ws, lambdas = _solve_weights_ff(fit_result["eta"], fit_result["phi"], K)
+    rhos = np.exp(-lambdas)
+    mus = _solve_kappas_ff(ws, lambdas)
+    innovation_scale = mus * np.sqrt((1.0 - rhos ** 2) / ws)
 
     h_arr = np.array(eval_horizons, dtype=float) - 1.0
     exp_neg_h_stack = np.exp(-h_arr[:, None, None] * lambdas[None, :, :])
@@ -278,9 +253,10 @@ def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
 
-    p = beta_bar.shape[0]
     h_inv = 1.0 / fit_result["sigma2"]
     L_C = np.linalg.cholesky(fit_result["C"])
+    nu = fit_result["nu"]
+    A = fit_result["A"]
 
     def _step(b_t, inputs):
         Z_h_t, d_h_t, y_t, Z_t, mask_t = inputs
@@ -294,28 +270,8 @@ def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
         N_t = np.sum(mask_t)
         eps_t = (y_t - Z_t @ beta_t) * mask_t
 
-        ZtZ = Z_mask.T @ Z_mask
-        ZtHinvZ = h_inv * ZtZ
-        WLC = ZtHinvZ @ L_C
-        Inner_mat = np.eye(p) + L_C.T @ WLC
-        L_Inner = np.linalg.cholesky(Inner_mat)
-
-        V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
-        ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
-        fisher_t = (fit_result["nu"] / (fit_result["nu"] - 2.0)) * ((fit_result["nu"] + N_t) / (fit_result["nu"] + N_t + 2.0)) * ZtSigmaInvZ
-
-        ZtHinv_eps = h_inv * (Z_mask.T @ eps_t)
-        woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
-        mahal_Sigma = h_inv * (eps_t @ eps_t) - (woodbury_eps @ woodbury_eps)
-        ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
-
-        score_weight = (fit_result["nu"] + N_t) / ((fit_result["nu"] - 2.0) + mahal_Sigma)
-        nabla_t = score_weight * ZtSigmaInv_eps
-
-        eigvals, eigvecs = np.linalg.eigh(fisher_t)
-        scaled_score = fit_result["A"] @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
-
-        b_next = b_t + np.expm1(-lambdas) * b_t + ws * scaled_score[None, :]
+        scaled_score, _, _ = _score_step(Z_mask, eps_t, N_t, h_inv, L_C, nu, A)
+        b_next = b_t * rhos + innovation_scale * scaled_score[None, :]
         return b_next, preds_h
 
     _, preds_all = lax.scan(
@@ -327,19 +283,17 @@ def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):
 
 def forecast_h(fit_result, M, K):
     beta_bar = fit_result["beta_bar"]
-    eta = fit_result["eta"]
-    alpha = fit_result["alpha"]
 
     M = np.asarray(M, dtype=float)
     base_covariates = M[:, :, :-1]
     n_h = base_covariates.shape[1]
 
-    ws, lambdas = _solve_weights_ff(eta, alpha, K)
-    exp_neg_lambdas = np.exp(-lambdas)
+    ws, lambdas = _solve_weights_ff(fit_result["eta"], fit_result["phi"], K)
+    rhos = np.exp(-lambdas)
 
     def _step(b_t, Z_t):
         beta_t = beta_bar + np.sum(ws * b_t, axis=0)
-        b_next = exp_neg_lambdas * b_t
+        b_next = rhos * b_t
         predictions_t = Z_t @ beta_t
         P_t = predictions_t.sum() / n_h
         return b_next, (predictions_t, P_t)
@@ -347,11 +301,10 @@ def forecast_h(fit_result, M, K):
     _, (predictions, P) = lax.scan(_step, fit_result["b_T"], base_covariates)
     return predictions, P
 
+
 def simulate_panel(params, M, n, key, K, b_0=None):
     A = params["A"]
     sigma2 = params["sigma2"]
-    eta = params["eta"]
-    alpha = params["alpha"]
     C = params["C"]
     nu = params["nu"]
     beta_bar = params["beta_bar"]
@@ -361,13 +314,16 @@ def simulate_panel(params, M, n, key, K, b_0=None):
     T, N_obs, _ = M.shape
     design = M[:, :, :-1]
 
-    if b_0 is None: b_0 = np.zeros((K + 1, p))
+    if b_0 is None:
+        b_0 = np.zeros((K + 1, p))
 
     h_inv = 1.0 / sigma2
     sqrt_sigma = np.sqrt(sigma2)
     L_C = np.linalg.cholesky(C)
-    ws, lambdas = _solve_weights_ff(eta, alpha, K)
-    exp_neg_lambdas = np.exp(-lambdas)
+    ws, lambdas = _solve_weights_ff(params["eta"], params["phi"], K)
+    rhos = np.exp(-lambdas)
+    mus = _solve_kappas_ff(ws, lambdas)
+    innovation_scale = mus * np.sqrt((1.0 - rhos ** 2) / ws)
 
     keys = jax.random.split(key, n)
 
@@ -381,32 +337,12 @@ def simulate_panel(params, M, n, key, K, b_0=None):
             g, w, z, design_t = inputs
 
             beta_t = beta_bar + np.sum(ws * b_t, axis=0)
-
             scale = np.sqrt((nu - 2.0) / g)
             eps_t = scale * (design_t @ L_C @ w + sqrt_sigma * z)
             y_t = design_t @ beta_t + eps_t
 
-            ZtHinvZ = h_inv * (design_t.T @ design_t)
-            WLC = ZtHinvZ @ L_C
-            Inner_mat = np.eye(p) + L_C.T @ WLC
-            L_Inner = np.linalg.cholesky(Inner_mat)
-
-            V_fisher = solve_triangular(L_Inner, WLC.T, lower=True)
-            ZtSigmaInvZ = ZtHinvZ - V_fisher.T @ V_fisher
-            fisher_t = (nu / (nu - 2.0)) * ((nu + N_obs) / (nu + N_obs + 2.0)) * ZtSigmaInvZ
-
-            ZtHinv_eps = h_inv * (design_t.T @ eps_t)
-            woodbury_eps = solve_triangular(L_Inner, L_C.T @ ZtHinv_eps, lower=True)
-            mahal_Sigma = h_inv * (eps_t @ eps_t) - (woodbury_eps @ woodbury_eps)
-            ZtSigmaInv_eps = ZtHinv_eps - V_fisher.T @ woodbury_eps
-
-            score_weight = (nu + N_obs) / ((nu - 2.0) + mahal_Sigma)
-            nabla_t = score_weight * ZtSigmaInv_eps
-
-            eigvals, eigvecs = np.linalg.eigh(fisher_t)
-            scaled_score = A @ (eigvecs * (eigvals ** -1.0)) @ eigvecs.T @ nabla_t
-
-            b_next = exp_neg_lambdas * b_t + ws * scaled_score[None, :]
+            scaled_score, _, _ = _score_step(design_t, eps_t, N_obs, h_inv, L_C, nu, A)
+            b_next = b_t * rhos + innovation_scale * scaled_score[None, :]
             return b_next, (y_t, beta_t)
 
         _, (y_path, beta_path) = lax.scan(step, b_0, (g_samp, w_samp, z_samp, design))
