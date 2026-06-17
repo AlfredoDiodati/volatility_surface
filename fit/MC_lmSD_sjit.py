@@ -95,7 +95,7 @@ def cold_ffSD(y_train, Z_fixed):
         "A": jnp.diag(jnp.full(_P_FF, 0.1)),
         "sigma2": jnp.var(resid),
         "eta": jnp.full(_P_FF, 0.06),
-        "alpha": jnp.full(_P_FF, 1.5),
+        "phi": jnp.full(_P_FF, 8.0),
         "C": jnp.diag(jnp.full(_P_FF, 1e-3)),
         "nu": jnp.array(10.0),
     }
@@ -325,7 +325,7 @@ def _metrics_h(y_test_ext, preds_h_all, eval_horizons, T_half):
 
 
 _IG_KEYS = {
-    "ffSD":  ["beta_bar", "A", "sigma2", "eta", "alpha", "C", "nu"],
+    "ffSD":  ["beta_bar", "A", "sigma2", "eta", "phi", "C", "nu"],
     "ffSS":  ["beta_bar", "sigma2", "Q_param", "eta", "alpha"],
     "msmSD": ["beta_bar", "B", "A", "sigma2", "sigma_0", "C", "nu", "m0", "gamma_K", "b"],
     "lmSD":  ["beta_bar", "A", "d", "sigma2", "C", "nu"],
