@@ -57,9 +57,6 @@ def _solve_weights_ff(eta, phi, K):
     return ws.T, lambdas.T
 
 
-_KAPPA_TOL = 1e-8
-
-
 def _compute_L_matrix(ws, lambdas):
     K1 = ws.shape[0]
     rhos = np.exp(-lambdas)
@@ -70,8 +67,7 @@ def _compute_L_matrix(ws, lambdas):
     return ws_ratio * sqrt_prod / rho_cross * (1.0 - np.eye(K1)[:, :, None])
 
 
-@jax.custom_vjp
-def _solve_kappas_ff(ws, lambdas):
+def _solve_kappas_ff(ws, lambdas, n_iter=30):
     L = _compute_L_matrix(ws, lambdas)
     L_lower = np.tril(L, k=-1)
     K1 = ws.shape[0]
@@ -84,52 +80,12 @@ def _solve_kappas_ff(ws, lambdas):
     mu0 = np.zeros_like(ws).at[0].set(1.0)
     mu_init, _ = lax.scan(_init_step, mu0, np.arange(1, K1))
 
-    def _cond(state):
-        mu_curr, mu_prev = state
-        return np.max(np.abs(mu_curr - mu_prev)) > _KAPPA_TOL
+    def _iter(mu, _):
+        z = np.einsum('ijk,jk->ik', L, mu)
+        return (-z + np.sqrt(z ** 2 + 4.0)) / 2.0, None
 
-    def _body(state):
-        mu_curr, _ = state
-        z = np.einsum('ijk,jk->ik', L, mu_curr)
-        return (-z + np.sqrt(z ** 2 + 4.0)) / 2.0, mu_curr
-
-    mu_final, _ = lax.while_loop(_cond, _body, (mu_init, np.zeros_like(mu_init)))
+    mu_final, _ = lax.scan(_iter, mu_init, None, length=n_iter)
     return mu_final
-
-
-def _solve_kappas_ff_fwd(ws, lambdas):
-    mu_star = _solve_kappas_ff(ws, lambdas)
-    return mu_star, (mu_star, ws, lambdas)
-
-
-def _solve_kappas_ff_bwd(res, g):
-    mu_star, ws, lambdas = res
-    L = _compute_L_matrix(ws, lambdas)
-
-    z = np.einsum('ijk,jk->ik', L, mu_star)
-    dFdz = -mu_star / (2.0 * mu_star + z)
-
-    def _lin_cond(state):
-        v, v_prev = state
-        return np.max(np.abs(v - v_prev)) > _KAPPA_TOL
-
-    def _lin_body(state):
-        v, _ = state
-        JFT_v = np.einsum('ijk,ik->jk', L * dFdz[:, None, :], v)
-        return g + JFT_v, v
-
-    v_final, _ = lax.while_loop(_lin_cond, _lin_body, (g, np.zeros_like(g)))
-
-    def _F_params(ws_, lambdas_):
-        L_ = _compute_L_matrix(ws_, lambdas_)
-        z_ = np.einsum('ijk,jk->ik', L_, mu_star)
-        return (-z_ + np.sqrt(z_ ** 2 + 4.0)) / 2.0
-
-    _, vjp_fn = jax.vjp(_F_params, ws, lambdas)
-    return vjp_fn(v_final)
-
-
-_solve_kappas_ff.defvjp(_solve_kappas_ff_fwd, _solve_kappas_ff_bwd)
 
 
 def _score_step(Z_mask, eps_t, N_t, h_inv, L_C, nu, A):
