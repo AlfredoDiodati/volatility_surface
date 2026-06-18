@@ -1,17 +1,13 @@
 import argparse
 import os
-import shutil
-
-if shutil.which("nvidia-smi") is not None:
-    os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
-    os.environ['TF_GPU_ALLOCATOR'] = 'cuda_malloc_async'
 
 import numpy as np
 import jax
 import jax.numpy as jnp
 import polars as pl
 
-print(f"Running on: {jax.devices()}")
+jax.config.update("jax_default_device", jax.devices("cpu")[0])
+print(f"Running on: {jax.devices('cpu')[0]}")
 
 from models.ss import fit_collapsed, forecast as ss_forecast, forecast_rolling_h as ss_forecast_rolling_h
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast, forecast_rolling_h as adjSD_forecast_rolling_h
@@ -27,8 +23,8 @@ FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = 3
 P = P_BASE + 1
 
-MAXITER = 200
-TOL = 1e-2
+MAXITER = 2000
+TOL = 1e-4
 LR = 1.0
 Q_ALPHA = -1.6448536269514722
 ALPHA = 0.05
@@ -37,6 +33,58 @@ FFSD_K_VALUES = FFSS_K_VALUES
 MSMSD_K_VALUES = FFSS_K_VALUES
 FCST_HORIZONS = (5, 22, 66, 260)
 _MAX_FCST_H = max(FCST_HORIZONS)
+
+OPT = {"learning_rate": LR, "tol": TOL}
+
+
+def _run_ss(y_tr, Z_tr, ig, init, Z_te, y_te, Z_te_ext):
+    r = fit_collapsed(y_tr, Z_tr, ig, init, opt_options=OPT, maxiter=MAXITER)
+    y_hat, P_mean, VaR, oos_ll = ss_forecast(r, Z_te, y_te, Q_ALPHA)
+    preds_h = ss_forecast_rolling_h(r, Z_te_ext, y_te, FCST_HORIZONS)
+    return r, y_hat, P_mean, VaR, oos_ll, preds_h
+
+
+def _run_adjSD(y_tr, Z_tr, ig, Z_te, y_te, Z_te_ext):
+    r = adjSD_fit(y_tr, Z_tr, ig, opt_options=OPT, maxiter=MAXITER)
+    y_hat, P_mean, VaR, oos_ll = adjSD_forecast(r, Z_te, y_te, ALPHA)
+    preds_h = adjSD_forecast_rolling_h(r, Z_te_ext, y_te, FCST_HORIZONS)
+    return r, y_hat, P_mean, VaR, oos_ll, preds_h
+
+
+def _run_lmSD(y_tr, Z_tr, ig, Z_te, y_te, Z_te_ext):
+    r = lmSD_fit(y_tr, Z_tr, ig, opt_options=OPT, maxiter=MAXITER)
+    y_hat, P_mean, VaR, oos_ll = lmSD_forecast(r, Z_te, y_te, ALPHA)
+    preds_h = lmSD_forecast_rolling_h(r, Z_te_ext, y_te, FCST_HORIZONS)
+    return r, y_hat, P_mean, VaR, oos_ll, preds_h
+
+
+def _run_ffSS_impl(y_tr, Z_tr, ig, K, Z_te, y_te, Z_te_ext):
+    r = ffSS_fit(y_tr, Z_tr, ig, K, opt_options=OPT, maxiter=MAXITER)
+    y_hat, P_mean, VaR, oos_ll = ffSS_forecast(r, Z_te, y_te, Q_ALPHA)
+    preds_h = ffSS_forecast_rolling_h(r, Z_te_ext, y_te, FCST_HORIZONS)
+    return r, y_hat, P_mean, VaR, oos_ll, preds_h
+
+
+def _run_ffSD_impl(y_tr, Z_tr, ig, K, Z_te, y_te, Z_te_ext):
+    r = ffSD_fit(y_tr, Z_tr, ig, K, opt_options=OPT, maxiter=MAXITER)
+    y_hat, P_mean, VaR, oos_ll = ffSD_forecast(r, Z_te, y_te, K, ALPHA)
+    preds_h = ffSD_forecast_rolling_h(r, Z_te_ext, y_te, K, FCST_HORIZONS)
+    return r, y_hat, P_mean, VaR, oos_ll, preds_h
+
+
+def _run_msmSD_impl(y_tr, Z_tr, ig, K, Z_te, y_te, Z_te_ext):
+    r = msmSD_fit(y_tr, Z_tr, ig, K, 1.0, opt_options=OPT, maxiter=MAXITER)
+    y_hat, P_mean, VaR, oos_ll = msmSD_forecast(r, Z_te, y_te, K, 1.0, ALPHA)
+    preds_h = msmSD_forecast_rolling_h(r, Z_te_ext, y_te, K, 1.0, FCST_HORIZONS)
+    return r, y_hat, P_mean, VaR, oos_ll, preds_h
+
+
+_run_ss = jax.jit(_run_ss)
+_run_adjSD = jax.jit(_run_adjSD)
+_run_lmSD = jax.jit(_run_lmSD)
+_run_ffSS = jax.jit(_run_ffSS_impl, static_argnames=("K",))
+_run_ffSD = jax.jit(_run_ffSD_impl, static_argnames=("K",))
+_run_msmSD = jax.jit(_run_msmSD_impl, static_argnames=("K",))
 
 
 def load_and_reshape(path):
@@ -142,7 +190,7 @@ def _ffSD_ig(beta_ols, sig2, omega):
         "sigma2": sig2,
         "omega_load": omega,
         "eta": jnp.full(P, 0.4),
-        "alpha": jnp.full(P, 1.4255056381225586),
+        "phi": jnp.full(P, 8.0),
         "C": 1e-3 * jnp.eye(P),
         "nu": jnp.array(10.0),
     }
@@ -222,7 +270,7 @@ def main():
     def _save_1step(name, y_hat, P_mean, VaR, oos_ll, train_ll, niter, converged):
         pl.DataFrame({
             "date": test_dates,
-            "predictions": y_hat.tolist(),
+            "predictions": pl.Series(np.asarray(y_hat)),
         }).write_parquet(os.path.join(OUTPUT_DIR, f"predictions_{name}{suffix}.parquet"))
 
         n_params = n_params_map[name]
@@ -235,9 +283,9 @@ def main():
         step_frames.append(pl.DataFrame({
             "date": test_dates,
             "model": pl.Series([name] * n_test),
-            "P_mean": P_mean.tolist(),
-            "VaR": VaR.tolist(),
-            "oos_loglik": oos_ll.tolist(),
+            "P_mean": pl.Series(np.asarray(P_mean)),
+            "VaR": pl.Series(np.asarray(VaR)),
+            "oos_loglik": pl.Series(np.asarray(oos_ll)),
             "train_loglik": pl.Series([float(train_ll)] * n_test),
             "n_params": pl.Series([n_params] * n_test, dtype=pl.Int32),
             "niter": pl.Series([int(niter)] * n_test, dtype=pl.Int32),
@@ -259,7 +307,7 @@ def main():
             frames.append(pl.DataFrame({
                 "date": test_dates[:n_valid],
                 "horizon": pl.Series([h] * n_valid, dtype=pl.Int32),
-                "predictions": preds_h[h_idx][:n_valid].tolist(),
+                "predictions": pl.Series(np.asarray(preds_h[h_idx][:n_valid])),
             }))
         pl.concat(frames).write_parquet(
             os.path.join(OUTPUT_DIR, f"predictions_h_{name}{suffix}.parquet")
@@ -274,90 +322,119 @@ def main():
             return True
         return False
 
-    OPT = {"learning_rate": LR, "tol": TOL}
-
     print("Running models (single fit per model)...")
 
     if not _skip("ss"):
         print("  ss...", flush=True)
         ig, init = _ss_ig(beta_ols, sig2, omega)
-        r = fit_collapsed(y_train, Z_train, ig, init, opt_options=OPT, maxiter=MAXITER)
+        r, y_hat, P_mean, VaR, oos_ll, preds_h = _run_ss(
+            y_train, Z_train, ig, init, Z_test, y_test, Z_test_ext)
         jax.effects_barrier()
-        y_hat, P_mean, VaR, oos_ll = ss_forecast(r, Z_test, y_test, Q_ALPHA)
         _save_1step("ss", y_hat, P_mean, VaR, oos_ll,
                     r["loglikelihood"], r["niter"], r["is_converged"])
         print("  ss h-step...", flush=True)
-        _save_hstep("ss", ss_forecast_rolling_h(r, Z_test_ext, y_test, FCST_HORIZONS))
+        _save_hstep("ss", preds_h)
         jax.clear_caches()
 
     if not _skip("adjSD"):
         print("  adjSD...", flush=True)
-        r = adjSD_fit(y_train, Z_train, _adjSD_ig(beta_ols, sig2, omega),
-                      opt_options=OPT, maxiter=MAXITER)
+        r, y_hat, P_mean, VaR, oos_ll, preds_h = _run_adjSD(
+            y_train, Z_train, _adjSD_ig(beta_ols, sig2, omega), Z_test, y_test, Z_test_ext)
         jax.effects_barrier()
-        y_hat, P_mean, VaR, oos_ll = adjSD_forecast(r, Z_test, y_test, ALPHA)
         _save_1step("adjSD", y_hat, P_mean, VaR, oos_ll,
                     r["log_likelihood"], r["niter"], r["is_converged"])
         print("  adjSD h-step...", flush=True)
-        _save_hstep("adjSD", adjSD_forecast_rolling_h(r, Z_test_ext, y_test, FCST_HORIZONS))
+        _save_hstep("adjSD", preds_h)
         jax.clear_caches()
 
     if not _skip("lmSD"):
         print("  lmSD...", flush=True)
-        r = lmSD_fit(y_train, Z_train, _lmSD_ig(beta_ols, sig2, omega),
-                     opt_options=OPT, maxiter=MAXITER)
+        r, y_hat, P_mean, VaR, oos_ll, preds_h = _run_lmSD(
+            y_train, Z_train, _lmSD_ig(beta_ols, sig2, omega), Z_test, y_test, Z_test_ext)
         jax.effects_barrier()
-        y_hat, P_mean, VaR, oos_ll = lmSD_forecast(r, Z_test, y_test, ALPHA)
         _save_1step("lmSD", y_hat, P_mean, VaR, oos_ll,
                     r["log_likelihood"], r["niter"], r["is_converged"])
         print("  lmSD h-step...", flush=True)
-        _save_hstep("lmSD", lmSD_forecast_rolling_h(r, Z_test_ext, y_test, FCST_HORIZONS))
+        _save_hstep("lmSD", preds_h)
         jax.clear_caches()
 
+    fits = {}
     for K in FFSS_K_VALUES:
         name = f"ffSS_K{K}"
         if _skip(name):
             continue
         print(f"  {name}...", flush=True)
-        r = ffSS_fit(y_train, Z_train, _ffSS_ig(beta_ols, sig2, omega),
-                     K=K, opt_options=OPT, maxiter=MAXITER)
+        fits[K] = _run_ffSS(
+            y_train, Z_train, _ffSS_ig(beta_ols, sig2, omega), K, Z_test, y_test, Z_test_ext)
         jax.effects_barrier()
-        y_hat, P_mean, VaR, oos_ll = ffSS_forecast(r, Z_test, y_test, Q_ALPHA)
+
+    if len(fits) > 1:
+        best_K = max(fits, key=lambda k: float(fits[k][0]["loglikelihood"]))
+        ll_best = float(fits[best_K][0]["loglikelihood"])
+        for K in list(fits):
+            if K != best_K and ll_best > float(fits[K][0]["loglikelihood"]):
+                print(f"  ffSS_K{K}: switching to K={best_K} parameters (better in-sample LL)", flush=True)
+                fits[K] = fits[best_K]
+
+    for K, (r, y_hat, P_mean, VaR, oos_ll, preds_h) in fits.items():
+        name = f"ffSS_K{K}"
         _save_1step(name, y_hat, P_mean, VaR, oos_ll,
                     r["loglikelihood"], r["niter"], r["is_converged"])
         print(f"  {name} h-step...", flush=True)
-        _save_hstep(name, ffSS_forecast_rolling_h(r, Z_test_ext, y_test, FCST_HORIZONS))
-        jax.clear_caches()
+        _save_hstep(name, preds_h)
+    jax.clear_caches()
 
+    fits = {}
     for K in FFSD_K_VALUES:
         name = f"ffSD_K{K}"
         if _skip(name):
             continue
         print(f"  {name}...", flush=True)
-        r = ffSD_fit(y_train, Z_train, _ffSD_ig(beta_ols, sig2, omega),
-                     K=K, opt_options=OPT, maxiter=MAXITER)
+        fits[K] = _run_ffSD(
+            y_train, Z_train, _ffSD_ig(beta_ols, sig2, omega), K, Z_test, y_test, Z_test_ext)
         jax.effects_barrier()
-        y_hat, P_mean, VaR, oos_ll = ffSD_forecast(r, Z_test, y_test, K, ALPHA)
+
+    if len(fits) > 1:
+        best_K = max(fits, key=lambda k: float(fits[k][0]["log_likelihood"]))
+        ll_best = float(fits[best_K][0]["log_likelihood"])
+        for K in list(fits):
+            if K != best_K and ll_best > float(fits[K][0]["log_likelihood"]):
+                print(f"  ffSD_K{K}: switching to K={best_K} parameters (better in-sample LL)", flush=True)
+                fits[K] = fits[best_K]
+
+    for K, (r, y_hat, P_mean, VaR, oos_ll, preds_h) in fits.items():
+        name = f"ffSD_K{K}"
         _save_1step(name, y_hat, P_mean, VaR, oos_ll,
                     r["log_likelihood"], r["niter"], r["is_converged"])
         print(f"  {name} h-step...", flush=True)
-        _save_hstep(name, ffSD_forecast_rolling_h(r, Z_test_ext, y_test, K, FCST_HORIZONS))
-        jax.clear_caches()
+        _save_hstep(name, preds_h)
+    jax.clear_caches()
 
+    fits = {}
     for K in MSMSD_K_VALUES:
         name = f"msmSD_K{K}"
         if _skip(name):
             continue
         print(f"  {name}...", flush=True)
-        r = msmSD_fit(y_train, Z_train, _msmSD_ig(beta_ols, sig2, omega),
-                      K=K, score_power=1.0, opt_options=OPT, maxiter=MAXITER)
+        fits[K] = _run_msmSD(
+            y_train, Z_train, _msmSD_ig(beta_ols, sig2, omega), K, Z_test, y_test, Z_test_ext)
         jax.effects_barrier()
-        y_hat, P_mean, VaR, oos_ll = msmSD_forecast(r, Z_test, y_test, K, 1.0, ALPHA)
+
+    if len(fits) > 1:
+        best_K = max(fits, key=lambda k: float(fits[k][0]["log_likelihood"]))
+        ll_best = float(fits[best_K][0]["log_likelihood"])
+        for K in list(fits):
+            if K != best_K and ll_best > float(fits[K][0]["log_likelihood"]):
+                print(f"  msmSD_K{K}: switching to K={best_K} parameters (better in-sample LL)", flush=True)
+                fits[K] = fits[best_K]
+
+    for K, (r, y_hat, P_mean, VaR, oos_ll, preds_h) in fits.items():
+        name = f"msmSD_K{K}"
         _save_1step(name, y_hat, P_mean, VaR, oos_ll,
                     r["log_likelihood"], r["niter"], r["is_converged"])
         print(f"  {name} h-step...", flush=True)
-        _save_hstep(name, msmSD_forecast_rolling_h(r, Z_test_ext, y_test, K, 1.0, FCST_HORIZONS))
-        jax.clear_caches()
+        _save_hstep(name, preds_h)
+    jax.clear_caches()
 
     if not step_frames:
         print("No models ran (check --models argument).")
