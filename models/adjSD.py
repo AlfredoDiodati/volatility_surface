@@ -101,7 +101,7 @@ def fit(
         B_diag = np.tanh(theta[idx:idx + p])
         B = np.diag(B_diag)
         idx += p
-        A = np.diag(theta[idx:idx + p])
+        A = np.diag(jax.nn.softplus(theta[idx:idx + p]))
         idx += p
         sigma2 = np.exp(theta[idx])
         idx += 1
@@ -116,7 +116,7 @@ def fit(
     def _invlink(params):
         B_diag = np.diag(params["B"])
         unc_B = np.arctanh(B_diag)
-        unc_A = np.diag(params["A"])
+        unc_A = np.log(np.expm1(np.diag(params["A"])))
         unc_s2 = np.log(params["sigma2"])
         unc_omega = params["omega"][1:]
         unc_C = np.log(params["C"])

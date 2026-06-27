@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 
 import numpy as np
@@ -11,10 +12,10 @@ print(f"Running on: {jax.devices('cpu')[0]}")
 
 from models.ss import fit_collapsed, forecast as ss_forecast, forecast_rolling_h as ss_forecast_rolling_h
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast, forecast_rolling_h as adjSD_forecast_rolling_h
-from models.ff_SS import fit as ffSS_fit, forecast as ffSS_forecast, forecast_rolling_h as ffSS_forecast_rolling_h
-from models.ff_SD import fit as ffSD_fit, forecast as ffSD_forecast, forecast_rolling_h as ffSD_forecast_rolling_h
+from models.ff_SS import fit as ffSS_fit, forecast as ffSS_forecast, forecast_rolling_h as ffSS_forecast_rolling_h, eval_and_refit_k as ffSS_eval_and_refit_k
+from models.ff_SD import fit as ffSD_fit, forecast as ffSD_forecast, forecast_rolling_h as ffSD_forecast_rolling_h, eval_and_refit_k as ffSD_eval_and_refit_k
 from models.lmSD import fit as lmSD_fit, forecast as lmSD_forecast, forecast_rolling_h as lmSD_forecast_rolling_h
-from models.MSMSD import fit as msmSD_fit, forecast as msmSD_forecast, forecast_rolling_h as msmSD_forecast_rolling_h
+from models.MSMSD import fit as msmSD_fit, forecast as msmSD_forecast, forecast_rolling_h as msmSD_forecast_rolling_h, eval_and_refit_k as msmSD_eval_and_refit_k
 from fit._forecast_metrics import compute_mse, compute_mae, compute_aic, compute_bic
 
 PARQUET_PATH = "data/SPX/otm/full.parquet"
@@ -23,7 +24,7 @@ FACTOR_LOADING_COLS = ["level", "moneyness", "maturity"]
 P_BASE = 3
 P = P_BASE + 1
 
-MAXITER = 2000
+MAXITER = 5000
 TOL = 1e-4
 LR = 1.0
 Q_ALPHA = -1.6448536269514722
@@ -60,16 +61,16 @@ def _run_lmSD(y_tr, Z_tr, ig, Z_te, y_te, Z_te_ext):
 
 def _run_ffSS_impl(y_tr, Z_tr, ig, K, Z_te, y_te, Z_te_ext):
     r = ffSS_fit(y_tr, Z_tr, ig, K, opt_options=OPT, maxiter=MAXITER)
-    y_hat, P_mean, VaR, oos_ll = ffSS_forecast(r, Z_te, y_te, Q_ALPHA)
+    y_hat, P_mean, VaR, oos_ll, b_oos = ffSS_forecast(r, Z_te, y_te, Q_ALPHA)
     preds_h = ffSS_forecast_rolling_h(r, Z_te_ext, y_te, FCST_HORIZONS)
-    return r, y_hat, P_mean, VaR, oos_ll, preds_h
+    return r, y_hat, P_mean, VaR, oos_ll, preds_h, b_oos
 
 
 def _run_ffSD_impl(y_tr, Z_tr, ig, K, Z_te, y_te, Z_te_ext):
     r = ffSD_fit(y_tr, Z_tr, ig, K, opt_options=OPT, maxiter=MAXITER)
-    y_hat, P_mean, VaR, oos_ll = ffSD_forecast(r, Z_te, y_te, K, ALPHA)
+    y_hat, P_mean, VaR, oos_ll, b_oos = ffSD_forecast(r, Z_te, y_te, K, ALPHA)
     preds_h = ffSD_forecast_rolling_h(r, Z_te_ext, y_te, K, FCST_HORIZONS)
-    return r, y_hat, P_mean, VaR, oos_ll, preds_h
+    return r, y_hat, P_mean, VaR, oos_ll, preds_h, b_oos
 
 
 def _run_msmSD_impl(y_tr, Z_tr, ig, K, Z_te, y_te, Z_te_ext):
@@ -141,7 +142,17 @@ def _sigma2(y_win, Z_win, beta):
 def _base_init(y_train, Z_train, n_buckets):
     beta_ols = _ols_beta(y_train, Z_train)
     sig2 = _sigma2(y_train, Z_train, beta_ols)
-    omega = jnp.concatenate([jnp.zeros(1), jnp.full(n_buckets - 1, 1e-2)])
+    X = np.asarray(Z_train[:, :, :P_BASE]).reshape(-1, P_BASE)
+    y = np.asarray(y_train).reshape(-1)
+    bidx = np.asarray(Z_train[:, :, -1]).reshape(-1).astype(int)
+    mask = ~np.isnan(y)
+    resid = np.where(mask, y - X @ beta_ols, np.nan)
+    mu = np.array([
+        float(np.nanmean(resid[bidx == k])) if np.any((bidx == k) & mask) else 0.0
+        for k in range(n_buckets)
+    ])
+    mu = np.where(np.isnan(mu), 0.0, mu)
+    omega = jnp.array(mu - mu[0])
     return beta_ols, sig2, omega
 
 
@@ -162,7 +173,7 @@ def _ss_ig(beta_ols, sig2, omega):
 
 def _adjSD_ig(beta_ols, sig2, omega):
     return {
-        "beta_bar": jnp.append(beta_ols, 0.0),
+        "beta_bar": jnp.append(beta_ols, 1.0),
         "B": 0.95 * jnp.eye(P),
         "A": 0.05 * jnp.eye(P),
         "sigma2": sig2,
@@ -174,7 +185,7 @@ def _adjSD_ig(beta_ols, sig2, omega):
 
 def _ffSS_ig(beta_ols, sig2, omega):
     return {
-        "beta_bar": jnp.append(beta_ols, 0.0),
+        "beta_bar": jnp.append(beta_ols, 1.0),
         "sigma2": sig2,
         "Q_param": 1e-3 * jnp.eye(P),
         "omega": omega,
@@ -185,12 +196,12 @@ def _ffSS_ig(beta_ols, sig2, omega):
 
 def _ffSD_ig(beta_ols, sig2, omega):
     return {
-        "beta_bar": jnp.append(beta_ols, 0.0),
+        "beta_bar": jnp.append(beta_ols, 1.0),
         "A": 0.05 * jnp.eye(P),
         "sigma2": sig2,
         "omega_load": omega,
         "eta": jnp.full(P, 0.4),
-        "phi": jnp.full(P, 8.0),
+        "phi": jnp.full(P, 3.0),
         "C": 1e-3 * jnp.eye(P),
         "nu": jnp.array(10.0),
     }
@@ -198,7 +209,7 @@ def _ffSD_ig(beta_ols, sig2, omega):
 
 def _lmSD_ig(beta_ols, sig2, omega):
     return {
-        "beta_bar": jnp.append(beta_ols, 0.0),
+        "beta_bar": jnp.append(beta_ols, 1.0),
         "A": 0.05 * jnp.eye(P),
         "d": jnp.full(P, 0.4),
         "sigma2": sig2,
@@ -259,7 +270,7 @@ def main():
         "ss": 3 * P + n_buckets,
         "adjSD": 4 * P + n_buckets + 1,
         "lmSD": 4 * P + n_buckets + 1,
-        **{f"ffSS_K{k}": 3 * P + n_buckets + 1 for k in FFSS_K_VALUES},
+        **{f"ffSS_K{k}": 3 * P + n_buckets for k in FFSS_K_VALUES},
         **{f"ffSD_K{k}": 4 * P + n_buckets + 1 for k in FFSD_K_VALUES},
         **{f"msmSD_K{k}": 3 * P_BASE + P + n_buckets + 4 for k in MSMSD_K_VALUES},
     }
@@ -280,7 +291,7 @@ def main():
         aic = float(compute_aic(jnp.array(total_oos_ll), n_params))
         bic = float(compute_bic(jnp.array(total_oos_ll), n_params, total_obs))
 
-        step_frames.append(pl.DataFrame({
+        step_df = pl.DataFrame({
             "date": test_dates,
             "model": pl.Series([name] * n_test),
             "P_mean": pl.Series(np.asarray(P_mean)),
@@ -290,7 +301,9 @@ def main():
             "n_params": pl.Series([n_params] * n_test, dtype=pl.Int32),
             "niter": pl.Series([int(niter)] * n_test, dtype=pl.Int32),
             "is_converged": pl.Series([bool(converged)] * n_test),
-        }))
+        })
+        step_df.write_parquet(os.path.join(OUTPUT_DIR, f"step_{name}{suffix}.parquet"))
+        step_frames.append(step_df)
         agg_rows.append({
             "model": name, "mse": mse, "mae": mae,
             "total_oos_loglik": total_oos_ll,
@@ -313,11 +326,109 @@ def main():
             os.path.join(OUTPUT_DIR, f"predictions_h_{name}{suffix}.parquet")
         )
 
-    def _skip(name):
+    def _save_params(name, r):
+        def _a(x): return np.asarray(x).tolist()
+        if "H_param" in r:
+            d = {
+                "B_diag": _a(np.diag(r["B"])),
+                "Q_diag": _a(np.diag(r["Q_param"])),
+                "sigma2": float(r["H_param"][0, 0]),
+                "bar_beta": _a(r["bar_beta"]),
+                "omega": _a(r["omega"]),
+            }
+        elif "alpha" in r:
+            d = {
+                "beta_bar": _a(r["beta_bar"]),
+                "sigma2": float(r["sigma2"]),
+                "Q_diag": _a(np.diag(r["Q_param"])),
+                "eta": _a(r["eta"]),
+                "alpha": float(r["alpha"]),
+                "omega": _a(r["omega"]),
+            }
+        elif "phi" in r:
+            d = {
+                "beta_bar": _a(r["beta_bar"]),
+                "A_diag": _a(np.diag(r["A"])),
+                "sigma2": float(r["sigma2"]),
+                "eta": _a(r["eta"]),
+                "phi": float(r["phi"][0]),
+                "C_diag": _a(np.diag(r["C"])),
+                "nu": float(r["nu"]),
+                "omega_load": _a(r["omega_load"]),
+            }
+        elif "d" in r:
+            d = {
+                "beta_bar": _a(r["beta_bar"]),
+                "A_diag": _a(np.diag(r["A"])),
+                "d": _a(r["d"]),
+                "sigma2": float(r["sigma2"]),
+                "C_diag": _a(r["C"]),
+                "nu": float(r["nu"]),
+                "omega": _a(r["omega"]),
+            }
+        elif "m0" in r:
+            d = {
+                "beta_bar": _a(r["beta_bar"]),
+                "B_diag": _a(np.diag(r["B"])),
+                "A_diag": _a(np.diag(r["A"])),
+                "sigma2": float(r["sigma2"]),
+                "sigma_0": float(r["sigma_0"]),
+                "C_diag": _a(np.diag(r["C"])),
+                "nu": float(r["nu"]),
+                "m0": float(r["m0"]),
+                "gamma_K": float(r["gamma_K"]),
+                "b": float(r["b"]),
+                "omega_load": _a(r["omega_load"]),
+            }
+        else:
+            d = {
+                "beta_bar": _a(r["beta_bar"]),
+                "B_diag": _a(np.diag(r["B"])),
+                "A_diag": _a(np.diag(r["A"])),
+                "sigma2": float(r["sigma2"]),
+                "C_diag": _a(r["C"]),
+                "nu": float(r["nu"]),
+                "omega": _a(r["omega"]),
+            }
+        with open(os.path.join(OUTPUT_DIR, f"params_{name}{suffix}.json"), "w") as f:
+            json.dump(d, f, indent=2)
+
+    def _save_b(name, r, b_oos):
+        is_ffss = "att" in r
+        if is_ffss:
+            K_p1 = r["att"].shape[1] // P
+            b_ins = np.asarray(r["att"]).reshape(train_size, K_p1, P)
+            b_oo = np.asarray(b_oos).reshape(n_test, K_p1, P)
+        else:
+            b_ins = np.asarray(r["b_hist"])
+            b_oo = np.asarray(b_oos)
+        K_p1 = b_ins.shape[1]
+
+        def _to_df(b_arr, date_list, is_ins):
+            T_ = b_arr.shape[0]
+            date_rep = np.repeat(np.array(date_list), K_p1 * P).tolist()
+            k_rep = np.tile(np.repeat(np.arange(K_p1), P), T_)
+            j_rep = np.tile(np.arange(P), T_ * K_p1)
+            return pl.DataFrame({
+                "date": date_rep,
+                "is_insample": pl.Series([is_ins] * (T_ * K_p1 * P)),
+                "k": pl.Series(k_rep, dtype=pl.Int32),
+                "j": pl.Series(j_rep, dtype=pl.Int32),
+                "b": pl.Series(b_arr.reshape(-1).tolist()),
+            })
+
+        pl.concat([
+            _to_df(b_ins, dates[:train_size], True),
+            _to_df(b_oo, test_dates, False),
+        ]).write_parquet(os.path.join(OUTPUT_DIR, f"b_{name}{suffix}.parquet"))
+
+    def _skip(name, extra_paths=()):
         if selected is not None and name not in selected:
             return True
-        path = os.path.join(OUTPUT_DIR, f"predictions_{name}{suffix}.parquet")
-        if os.path.exists(path):
+        pred_path = os.path.join(OUTPUT_DIR, f"predictions_{name}{suffix}.parquet")
+        step_path = os.path.join(OUTPUT_DIR, f"step_{name}{suffix}.parquet")
+        params_path = os.path.join(OUTPUT_DIR, f"params_{name}{suffix}.json")
+        if all(os.path.exists(p) for p in [pred_path, step_path, params_path, *extra_paths]):
             print(f"  {name}: output exists, skipping.", flush=True)
             return True
         return False
@@ -332,6 +443,7 @@ def main():
         jax.effects_barrier()
         _save_1step("ss", y_hat, P_mean, VaR, oos_ll,
                     r["loglikelihood"], r["niter"], r["is_converged"])
+        _save_params("ss", r)
         print("  ss h-step...", flush=True)
         _save_hstep("ss", preds_h)
         jax.clear_caches()
@@ -343,6 +455,7 @@ def main():
         jax.effects_barrier()
         _save_1step("adjSD", y_hat, P_mean, VaR, oos_ll,
                     r["log_likelihood"], r["niter"], r["is_converged"])
+        _save_params("adjSD", r)
         print("  adjSD h-step...", flush=True)
         _save_hstep("adjSD", preds_h)
         jax.clear_caches()
@@ -354,6 +467,7 @@ def main():
         jax.effects_barrier()
         _save_1step("lmSD", y_hat, P_mean, VaR, oos_ll,
                     r["log_likelihood"], r["niter"], r["is_converged"])
+        _save_params("lmSD", r)
         print("  lmSD h-step...", flush=True)
         _save_hstep("lmSD", preds_h)
         jax.clear_caches()
@@ -361,7 +475,8 @@ def main():
     fits = {}
     for K in FFSS_K_VALUES:
         name = f"ffSS_K{K}"
-        if _skip(name):
+        b_path = os.path.join(OUTPUT_DIR, f"b_{name}{suffix}.parquet")
+        if _skip(name, [b_path]):
             continue
         print(f"  {name}...", flush=True)
         fits[K] = _run_ffSS(
@@ -369,17 +484,27 @@ def main():
         jax.effects_barrier()
 
     if len(fits) > 1:
-        best_K = max(fits, key=lambda k: float(fits[k][0]["loglikelihood"]))
-        ll_best = float(fits[best_K][0]["loglikelihood"])
+        finite_ks = [k for k in fits if np.isfinite(float(fits[k][0]["loglikelihood"]))]
+        best_K = max(finite_ks, key=lambda k: float(fits[k][0]["loglikelihood"]), default=None) if finite_ks else None
+        r_best = fits[best_K][0] if best_K is not None else None
         for K in list(fits):
-            if K != best_K and ll_best > float(fits[K][0]["loglikelihood"]):
-                print(f"  ffSS_K{K}: switching to K={best_K} parameters (better in-sample LL)", flush=True)
-                fits[K] = fits[best_K]
+            if K == best_K or r_best is None:
+                continue
+            r_K = fits[K][0]
+            ll_K_own = float(r_K["loglikelihood"])
+            ll_best_in_K, r_adapted = ffSS_eval_and_refit_k(r_best, y_train, Z_train, K)
+            if np.isfinite(ll_best_in_K) and (not np.isfinite(ll_K_own) or ll_best_in_K > ll_K_own):
+                print(f"  ffSS_K{K}: adopting K={best_K} params (LL {ll_best_in_K:.1f} > {ll_K_own:.1f})", flush=True)
+                y_hat, P_mean, VaR, oos_ll, b_oos = ffSS_forecast(r_adapted, Z_test, y_test, Q_ALPHA)
+                preds_h = ffSS_forecast_rolling_h(r_adapted, Z_test_ext, y_test, FCST_HORIZONS)
+                fits[K] = (r_adapted, y_hat, P_mean, VaR, oos_ll, preds_h, b_oos)
 
-    for K, (r, y_hat, P_mean, VaR, oos_ll, preds_h) in fits.items():
+    for K, (r, y_hat, P_mean, VaR, oos_ll, preds_h, b_oos) in fits.items():
         name = f"ffSS_K{K}"
         _save_1step(name, y_hat, P_mean, VaR, oos_ll,
                     r["loglikelihood"], r["niter"], r["is_converged"])
+        _save_params(name, r)
+        _save_b(name, r, b_oos)
         print(f"  {name} h-step...", flush=True)
         _save_hstep(name, preds_h)
     jax.clear_caches()
@@ -387,7 +512,8 @@ def main():
     fits = {}
     for K in FFSD_K_VALUES:
         name = f"ffSD_K{K}"
-        if _skip(name):
+        b_path = os.path.join(OUTPUT_DIR, f"b_{name}{suffix}.parquet")
+        if _skip(name, [b_path]):
             continue
         print(f"  {name}...", flush=True)
         fits[K] = _run_ffSD(
@@ -395,17 +521,27 @@ def main():
         jax.effects_barrier()
 
     if len(fits) > 1:
-        best_K = max(fits, key=lambda k: float(fits[k][0]["log_likelihood"]))
-        ll_best = float(fits[best_K][0]["log_likelihood"])
+        finite_ks = [k for k in fits if np.isfinite(float(fits[k][0]["log_likelihood"]))]
+        best_K = max(finite_ks, key=lambda k: float(fits[k][0]["log_likelihood"]), default=None) if finite_ks else None
+        r_best = fits[best_K][0] if best_K is not None else None
         for K in list(fits):
-            if K != best_K and ll_best > float(fits[K][0]["log_likelihood"]):
-                print(f"  ffSD_K{K}: switching to K={best_K} parameters (better in-sample LL)", flush=True)
-                fits[K] = fits[best_K]
+            if K == best_K or r_best is None:
+                continue
+            r_K = fits[K][0]
+            ll_K_own = float(r_K["log_likelihood"])
+            ll_best_in_K, r_adapted = ffSD_eval_and_refit_k(r_best, y_train, Z_train, K)
+            if np.isfinite(ll_best_in_K) and (not np.isfinite(ll_K_own) or ll_best_in_K > ll_K_own):
+                print(f"  ffSD_K{K}: adopting K={best_K} params (LL {ll_best_in_K:.1f} > {ll_K_own:.1f})", flush=True)
+                y_hat, P_mean, VaR, oos_ll, b_oos = ffSD_forecast(r_adapted, Z_test, y_test, K, ALPHA)
+                preds_h = ffSD_forecast_rolling_h(r_adapted, Z_test_ext, y_test, K, FCST_HORIZONS)
+                fits[K] = (r_adapted, y_hat, P_mean, VaR, oos_ll, preds_h, b_oos)
 
-    for K, (r, y_hat, P_mean, VaR, oos_ll, preds_h) in fits.items():
+    for K, (r, y_hat, P_mean, VaR, oos_ll, preds_h, b_oos) in fits.items():
         name = f"ffSD_K{K}"
         _save_1step(name, y_hat, P_mean, VaR, oos_ll,
                     r["log_likelihood"], r["niter"], r["is_converged"])
+        _save_params(name, r)
+        _save_b(name, r, b_oos)
         print(f"  {name} h-step...", flush=True)
         _save_hstep(name, preds_h)
     jax.clear_caches()
@@ -421,23 +557,33 @@ def main():
         jax.effects_barrier()
 
     if len(fits) > 1:
-        best_K = max(fits, key=lambda k: float(fits[k][0]["log_likelihood"]))
-        ll_best = float(fits[best_K][0]["log_likelihood"])
+        finite_ks = [k for k in fits if np.isfinite(float(fits[k][0]["log_likelihood"]))]
+        best_K = max(finite_ks, key=lambda k: float(fits[k][0]["log_likelihood"]), default=None) if finite_ks else None
+        r_best = fits[best_K][0] if best_K is not None else None
         for K in list(fits):
-            if K != best_K and ll_best > float(fits[K][0]["log_likelihood"]):
-                print(f"  msmSD_K{K}: switching to K={best_K} parameters (better in-sample LL)", flush=True)
-                fits[K] = fits[best_K]
+            if K == best_K or r_best is None:
+                continue
+            r_K = fits[K][0]
+            ll_K_own = float(r_K["log_likelihood"])
+            ll_best_in_K, r_adapted = msmSD_eval_and_refit_k(r_best, y_train, Z_train, K, 1.0)
+            if np.isfinite(ll_best_in_K) and (not np.isfinite(ll_K_own) or ll_best_in_K > ll_K_own):
+                print(f"  msmSD_K{K}: adopting K={best_K} params (LL {ll_best_in_K:.1f} > {ll_K_own:.1f})", flush=True)
+                y_hat, P_mean, VaR, oos_ll = msmSD_forecast(r_adapted, Z_test, y_test, K, 1.0, ALPHA)
+                preds_h = msmSD_forecast_rolling_h(r_adapted, Z_test_ext, y_test, K, 1.0, FCST_HORIZONS)
+                fits[K] = (r_adapted, y_hat, P_mean, VaR, oos_ll, preds_h)
 
     for K, (r, y_hat, P_mean, VaR, oos_ll, preds_h) in fits.items():
         name = f"msmSD_K{K}"
         _save_1step(name, y_hat, P_mean, VaR, oos_ll,
                     r["log_likelihood"], r["niter"], r["is_converged"])
+        _save_params(name, r)
         print(f"  {name} h-step...", flush=True)
         _save_hstep(name, preds_h)
     jax.clear_caches()
 
     if not step_frames:
-        print("No models ran (check --models argument).")
+        print("No new models ran; step_results.parquet not updated.")
+        print(f"\nSaved to {OUTPUT_DIR}")
         return
 
     new_step = pl.concat(step_frames)

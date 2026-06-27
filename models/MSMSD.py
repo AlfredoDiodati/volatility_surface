@@ -253,6 +253,30 @@ def fit(
         "K": K,
     }
 
+def eval_and_refit_k(fit_result, data, M, K, score_power):
+    data = np.asarray(data, dtype=float)
+    M = np.asarray(M, dtype=float)
+    mask_bool = ~np.isnan(data)
+    y_masked = np.where(mask_bool, data, 0.0)
+    mask_f = mask_bool.astype(float)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+
+    k_idx = np.arange(1, K + 1, dtype=float)
+    gamma_k = 1.0 - (1.0 - fit_result["gamma_K"]) ** (fit_result["b"] ** (k_idx - K))
+    params_k = dict(fit_result) | {"gamma_k": gamma_k}
+
+    log_pi_init = np.full(2 ** K, -K * np.log(2.0))
+    state0 = (log_pi_init, fit_result["beta_bar"])
+
+    _, lls, (log_pi_T, beta_tilde_T) = _filter(
+        y_masked, base_covariates, bucket_indices, mask_f,
+        params_k, K, score_power, state0
+    )
+    ll = float(np.sum(lls))
+    return ll, params_k | {"log_pi_T": log_pi_T, "beta_tilde_T": beta_tilde_T, "log_likelihood": ll}
+
+
 def forecast_h(fit_result, M, K):
     beta_bar = fit_result["beta_bar"]
     B = fit_result["B"]

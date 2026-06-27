@@ -107,11 +107,11 @@ def _score_step(Z_mask, eps_t, N_t, h_inv, L_C, nu, A):
 def _link(theta, p, n_buckets):
     idx = 0
     beta_bar = theta[idx:idx + p]; idx += p
-    A = np.diag(theta[idx:idx + p]); idx += p
+    A = np.diag(jax.nn.softplus(theta[idx:idx + p])); idx += p
     sigma2 = np.exp(theta[idx]); idx += 1
     omega_load = np.concatenate([np.zeros(1), theta[idx:idx + n_buckets - 1]]); idx += n_buckets - 1
     eta = 2.0 * jax.nn.sigmoid(theta[idx:idx + p]); idx += p
-    phi = np.full(p, jax.nn.softplus(theta[idx]) + 7.5); idx += 1
+    phi = np.full(p, jax.nn.softplus(theta[idx]) + 1.0 ); idx += 1
     C = np.diag(np.exp(theta[idx:idx + p])); idx += p
     nu = np.exp(theta[idx]) + 2.0
     return {"beta_bar": beta_bar, "A": A, "sigma2": sigma2,
@@ -122,12 +122,12 @@ def _invlink(params):
     unc_s2 = np.log(params["sigma2"])
     unc_omega_load = params["omega_load"][1:]
     unc_eta = np.log(params["eta"] / (2.0 - params["eta"]))
-    unc_phi = np.log(np.exp(params["phi"][0] - 7.5) - 1.0)
+    unc_phi = np.log(np.exp(params["phi"][0] - 1.0) - 1.0)
     unc_C = np.log(np.diag(params["C"]))
     unc_nu = np.log(params["nu"] - 2.0)
     return np.concatenate([
         params["beta_bar"],
-        np.diag(params["A"]),
+        np.log(np.expm1(np.diag(params["A"]))),
         np.array([unc_s2]),
         unc_omega_load,
         unc_eta,
@@ -171,15 +171,15 @@ def _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, state0
             - 0.5 * (nu + N_t) * np.log(1.0 + mahal / (nu - 2.0))
         )
         b_next = b_t * rhos + innovation_scale * scaled_score[None, :]
-        return b_next, (ll_t, beta_t)
+        return b_next, (ll_t, beta_t, b_next)
 
-    b_T, (lls, betas_prev) = lax.scan(
+    b_T, (lls, betas_prev, b_hist) = lax.scan(
         _step, state0,
         (y_masked, base_covariates, bucket_indices, mask_f),
     )
     beta_T = beta_bar + np.sum(ws * b_T, axis=0)
     betas = np.concatenate([betas_prev, beta_T[None]], axis=0)
-    return betas, lls, b_T
+    return betas, lls, b_T, b_hist
 
 
 def fit(
@@ -204,20 +204,39 @@ def fit(
 
     def _criterion(theta):
         params = _link(theta, p, n_buckets)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
+        _, lls, _, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
         return -np.sum(lls)
 
     theta0 = np.asarray(_invlink(initial_guess))
     theta_opt, niter, final_loss, is_converged = lbfgs(_criterion, theta0, opt_options, maxiter)
     params_opt = _link(theta_opt, p, n_buckets)
-    betas, _, b_T = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, np.zeros((K + 1, p)))
+    betas, _, b_T, b_hist = _filter(y_masked, base_covariates, bucket_indices, mask_f, params_opt, K, np.zeros((K + 1, p)))
     return params_opt | {
         "betas": betas,
         "b_T": b_T,
+        "b_hist": b_hist,
         "log_likelihood": -final_loss,
         "niter": niter,
         "is_converged": is_converged,
     }
+
+
+def eval_and_refit_k(fit_result, data, M, K):
+    data = np.asarray(data, dtype=float)
+    M = np.asarray(M, dtype=float)
+    p = fit_result["beta_bar"].shape[0]
+    mask_bool = ~np.isnan(data)
+    y_masked = np.where(mask_bool, data, 0.0)
+    mask_f = mask_bool.astype(float)
+    base_covariates = M[:, :, :-1]
+    bucket_indices = M[:, :, -1].astype(np.int32)
+
+    betas, lls, b_T, b_hist = _filter(
+        y_masked, base_covariates, bucket_indices, mask_f,
+        fit_result, K, np.zeros((K + 1, p))
+    )
+    ll = float(np.sum(lls))
+    return ll, fit_result | {"betas": betas, "b_T": b_T, "b_hist": b_hist, "log_likelihood": ll}
 
 
 def standard_errors(fit_result, data, M, K):
@@ -242,7 +261,7 @@ def standard_errors(fit_result, data, M, K):
 
     def _criterion(theta):
         params = _link(theta, p, n_buckets)
-        _, lls, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
+        _, lls, _, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, params, K, np.zeros((K + 1, p)))
         return -np.sum(lls)
 
     theta_opt = _invlink(fit_result)
@@ -280,7 +299,7 @@ def forecast(fit_result, M, y_test, K, alpha):
     y_masked = np.where(mask_bool, y_test, 0.0)
     mask_f = mask_bool.astype(float)
 
-    betas, log_liks, _ = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, K, state0=fit_result["b_T"])
+    betas, log_liks, _, b_hist = _filter(y_masked, base_covariates, bucket_indices, mask_f, fit_result, K, state0=fit_result["b_T"])
 
     omega_cols = fit_result["omega_load"][bucket_indices]
     Z = np.concatenate([base_covariates, omega_cols[:, :, None]], axis=-1)
@@ -293,7 +312,7 @@ def forecast(fit_result, M, y_test, K, alpha):
     q = _t_unit_var_ppf(alpha, fit_result["nu"])
     VaR = P + q / n_obs_h * np.sqrt(F_sum)
 
-    return predictions, P, VaR, log_liks
+    return predictions, P, VaR, log_liks, b_hist
 
 
 def forecast_rolling_h(fit_result, M, y_test, K, eval_horizons):

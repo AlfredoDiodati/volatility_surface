@@ -16,8 +16,8 @@ matplotlib.rcParams.update({
     "font.size": 28,
 })
 
-INPUT = Path("out/SPX/otm/full_performance_fixed/b_ffSD_K5.parquet")
-OUTPUT = Path("plot/SPX/otm/full_performance_fixed/bis_ffSD_K5_over_time.pdf")
+INPUT = Path("out/SPX/otm/full_performance_fixed/b_ffSS_K5.parquet")
+OUTPUT = Path("plot/SPX/otm/full_performance_fixed/bis_ffSS_K5_over_time.pdf")
 
 N_MATURITIES = 6
 N_COEFS = 4

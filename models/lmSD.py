@@ -120,7 +120,7 @@ def fit(
         idx = 0
         beta_bar = theta[idx:idx + p]
         idx += p
-        A = np.diag(theta[idx:idx + p])
+        A = np.diag(jax.nn.softplus(theta[idx:idx + p]))
         idx += p
         d = 0.5 * jax.nn.tanh(theta[idx:idx + p])
         idx += p
@@ -135,7 +135,7 @@ def fit(
                 "omega": omega, "C": C_diag, "nu": nu}
 
     def _invlink(params):
-        unc_A = np.diag(params["A"])
+        unc_A = np.log(np.expm1(np.diag(params["A"])))
         d = params["d"]
         unc_d = np.arctanh(2.0 * d)
         unc_s2 = np.log(params["sigma2"])

@@ -1,7 +1,8 @@
 import jax
 import jax.numpy as np
 from jax import lax
-from models._kalman import _filter_light_vec, _filter_vec, _fit
+from models._kalman import _filter_light_vec, _filter_vec
+from models._solver import lbfgs
 
 def _solve_weights_ff(eta, alpha, K):
     def _single(ea):
@@ -70,19 +71,17 @@ def fit(
     def _link(theta):
         i = 0
         beta_bar = theta[i:i + p]; i += p
-        sigma2 = np.exp(theta[i]); i += 1
-        q_diag = np.exp(theta[i:i + p]); i += p
+        r_diag = np.exp(theta[i:i + p]); i += p
         omega = np.concatenate([np.zeros(1), theta[i:i + n_buckets - 1]]); i += n_buckets - 1
         eta = 2.0 * jax.nn.sigmoid(theta[i:i + p]); i += p
         alpha = 1.0 + jax.nn.softplus(theta[i])
 
         ws, lambdas = _solve_weights_ff(eta, np.full(p, alpha), K)
         T_aug = np.diag(np.exp(-lambdas).ravel())
-        Q_aug = np.diag(np.tile(q_diag, K + 1))
+        Q_aug = np.diag(np.tile(r_diag, K + 1))
         return {
             "beta_bar": beta_bar,
-            "sigma2": sigma2,
-            "Q_param": np.diag(q_diag),
+            "Q_param": np.diag(r_diag),
             "omega": omega,
             "eta": eta,
             "alpha": alpha,
@@ -90,14 +89,13 @@ def fit(
             "lambdas": lambdas,
             "T_aug": T_aug,
             "Q_aug": Q_aug,
-            "H_obs": np.array([[sigma2]]),
+            "H_obs": np.array([[1.0]]),
         }
 
     def _invlink(params):
         return np.concatenate([
             params["beta_bar"],
-            np.array([np.log(params["sigma2"])]),
-            np.log(np.diag(params["Q_param"])),
+            np.log(np.diag(params["Q_param"]) / params["sigma2"]),
             params["omega"][1:],
             np.log(params["eta"] / (2.0 - params["eta"])),
             np.array([np.log(np.exp(params["alpha"] - 1.0) - 1.0)]),
@@ -115,25 +113,108 @@ def fit(
         np.asarray(0, dtype=np.int32),
     )
 
-    result = _fit(
-        data, initial_guess, M, carry_initial,
-        _dynamics, _link, _invlink, opt_options,
-        maxiter=maxiter,
-        _filter_fn=_filter_light_vec,
-        _filter_final_fn=_filter_vec,
+    N_total = np.sum(~np.isnan(data)).astype(float)
+
+    def _criterion(theta):
+        p_ = _link(theta)
+        kf = _filter_light_vec(data, _dynamics, p_ | {"covariates": M}, carry_initial)
+        return N_total / 2 * np.log(np.sum(kf["quad"])) + 0.5 * np.sum(kf["logdetF"])
+
+    unc_params0 = np.asarray(_invlink(initial_guess))
+    unc_params, niter, final_loss, is_converged = lbfgs(_criterion, unc_params0, opt_options, maxiter)
+
+    params = _link(unc_params)
+    kf = _filter_vec(data, _dynamics, params | {"covariates": M}, carry_initial)
+    sigma2 = np.sum(kf["quad"]) / N_total
+
+    return {
+        "beta_bar": params["beta_bar"],
+        "sigma2": sigma2,
+        "Q_param": params["Q_param"] * sigma2,
+        "omega": params["omega"],
+        "eta": params["eta"],
+        "alpha": params["alpha"],
+        "ws": params["ws"],
+        "lambdas": params["lambdas"],
+        "T_aug": params["T_aug"],
+        "Q_aug": params["Q_aug"] * sigma2,
+        "logdetF": kf["logdetF"],
+        "quad": kf["quad"],
+        "a": kf["a"],
+        "P": kf["P"],
+        "att": kf["att"],
+        "Ptt": kf["Ptt"],
+        "v": kf["v"],
+        "loglikelihood": -final_loss,
+        "niter": niter,
+        "is_converged": is_converged,
+    }
+
+
+def eval_and_refit_k(fit_result, data, M, K):
+    data = np.asarray(data, dtype=float)
+    M = np.asarray(M, dtype=float)
+    _, max_n, _ = M.shape
+    p = fit_result["beta_bar"].shape[0]
+    state_dim = (K + 1) * p
+    N_total = np.sum(~np.isnan(data)).astype(float)
+
+    r_diag = np.diag(fit_result["Q_param"]) / fit_result["sigma2"]
+    ws, lambdas = _solve_weights_ff(fit_result["eta"], np.full(p, fit_result["alpha"]), K)
+    T_aug = np.diag(np.exp(-lambdas).ravel())
+    Q_aug = np.diag(np.tile(r_diag, K + 1))
+
+    params_k = {
+        "beta_bar": fit_result["beta_bar"],
+        "Q_param": np.diag(r_diag),
+        "omega": fit_result["omega"],
+        "eta": fit_result["eta"],
+        "alpha": fit_result["alpha"],
+        "ws": ws,
+        "lambdas": lambdas,
+        "T_aug": T_aug,
+        "Q_aug": Q_aug,
+        "H_obs": np.array([[1.0]]),
+    }
+    carry = (
+        np.zeros(state_dim, dtype=float),
+        10.0 * np.eye(state_dim, dtype=float),
+        np.zeros((max_n, state_dim), dtype=float),
+        T_aug,
+        np.ones((1, 1), dtype=float),
+        np.eye(state_dim, dtype=float),
+        Q_aug,
+        np.asarray(0, dtype=np.int32),
     )
 
-    return_keys = [
-        "beta_bar", "sigma2", "Q_param", "omega", "eta", "alpha", "ws", "lambdas", "T_aug", "Q_aug",
-        "logdetF", "quad", "a", "P", "att", "Ptt", "v",
-        "loglikelihood", "niter", "is_converged",
-    ]
-    return {k: result[k] for k in return_keys}
+    kf_light = _filter_light_vec(data, _dynamics, params_k | {"covariates": M}, carry)
+    ll = float(-(N_total / 2 * np.log(np.sum(kf_light["quad"])) + 0.5 * np.sum(kf_light["logdetF"])))
+
+    kf = _filter_vec(data, _dynamics, params_k | {"covariates": M}, carry)
+    sigma2 = float(np.sum(kf["quad"]) / N_total)
+
+    return ll, {
+        **fit_result,
+        "ws": ws,
+        "lambdas": lambdas,
+        "T_aug": T_aug,
+        "Q_aug": Q_aug * sigma2,
+        "sigma2": sigma2,
+        "Q_param": np.diag(r_diag) * sigma2,
+        "a": kf["a"],
+        "P": kf["P"],
+        "att": kf["att"],
+        "Ptt": kf["Ptt"],
+        "v": kf["v"],
+        "logdetF": kf["logdetF"],
+        "quad": kf["quad"],
+        "loglikelihood": ll,
+    }
 
 
 def forecast(fit_result, M, y_test, q_alpha):
     a0 = fit_result["att"][-1]
-    P0 = fit_result["Ptt"][-1]
+    P0 = fit_result["sigma2"] * fit_result["Ptt"][-1]
     T_aug = fit_result["T_aug"]
     Q_aug = fit_result["Q_aug"]
     sigma2 = fit_result["sigma2"]
@@ -176,17 +257,17 @@ def forecast(fit_result, M, y_test, q_alpha):
         oos_ll = -0.5 * (n_h * np.log(2.0 * np.pi) + log_det_F + quad)
         a_filtered = a_pred + h_inv * c
         P_filtered = P_pred - h_inv * D @ P_pred
-        return (a_filtered, P_filtered), (y_hat, P_mean, VaR_h, oos_ll)
+        return (a_filtered, P_filtered), (y_hat, P_mean, VaR_h, oos_ll, a_filtered)
 
-    _, (predictions, P_means, VaR, log_liks) = lax.scan(
+    _, (predictions, P_means, VaR, log_liks, a_hist) = lax.scan(
         _step, (a0, P0), (Z_all, d_all, y_test)
     )
-    return predictions, P_means, VaR, log_liks
+    return predictions, P_means, VaR, log_liks, a_hist
 
 
 def forecast_rolling_h(fit_result, M, y_test, eval_horizons):
     a0 = fit_result["att"][-1]
-    P0 = fit_result["Ptt"][-1]
+    P0 = fit_result["sigma2"] * fit_result["Ptt"][-1]
     T_aug = fit_result["T_aug"]
     Q_aug = fit_result["Q_aug"]
     sigma2 = fit_result["sigma2"]
