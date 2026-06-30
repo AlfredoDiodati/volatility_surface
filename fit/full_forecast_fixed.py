@@ -7,8 +7,10 @@ import jax
 import jax.numpy as jnp
 import polars as pl
 
-jax.config.update("jax_default_device", jax.devices("cpu")[0])
-print(f"Running on: {jax.devices('cpu')[0]}")
+from _device import get_device as _get_device
+_dev = _get_device()
+jax.config.update("jax_default_device", _dev)
+print(f"Running on: {_dev}")
 
 from models.ss import fit_collapsed, forecast as ss_forecast, forecast_rolling_h as ss_forecast_rolling_h
 from models.adjSD import fit as adjSD_fit, forecast as adjSD_forecast, forecast_rolling_h as adjSD_forecast_rolling_h
