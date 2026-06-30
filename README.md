@@ -4,6 +4,78 @@ Code for modeling and forecasting the implied volatility (IV) surface of SPX (S&
 
 ---
 
+## Installation
+
+### 1. Get the source code
+
+**From GitHub:**
+```bash
+git clone git@github.com:AlfredoDiodati/volatility_surface.git
+cd volatility_surface
+```
+
+**From a ZIP archive:** extract the archive and navigate into the resulting folder:
+```bash
+unzip volatility_surface.zip
+cd volatility_surface
+```
+
+### 2. Create a Python environment
+
+Python 3.11 or later is required. Using a dedicated virtual environment is strongly recommended:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Or with conda:
+
+```bash
+conda create -n volsurface python=3.11
+conda activate volsurface
+```
+
+### 3. Install JAX
+
+JAX installation depends on your hardware. From inside the activated environment:
+
+**CPU only:**
+```bash
+pip install -U jax
+```
+
+**GPU (CUDA 12):**
+```bash
+pip install -U "jax[cuda12]"
+```
+
+See the [JAX installation guide](https://jax.readthedocs.io/en/latest/installation.html) for other CUDA versions or platform-specific instructions.
+
+### 4. Install the remaining dependencies
+
+```bash
+pip install polars pyarrow numpy pandas matplotlib
+```
+
+### 5. Install the package in editable mode
+
+```bash
+pip install -e .
+```
+
+This registers the project root as a package so that imports such as `from models.ff_SD import fit` and `from fit.smcs import smcs` resolve correctly from any entry-point script.
+
+### 6. Create the untracked directories
+
+`data/` and `out/` are gitignored and must be created manually before running any script:
+
+```bash
+mkdir -p data/SPX/raw data/SPX/archives/zip out
+```
+
+---
+
 ## Directory structure
 
 ```
@@ -38,7 +110,13 @@ If no GPU is detected, or if free GPU VRAM is below 4000 MiB, the benchmark skip
 
 ### Step 1 — Data cleaning
 
-Run in order from the project root:
+Download the SPX end-of-day option chain data from [OptionsDX](https://www.optionsdx.com). Place the downloaded ZIP archives in `data/SPX/archives/zip/`, then extract them. OptionsDX archives place each year's files in a subdirectory; flatten everything into a single folder:
+
+```bash
+bash cleaning/flatten.sh data/SPX/raw
+```
+
+After flattening, `data/SPX/raw/` should contain one `.txt` file per trading day. Then run the cleaning scripts in order from the project root:
 
 ```bash
 python cleaning/filter_all.py
@@ -179,40 +257,150 @@ All plot scripts are standalone — run from the project root and write PDFs or 
 
 ---
 
-## Data
+## Script reference
 
-### Acquiring the raw data
+### Device setup
 
-The project uses end-of-day SPX option chain data from [OptionsDX](https://www.optionsdx.com). Purchase and download the SPX dataset for the years you need (the paper uses 2010–2021). OptionsDX delivers each year as a ZIP archive containing one CSV per trading day.
+#### `benchmark_device.py`
 
-1. Place the downloaded ZIP archives in `data/SPX/archives/zip/`.
-2. Extract them. The extracted folders typically contain per-year subdirectories. Flatten all CSVs into a single directory:
+Run once before using any model script. Checks for an NVIDIA GPU via `nvidia-smi`; if found, queries free VRAM. If free VRAM is below 4000 MiB the GPU is skipped immediately and `{"device": "cpu"}` is written to `device.json`. Otherwise it benchmarks a representative `lax.scan` kernel (T=2000 timesteps, N=30 observations, p=4 coefficients, 3 timed repetitions with JIT warmup) on both CPU and GPU using `jax.block_until_ready` for accurate timing, then writes the faster device. The XLA memory environment variables (`XLA_PYTHON_CLIENT_PREALLOCATE=false`, `TF_GPU_ALLOCATOR=cuda_malloc_async`) are set before JAX is imported whenever `nvidia-smi` is present, to prevent JAX from pre-allocating the entire GPU memory and skewing the VRAM check.
+
+`device.json` is machine-specific and gitignored. Re-run whenever the hardware configuration changes.
+
+#### `_device.py`
+
+Reads `device.json` and returns a `jax.Device`. Imported at module load time by every entry-point script, which then calls `jax.config.update("jax_default_device", ...)`. Falls back to CPU with a printed warning if `device.json` is missing (prompting the user to run `benchmark_device.py` first) or if the JSON names a GPU that is not available at runtime (e.g. the script is run on a different machine).
+
+---
+
+### Step 1 — Cleaning scripts
+
+#### `cleaning/flatten.sh`
+
+Bash script that moves all files from nested subdirectories of a target directory up to the target root, then removes the resulting empty subdirectories. Takes the target path as its only argument. Handles filename collisions by appending a numeric counter suffix. This is needed because OptionsDX delivers ZIP archives with one subdirectory per year; after extraction the raw CSVs sit one level too deep for `filter_all.py` to find them.
 
 ```bash
 bash cleaning/flatten.sh data/SPX/raw
 ```
 
-   `flatten.sh` moves every file from nested subdirectories up to the target root and removes the empty folders. After this step, `data/SPX/raw/` should contain one `.txt` file per trading day.
+After running, `data/SPX/raw/` should contain one `.txt` file per trading day with no subdirectories.
 
-### Running the cleaning pipeline
+#### `cleaning/filter_all.py`
 
-With the raw files in place, run the three cleaning scripts in order from the project root:
+Reads every `.txt` CSV from `data/SPX/raw/` (sorted alphabetically, one file per trading day) and processes them one at a time to keep peak memory usage bounded. For each file the script:
 
-```bash
-python cleaning/filter_all.py
-python cleaning/structure_all.py
-python cleaning/head_builder.py   # optional: generates 20-row CSV previews
-```
+1. Parses the CSV, strips whitespace and bracket characters from column names, and casts numeric fields from string.
+2. Separates puts and calls, computing moneyness `K/S`, calendar maturity in days `(expire − quote)`, and a `DATE` string in YYYYMMDD format.
+3. Assigns **4 maturity buckets**: [7, 45], (45, 90], (90, 180], (180, 360].
+4. Assigns **6 moneyness buckets** by delta: deep OTM put (−0.125, 0), OTM put (−0.375, −0.125], ATM put (−0.5, −0.375]; ATM call [0.375, 0.5), OTM call [0.125, 0.375), deep OTM call (0, 0.125).
+5. Flags rows for removal: maturity outside [7, 360] days, IV outside [0.05, 0.70], any missing value in key fields, and non-OTM options (puts with delta ≤ −0.5 or ≥ 0; calls with delta ≥ 0.5 or ≤ 0).
+6. Streams two outputs via PyArrow `ParquetWriter` so the full multi-year dataset is never loaded into memory at once:
+   - **`data/SPX/otm/filtered.parquet`** — rows passing all filters, with all flag and bucket columns retained.
+   - **`data/SPX/otm/checks/all.parquet`** — one cumulative row with counts for every filter flag and moneyness/maturity bin, accumulated across all trading days. Useful for diagnosing how many rows each criterion removes.
 
-This produces the following files consumed by all model scripts:
+#### `cleaning/structure_all.py`
 
-| File | Description |
-|------|-------------|
-| `data/SPX/otm/filtered.parquet` | All OTM options after quality filtering, with bucket assignments and flag columns. |
-| `data/SPX/otm/checks.parquet` | Cumulative filter diagnostic counts (rows removed by each criterion). |
-| `data/SPX/otm/full.parquet` | Final model input: DATE, logIV, level, moneyness, maturity, bucket\_idx. |
-| `data/SPX/otm/underlying.parquet` | Daily SPX underlying price series. |
-| `data/SPX/otm/head/*.csv` | 20-row CSV previews of each Parquet file. |
+Reads `data/SPX/otm/filtered.parquet` and produces three output files.
+
+**`data/SPX/otm/full.parquet`** is the primary model input, built lazily via Polars `scan_parquet` / `sink_parquet`:
+- `logIV = log(IV)` (natural log of implied volatility).
+- `level = 1` (intercept covariate).
+- `moneyness = K/S`.
+- `maturity = MATURITY / 255` (maturity in fractions of a trading year).
+- `bucket_idx = (MATURITY_BUCKET − 1) × 6 + (MONEYNESS_BUCKET − 1)`, ranging from 0 to 23. Ordered first by maturity bucket, then by moneyness bucket.
+
+**`data/SPX/otm/underlying.parquet`** — one row per trading day with the SPX underlying price.
+
+**`data/SPX/otm/bucket.parquet`** — one representative option per (DATE, MATURITY_BUCKET, MONEYNESS_BUCKET) cell. The representative is the option closest to the bucket centroid by the weighted distance `10 × (Δ_midpoint − Δ)² + (τ_midpoint − τ)²`, where the factor 10 down-weights maturity deviations relative to delta deviations. Additional columns include `moneyness²`, `maturity × moneyness` interaction, and a full set of one-hot bucket dummies. **`data/SPX/otm/bucket_matrix.parquet`** pivots this to a DATE × joint-bucket matrix of logIV values.
+
+#### `cleaning/head_builder.py`
+
+For every `.parquet` file found in `data/SPX/otm/`, reads the first 20 rows with PyArrow and writes a CSV to `data/SPX/otm/head/` with the same stem. Skips files whose head CSV already exists. Useful for quickly inspecting column names and dtypes without loading full datasets. No modelling dependency; safe to run at any point after `filter_all.py`.
+
+---
+
+### Step 2 — Monte Carlo
+
+#### `fit/MC_lmSD.py`
+
+Monte Carlo simulation study designed to assess finite-sample performance of all models when the data-generating process is the FI-SD (lmSD) model. Oracle lmSD parameters are hard-coded from a prior empirical fit on the full SPX sample.
+
+The synthetic panel uses a fixed observation grid of N=24 options per period: 6 moneyness levels × 4 maturities, matching the empirical bucket structure but without bucket indices (the no-bucket model variants are used throughout).
+
+For each sample length T ∈ {2000}:
+
+1. **Simulate** a panel from the lmSD model with oracle parameters and the fixed grid.
+2. **Fit** every model: SS, SD, FI-SD, Mk-SD K∈{1,2,3,5,10}, Mk-SS K∈{1,2,3,5,10}, MSM K∈{1,2,3,5,10}, plus an oracle lmSD initialised at the true parameters with 0 optimisation iterations (zero-iteration oracle serves as an upper bound on in-class performance).
+3. **Evaluate** one-step and multi-step (h∈{5,22,66,260}) forecast accuracy: MSE, MAE, neg-log-lik, AIC, BIC.
+4. **Cache** fitted parameter dicts as `.npz` files and append results incrementally to a `.jsonl` file so that a partially completed run can be resumed. On restart, if a model's `.npz` cache exists for a given replication, that model is skipped.
+5. **Tabulate** mean and standard deviation of each metric across all replications into LaTeX `tabular` environments in `out/SPX/mc/simulate_lmSD_sjit/`.
+
+Sets XLA memory env vars before importing JAX if nvidia-smi is present. Uses `_device.py` for device selection.
+
+---
+
+### Step 3 — Estimation and forecasting
+
+#### `fit/full_forecast_fixed.py`
+
+Main empirical script. Reads `data/SPX/otm/full.parquet`, reshapes the flat long-format observations into a T×N panel (NaN-padded to the maximum daily observation count), and splits at the temporal midpoint into training and test halves.
+
+**Initialisation.** OLS beta and residual variance are computed on the training half. Bucket-specific intercept offsets (`omega`) are initialised as per-bucket mean OLS residuals relative to bucket 0. Each model family has a dedicated initial-guess constructor using these estimates.
+
+**Models.** Each runner function is JIT-compiled once before training. The models fitted are:
+
+| Name | Model |
+|------|-------|
+| `ss` | Linear Gaussian state-space (collapsed-observation Kalman MLE) |
+| `adjSD` | Score-driven with AR(1) beta dynamics (SD) |
+| `lmSD` | Fractionally integrated score-driven (FI-SD) |
+| `ffSD_K{k}` | Multi-frequency score-driven for K∈{1,2,3,5,10} (Mk-SD) |
+| `ffSS_K{k}` | Multi-frequency state-space for K∈{1,2,3,5,10} (Mk-SS) |
+| `msmSD_K{k}` | Markov-switching multifractal score-driven for K∈{1,2,3,5,10} (MSM) |
+
+All models use L-BFGS with up to 5000 iterations, tolerance 1e-4, and learning rate 1.0. Convergence and iteration count are recorded.
+
+**Skip logic.** If a model's output files (`predictions_`, `step_`, `params_`) already exist in the output directory, that model is skipped. This allows resuming a partially completed run. Use `--models model1 model2` to run a specific subset, and `--suffix _tag` to write to non-default filenames.
+
+**Outputs** (all written to `out/SPX/otm/full_performance_fixed/`):
+
+| File | Content |
+|------|---------|
+| `predictions_{model}.parquet` | One-step-ahead point predictions, one row per test date |
+| `predictions_h_{model}.parquet` | Multi-step predictions for h∈{5,22,66,260}, columns: date, horizon, predictions |
+| `step_{model}.parquet` | Per-date: OOS log-lik, predictive variance, VaR, training log-lik, n_params, niter, converged |
+| `params_{model}.json` | Full fitted parameter dict serialised to JSON |
+| `b_{model}.parquet` | (Mk-SD and Mk-SS only) Full latent state history in long format: date, is_insample, k (component), j (coefficient), b (value) |
+| `summary.parquet` | One row per model: aggregate MSE, MAE, total OOS log-lik, AIC, BIC |
+
+---
+
+### Step 4 — Evaluation
+
+#### `fit/full_mcs_fixed.py`
+
+Classical MCS evaluation. Discovers available models automatically by scanning `out/SPX/otm/full_performance_fixed/` for `predictions_*.parquet` and `predictions_h_*.parquet` files — only models present in both sets are included, so no model list needs to be specified.
+
+**Loss computation.** Per-step MSE and MAE for h∈{1, 5, 22, 66, 260}. Per-step neg-OOS-log-lik, AIC, and BIC for h=1 only, loaded from `step_{model}.parquet`; if those files are missing the likelihood-based metrics are skipped with a printed warning.
+
+**MCS.** Runs the Hansen (2011) TR-statistic MCS via `fit/mcs.py`: stationary block bootstrap with 10,000 replications, seed 42, Bartlett-kernel HAC variance, across all combinations of block lengths {1, 5, 10, 15, 20} and significance levels {0.05, 0.10, 0.25}. The canonical results use block length l=10 and α=0.10.
+
+**LaTeX output** (to `out/SPX/otm/full_mcs_fixed/`): one table per metric with columns for each horizon and one row per model, with star annotations for MCS membership (`*` at α=0.05, `**` at α=0.10, `***` at α=0.25). A separate table covers the five one-step-ahead metrics. Tables are written for each block length.
+
+#### `fit/full_smcs_fixed.py`
+
+Sequential MCS (sMCS) evaluation. Same model discovery logic as `full_mcs_fixed.py`. For each (horizon, metric) combination it assembles a T×M loss matrix (rows = test dates, columns = models) and passes it to `fit/smcs.py`.
+
+Runs the Arnold, Gavrilopoulos, Schulz & Ziegel (2026) sMCS under the weak hypothesis at α∈{0.05, 0.10, 0.25}. Results include terminal-date model sets, full binary membership histories over time, and adjusted e-value time series.
+
+**Outputs** (to `out/SPX/otm/full_smcs_fixed/` and `plot/SPX/otm/full_smcs_fixed/`):
+
+| File | Content |
+|------|---------|
+| `smcs_grid_{metric}_h{h}.csv` | Matrix of terminal sMCS membership for each (model, α) |
+| LaTeX tables | sMCS membership stars per model, analogous to MCS tables |
+| E-process PDFs | Adjusted e-value trajectories over the test period for each model, one PDF per metric, with α-level threshold lines in three colours |
+| Heatmap PDFs | For each model: time series of the highest α at which it remains in the sMCS, colour-coded (green = all three αs, yellow = α≥0.10, orange = α=0.05 only, red = excluded) |
 
 ---
 
