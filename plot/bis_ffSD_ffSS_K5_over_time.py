@@ -28,7 +28,7 @@ COL_LABELS = [
     r" -- intercept",
     r" -- moneyness",
     r" -- maturity",
-    r" -- $-\omega$",
+    r" -- $\omega_x$",
 ]
 
 CRISIS_PERIODS = [
@@ -101,10 +101,10 @@ with PdfPages(OUTPUT) as pdf:
                 ax.tick_params(axis="x", rotation=30)
 
     handles = [
-        mpatches.Patch(color=COLOR_SD_IS,  label=r"ffSD -- in-sample"),
-        mpatches.Patch(color=COLOR_SD_OOS, label=r"ffSD -- out-of-sample"),
-        mpatches.Patch(color=COLOR_SS_IS,  label=r"ffSS -- in-sample"),
-        mpatches.Patch(color=COLOR_SS_OOS, label=r"ffSS -- out-of-sample"),
+        mpatches.Patch(color=COLOR_SD_IS,  label=r"Mk-SD -- in-sample"),
+        mpatches.Patch(color=COLOR_SD_OOS, label=r"Mk-SD -- out-of-sample"),
+        mpatches.Patch(color=COLOR_SS_IS,  label=r"Mk-SS -- in-sample"),
+        mpatches.Patch(color=COLOR_SS_OOS, label=r"Mk-SS -- out-of-sample"),
     ]
     fig.legend(
         handles=handles,

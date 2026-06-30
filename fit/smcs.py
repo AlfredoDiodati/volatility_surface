@@ -3,10 +3,6 @@ import jax.numpy as jnp
 import polars as pl
 
 
-def _cumulative_max(x: jnp.ndarray) -> jnp.ndarray:
-    return jax.lax.associative_scan(jnp.maximum, x, axis=0)
-
-
 def _psi_e(c: jnp.ndarray, lam: jnp.ndarray) -> jnp.ndarray:
     cl = c * lam
     return (-jnp.log1p(-cl) - cl) / (c ** 2)
@@ -17,14 +13,9 @@ def _pairwise_diffs(L: jnp.ndarray) -> jnp.ndarray:
 
 
 def _log_e_processes_strong(d: jnp.ndarray, eps: float = 1e-8) -> jnp.ndarray:
-    T, M, _ = d.shape
-    cummax_abs_d = _cumulative_max(jnp.abs(d))
-    predictable_c = jnp.concatenate([
-        jnp.full((1, M, M), eps),
-        2.0 * cummax_abs_d[:-1] + eps
-    ], axis=0)
-    lam = 1.0 / (2.0 * predictable_c)
-    increments = jnp.maximum(1.0 + lam * d, eps)
+    c = 2.0 * jnp.max(jnp.abs(d), axis=0) + eps
+    lam = 1.0 / (2.0 * c)
+    increments = jnp.maximum(1.0 + lam[None] * d, eps)
     return jnp.cumsum(jnp.log(increments), axis=0)
 
 
@@ -80,6 +71,7 @@ def smcs(
 
     diag_mask = jnp.eye(M, dtype=bool)[None]
 
+    log_e_adjusted = None
     if hypothesis in ("strong", "uniformly_weak"):
         log_e_no_diag = jnp.where(diag_mask, -jnp.inf, log_e_procs)
         log_e_merged = jax.scipy.special.logsumexp(log_e_no_diag, axis=2) - jnp.log(M - 1.0)
@@ -91,6 +83,7 @@ def smcs(
         log_threshold = jnp.log(M * (M - 1.0) / alpha)
         log_e_safe = jnp.where(diag_mask, -jnp.inf, log_e_procs)
         in_smcs = (log_e_safe <= log_threshold).all(axis=2)
+        log_e_adjusted = jnp.max(log_e_safe, axis=2) - jnp.log(M * (M - 1.0))
 
     final_idx = [int(i) for i in jnp.where(in_smcs[-1])[0]]
 
@@ -99,6 +92,7 @@ def smcs(
             "smcs_models": final_idx,
             "smcs_history": in_smcs,
             "log_e_processes": log_e_procs,
+            "log_e_adjusted": log_e_adjusted,
         }
     return {
         "smcs_models": [model_names[i] for i in final_idx],
