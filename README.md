@@ -181,9 +181,30 @@ All plot scripts are standalone — run from the project root and write PDFs or 
 
 ## Data
 
-Raw data files (`data/SPX/raw/*.txt`) are end-of-day SPX option chains covering 2010–2021, stored as 7-zip archives in `data/SPX/archives/zip/`. Extract before running the cleaning pipeline.
+### Acquiring the raw data
 
-The processed files produced by the pipeline are:
+The project uses end-of-day SPX option chain data from [OptionsDX](https://www.optionsdx.com). Purchase and download the SPX dataset for the years you need (the paper uses 2010–2021). OptionsDX delivers each year as a ZIP archive containing one CSV per trading day.
+
+1. Place the downloaded ZIP archives in `data/SPX/archives/zip/`.
+2. Extract them. The extracted folders typically contain per-year subdirectories. Flatten all CSVs into a single directory:
+
+```bash
+bash cleaning/flatten.sh data/SPX/raw
+```
+
+   `flatten.sh` moves every file from nested subdirectories up to the target root and removes the empty folders. After this step, `data/SPX/raw/` should contain one `.txt` file per trading day.
+
+### Running the cleaning pipeline
+
+With the raw files in place, run the three cleaning scripts in order from the project root:
+
+```bash
+python cleaning/filter_all.py
+python cleaning/structure_all.py
+python cleaning/head_builder.py   # optional: generates 20-row CSV previews
+```
+
+This produces the following files consumed by all model scripts:
 
 | File | Description |
 |------|-------------|
