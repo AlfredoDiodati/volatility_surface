@@ -1,6 +1,18 @@
-# Volatility Surface
+# Non-technical summary
 
-Code for modeling and forecasting the implied volatility (IV) surface of SPX (S&P 500 index) out-of-the-money options. The project fits and compares a family of score-driven and state-space panel models using both a classical model confidence set (MCS) and a sequential MCS (sMCS). It also includes a Monte Carlo study and thesis-figure scripts.
+Code for modeling and forecasting the implied volatility (IV) surface of SPX (S&P 500 index) out-of-the-money options used for my Econometrics and Operations Research Masters Thesis at VU Amsterdam. 
+
+The aim of the project is to approximate Fractionally Integrated (FI) factor models for the IV surface with a Structural, Markovian representation. This is possible because the auto-covariance of FI processes can be effectively approximated by a sum of exponential functions. This means that the fractionally integrated process can be approximated by a finite sum of affine processes, which are much cheaper to track than the true model, which instead has an expanding state dimension that increases linearly with the sample size, which makes computations expensive in multivariate models, or structural State-Space models that require a FI component.
+
+The advantage of the specific approximation approach taken in the thesis is that the approximation requires the same number of parameters regardless of the lags of interest to approximate, whereas similar approaches (e.g. Markovian lifting) typically require an increasing number of parameters to capture higher lag horizons (effectively making their model semi-nonparametric). 
+
+The code implements various parameter-driven and observation-driven models for the IV surface, both short-memory and fractionally integrated, and their Markovian approximation counterparts. Then a Monte-Carlo simulation study confirms that the approximation procedure is statistically identical to the true FI process, whereas short-memory processes diverge in terms of Mean Squared Error. Finally, a forecasting exercise on real SPX Options is made.
+
+A copy of the thesis is also available in the projects directory.
+
+## Abstract of the thesis
+
+Fractional Integration and Random Multiplicative Cascades are the most widely used methods to model time series with Long Range Dependence, but are often challenging to use due to their computational requirements. Instead, this thesis presents a procedure that approximates Long Range Dependence parsimoniously. Unlike Fractional Integration, this procedure generates long-range State-Space models with a finite state dimension, and unlike multiplicative cascades it can be efficiently estimated by the Kalman Filter. The approximation is also adjusted for Score-Driven models, making it possible to use non-Gaussian features without simulation-based estimation of the parameters. The methodology is applied to Score-Driven and State-Space dynamic factor models for the implied volatility surface of the S&P 500. Monte Carlo studies demonstrate that the approximation procedure effectively replicates true Long Range Dependence characteristics, outperforming short-memory models in point forecasts at multiple horizons. When tested on real option data it is found that both the approximating and true models have similar forecasting performance to short-memory models at different horizons.
 
 ---
 
